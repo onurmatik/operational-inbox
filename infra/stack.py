@@ -273,8 +273,15 @@ class OperationalInboxEmailStack(Stack):
         )
         app_user.add_to_policy(
             iam.PolicyStatement(
+                sid="EmailBucketLocation",
+                actions=["s3:GetBucketLocation"],
+                resources=[bucket.bucket_arn],
+            )
+        )
+        app_user.add_to_policy(
+            iam.PolicyStatement(
                 sid="EmailBucketList",
-                actions=["s3:GetBucketLocation", "s3:ListBucket"],
+                actions=["s3:ListBucket"],
                 resources=[bucket.bucket_arn],
                 conditions={
                     "StringLike": {"s3:prefix": ["ingress/*", "organizations/*", "backups/*"]}

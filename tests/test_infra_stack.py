@@ -16,6 +16,16 @@ def template() -> assertions.Template:
     return assertions.Template.from_stack(stack)
 
 
+def app_user_policy_statements(result: assertions.Template) -> list[dict]:
+    policies = result.find_resources("AWS::IAM::Policy")
+    app_policy = next(
+        resource
+        for resource in policies.values()
+        if resource["Properties"]["PolicyName"].startswith("HetznerApplicationUserDefaultPolicy")
+    )
+    return app_policy["Properties"]["PolicyDocument"]["Statement"]
+
+
 def test_private_bucket_and_durable_queue_contract() -> None:
     result = template()
     result.has_resource_properties(
@@ -73,13 +83,7 @@ def test_no_access_key_and_required_observability() -> None:
 
 def test_ses_identity_lifecycle_uses_required_wildcard_without_broad_sending() -> None:
     result = template()
-    policies = result.find_resources("AWS::IAM::Policy")
-    app_policy = next(
-        resource
-        for resource in policies.values()
-        if resource["Properties"]["PolicyName"].startswith("HetznerApplicationUserDefaultPolicy")
-    )
-    statements = app_policy["Properties"]["PolicyDocument"]["Statement"]
+    statements = app_user_policy_statements(result)
 
     lifecycle = next(
         statement for statement in statements if statement.get("Sid") == "SESIdentityLifecycle"
@@ -111,6 +115,23 @@ def test_ses_identity_lifecycle_uses_required_wildcard_without_broad_sending() -
             assert not {"ses:SendEmail", "ses:SendRawEmail"}.intersection(
                 set(statement.get("Action", []))
             )
+
+
+def test_bucket_location_is_not_constrained_by_an_object_prefix() -> None:
+    statements = app_user_policy_statements(template())
+    location = next(
+        statement for statement in statements if statement.get("Sid") == "EmailBucketLocation"
+    )
+    assert location["Action"] == "s3:GetBucketLocation"
+    assert "Condition" not in location
+
+    listing = next(
+        statement for statement in statements if statement.get("Sid") == "EmailBucketList"
+    )
+    assert listing["Action"] == "s3:ListBucket"
+    assert listing["Condition"] == {
+        "StringLike": {"s3:prefix": ["ingress/*", "organizations/*", "backups/*"]}
+    }
 
 
 def test_sns_subscriptions_preserve_the_sns_envelope() -> None:
