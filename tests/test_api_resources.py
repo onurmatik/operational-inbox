@@ -14,6 +14,7 @@ from inbox.models import (
     DurableJob,
     Notification,
     Organization,
+    OutboundMessage,
     Project,
     ReplyDraft,
     Report,
@@ -130,6 +131,90 @@ def test_cross_tenant_domain_conflict_is_enumeration_safe(
     assert response.status_code == 409
     assert response.json()["code"] == "domain_claim_conflict"
     assert str(other_organization.id) not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_api_uses_product_language_without_changing_machine_readable_codes(
+    client, owner, organization, project, conversation, inbound_message
+):
+    client.force_login(owner)
+    base = f"/api/v1/organizations/{organization.id}"
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname="provider-details.example.org",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.DEGRADED,
+        error_code="ses_identity_not_ready",
+        error_message="Amazon SES no longer reports this identity as verified.",
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        organization=organization,
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+        record_type="TXT",
+        name="_amazonses.provider-details.example.org",
+        value="required-provider-value",
+    )
+    draft = ReplyDraft.objects.create(
+        organization=organization,
+        project=project,
+        conversation=conversation,
+        context_message=inbound_message,
+    )
+    revision = revise_draft(
+        draft=draft,
+        owner=owner,
+        subject="Re: Provider-neutral status",
+        body_text="Reviewable response.",
+    )
+    outbound = OutboundMessage.objects.create(
+        organization=organization,
+        project=project,
+        conversation=conversation,
+        revision=revision,
+        status=OutboundMessage.Status.UNKNOWN,
+        from_address="requests@provider-details.example.org",
+        to_address="sender@example.net",
+        subject=revision.subject,
+        body_text=revision.body_text,
+        content_hash=revision.content_hash,
+        rfc_message_id="<provider-neutral@example.org>",
+        error_code="ses_acceptance_unknown",
+        error_message="SES acceptance could not be determined.",
+    )
+    AuditEvent.objects.create(
+        organization=organization,
+        actor_type=AuditEvent.ActorType.AWS,
+        event_type="domain.ses_identity_reinitialized",
+        object_type="Domain",
+        object_id=domain.id,
+        request_id="provider-neutral-api",
+        metadata={
+            "ses_verification_restarted": True,
+            "error_code": "ses_acceptance_unknown",
+        },
+    )
+
+    domain_payload = client.get(f"{base}/domains/{domain.id}").json()
+    outbound_payload = client.get(f"{base}/outbound/{outbound.id}").json()
+    audit_payload = client.get(f"{base}/audit").json()["items"][0]
+
+    assert domain_payload["error"] == {
+        "code": "ses_identity_not_ready",
+        "message": "Operational Inbox can no longer verify this domain for direct receiving.",
+    }
+    assert domain_payload["dns_records"][0]["purpose"] == "SES_VERIFICATION"
+    assert outbound_payload["error"]["code"] == "ses_acceptance_unknown"
+    assert "Operational Inbox" in outbound_payload["error"]["message"]
+    assert "SES" not in outbound_payload["error"]["message"]
+    assert audit_payload["actor_type"] == "AWS"
+    assert audit_payload["event_type"] == "domain.ses_identity_reinitialized"
+    assert audit_payload["metadata"] == {
+        "ses_verification_restarted": True,
+        "error_code": "ses_acceptance_unknown",
+    }
 
 
 @pytest.mark.django_db

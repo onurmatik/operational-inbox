@@ -22,10 +22,13 @@ from inbox.models import (
     InboundRoute,
     Notification,
     Organization,
+    OutboundMessage,
     Project,
+    ReplyDraft,
     Report,
 )
 from inbox.services.domains import MXObservation, build_dns_instructions
+from inbox.services.drafts import revise_draft
 
 
 def _setup_domain(
@@ -91,6 +94,10 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
     assert b"data-mx-check" in response.content
     assert b"Choose a different setup" in response.content
     assert b"We check public MX records first" in response.content
+    assert b"Direct routing to Operational Inbox" in response.content
+    assert b"Route this domain's MX records directly to Operational Inbox" in response.content
+    assert b"Amazon SES" not in response.content
+    assert b"Direct SES MX" not in response.content
     assert response.content.count(b'class="oi-choice-card"') == 2
 
     invalid_response = client.post(reverse("domain_create"), {"hostname": "portfolio.fit"})
@@ -222,6 +229,9 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     assert b"inbound-smtp.us-east-1.amazonaws.com" in response.content
     assert b"dkim-one._domainkey.dns.example.org" in response.content
     assert b"dkim-one.dkim.amazonses.com" in response.content
+    assert b"Operational Inbox verification" in response.content
+    assert b"SES verification" not in response.content
+    assert b"Amazon SES" not in response.content
     assert b"Required for sending" in response.content
     assert b"Generate test address" not in response.content
 
@@ -325,9 +335,9 @@ def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
-    assert b"Setup could not be completed." in response.content
-    assert b"email service could not finish" in response.content
-    assert b"We found an existing SES identity" not in response.content
+    assert b"Setup could not be completed." not in response.content
+    assert b"Operational Inbox could not finish preparing this domain" in response.content
+    assert b"existing SES identity" not in response.content
     assert b"Provider catch-all forwarding" not in response.content
     assert route.address.encode() not in response.content
     assert b"DNS records to add" not in response.content
@@ -358,7 +368,9 @@ def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
     assert b"Your DNS and mail routing were not changed" in detail.content
     assert b"new, unique DNS ownership record" in detail.content
     assert b"Retry setup safely" in detail.content
-    assert b"Support details" in detail.content
+    assert b"Support reference" in detail.content
+    assert b"SES identity" not in detail.content
+    assert b"ses_identity_collision" not in detail.content
 
     retry_url = reverse("domain_retry_provisioning", args=[domain.id])
     first = client.post(retry_url, follow=True)
@@ -367,6 +379,8 @@ def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
 
     assert first.status_code == 200
     assert b"Preparing your DNS instructions" in first.content
+    assert b"Existing email settings will be inspected" in first.content
+    assert b"Existing SES settings" not in first.content
     assert b"A setup retry is already in progress." in second.content
     assert domain.status == Domain.Status.PROVISIONING
     assert (
@@ -443,6 +457,33 @@ def test_authenticated_application_pages_render(
         object_id=conversation.id,
         request_id="web-test",
     )
+    draft = ReplyDraft.objects.create(
+        organization=organization,
+        project=project,
+        conversation=conversation,
+        context_message=inbound_message,
+    )
+    revision = revise_draft(
+        draft=draft,
+        owner=owner,
+        subject="Re: Privacy request",
+        body_text="Reviewable response.",
+    )
+    OutboundMessage.objects.create(
+        organization=organization,
+        project=project,
+        conversation=conversation,
+        revision=revision,
+        status=OutboundMessage.Status.UNKNOWN,
+        from_address="requests@example.org",
+        to_address="sender@example.net",
+        subject=revision.subject,
+        body_text=revision.body_text,
+        content_hash=revision.content_hash,
+        rfc_message_id="<web-provider-neutral@example.org>",
+        error_code="ses_acceptance_unknown",
+        error_message="SES acceptance could not be determined.",
+    )
     routes = [
         reverse("dashboard"),
         reverse("inbox"),
@@ -460,6 +501,20 @@ def test_authenticated_application_pages_render(
         response = client.get(url)
         assert response.status_code == 200, url
         assert b"Operational Inbox" in response.content
+
+    notifications = client.get(reverse("notifications"))
+    assert b"create in-app and email notifications" in notifications.content
+    assert b"SES email notifications" not in notifications.content
+
+    domains = client.get(reverse("domains"))
+    assert b"Direct routing to Operational Inbox" in domains.content
+    assert b"Direct SES MX" not in domains.content
+
+    detail = client.get(reverse("conversation_detail", args=[conversation.id]))
+    assert b"Operational Inbox could not confirm" in detail.content
+    assert b"previous delivery outcome may be unknown" in detail.content
+    assert b"SES acceptance" not in detail.content
+    assert b"previous SES outcome" not in detail.content
 
 
 @pytest.mark.django_db
@@ -580,3 +635,32 @@ def test_quarantined_inbox_preview_never_leaks_body(
     response = client.get(reverse("inbox"))
     assert b"DO-NOT-LEAK-QUARANTINED-CONTENT" not in response.content
     assert b"Content locked by the malware quarantine" in response.content
+
+    detail = client.get(reverse("conversation_detail", args=[conversation.id]))
+    assert b"This message did not pass the malware scan" in detail.content
+    assert b"SES virus verdict" not in detail.content
+
+
+@pytest.mark.django_db
+def test_provider_backed_audit_events_use_product_language(client, owner, organization):
+    AuditEvent.objects.create(
+        organization=organization,
+        actor_type=AuditEvent.ActorType.AWS,
+        event_type="domain.ses_identity_adoption_pending",
+        object_type="Domain",
+        request_id="provider-backed-event",
+    )
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+
+    response = client.get(reverse("audit"))
+
+    assert response.status_code == 200
+    assert b"Operational Inbox" in response.content
+    assert b"domain.email_configuration_review_started" in response.content
+    assert b"domain.ses_identity_adoption_pending" not in response.content
+    assert b">AWS<" not in response.content
+    assert b"AWS keys" not in response.content
+    assert b"S3 keys" not in response.content

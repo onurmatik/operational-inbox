@@ -65,7 +65,7 @@
                     {% if choice.data.value == 'PROVIDER_FORWARD' %}
                       Leave MX records unchanged. Add a catch-all rule at Google Workspace, Microsoft 365, or your current provider that forwards unmatched addresses to your private Operational Inbox route.
                     {% else %}
-                      Point this domain's MX records to Amazon SES. Every address at this domain will be received by Operational Inbox instead of another mail provider.
+                      Route this domain's MX records directly to Operational Inbox. Every address at this domain will be received here instead of by another mail provider.
                     {% endif %}
                   </span>
                   <span class="mt-2 block border-l-2 border-line pl-2 text-xs leading-5 text-ink">

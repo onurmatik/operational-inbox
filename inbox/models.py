@@ -212,7 +212,7 @@ class SignupAttempt(UUIDTimeStampedModel):
 
 class Domain(ProjectScopedModel):
     class SetupMode(models.TextChoices):
-        DIRECT_MX = "DIRECT_MX", "Direct SES MX"
+        DIRECT_MX = "DIRECT_MX", "Direct routing to Operational Inbox"
         PROVIDER_FORWARD = "PROVIDER_FORWARD", "Provider catch-all forwarding"
 
     class Status(models.TextChoices):
@@ -264,11 +264,36 @@ class Domain(ProjectScopedModel):
     def __str__(self) -> str:
         return self.hostname
 
+    @property
+    def public_error_message(self) -> str:
+        if not self.error_code:
+            return ""
+        return {
+            "claim_expired": "This domain setup expired before ownership could be verified.",
+            "dns_drift": "A required ownership or routing DNS record no longer matches.",
+            "domain_provision_failed": (
+                "Operational Inbox could not finish preparing this domain. "
+                "Contact support to retry."
+            ),
+            "domain_provision_retry": (
+                "Operational Inbox is still preparing this domain and will retry automatically."
+            ),
+            "ses_identity_collision": (
+                "Operational Inbox found an existing email configuration for this domain."
+            ),
+            "ses_identity_not_ready": (
+                "Operational Inbox can no longer verify this domain for direct receiving."
+            ),
+        }.get(
+            self.error_code,
+            "Operational Inbox could not complete this domain setup. Contact support for help.",
+        )
+
 
 class DomainDNSRecord(OrganizationScopedModel):
     class Purpose(models.TextChoices):
         OWNERSHIP = "OWNERSHIP", "Ownership"
-        SES_VERIFICATION = "SES_VERIFICATION", "SES verification"
+        SES_VERIFICATION = "SES_VERIFICATION", "Operational Inbox verification"
         MX = "MX", "Mail exchange"
         DKIM = "DKIM", "DKIM"
         SPF = "SPF", "SPF"
@@ -756,6 +781,19 @@ class OutboundMessage(ProjectScopedModel):
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.CharField(max_length=240, blank=True)
 
+    @property
+    def public_error_message(self) -> str:
+        if not self.error_code:
+            return ""
+        if self.error_code == "ses_acceptance_unknown":
+            return (
+                "Operational Inbox could not confirm whether this message was accepted for "
+                "delivery. Automatic retry is disabled."
+            )
+        if self.error_code == "send_authorization_revoked":
+            return self.error_message
+        return "Operational Inbox could not send this message."
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
@@ -918,7 +956,7 @@ class AuditEvent(OrganizationScopedModel):
         OWNER = "OWNER", "Owner"
         SYSTEM = "SYSTEM", "System"
         AGENT = "AGENT", "Agent"
-        AWS = "AWS", "AWS"
+        AWS = "AWS", "Operational Inbox"
 
     actor_type = models.CharField(max_length=10, choices=ActorType.choices)
     actor_id = models.UUIDField(null=True, blank=True)
@@ -934,6 +972,14 @@ class AuditEvent(OrganizationScopedModel):
     class Meta:
         ordering = ("-created_at",)
         indexes = [models.Index(fields=("organization", "event_type", "-created_at"))]
+
+    @property
+    def public_event_type(self) -> str:
+        return {
+            "domain.ses_identity_adoption_pending": "domain.email_configuration_review_started",
+            "domain.ses_identity_reinitialized": "domain.email_configuration_refreshed",
+            "domain.ses_identity_adopted": "domain.email_configuration_connected",
+        }.get(self.event_type, self.event_type)
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self._state.adding:

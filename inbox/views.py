@@ -1137,7 +1137,7 @@ def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> Htt
             )
             messages.success(
                 request,
-                "Setup retry started. Existing SES settings will be inspected without "
+                "Setup retry started. Existing email settings will be inspected without "
                 "overwriting them.",
             )
         else:

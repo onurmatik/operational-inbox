@@ -247,6 +247,8 @@ def test_ambiguous_ses_timeout_is_unknown_and_requires_explicit_resend(
     result = submit_outbound(outbound, ses_client=ses)
     assert result.status == OutboundMessage.Status.UNKNOWN
     assert result.error_code == "ses_acceptance_unknown"
+    assert "Operational Inbox could not confirm" in result.public_error_message
+    assert "SES" not in result.public_error_message
     assert ses.send_raw_email.call_count == 1
     resend = resend_outbound(result, owner=owner)
     assert resend.id != result.id

@@ -82,6 +82,8 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
     assert domain.status == Domain.Status.ERROR
     assert domain.error_code == "domain_provision_failed"
     assert "secret AWS detail" not in domain.error_message
+    assert "Operational Inbox could not finish preparing this domain" in domain.public_error_message
+    assert "SES" not in domain.public_error_message
     assert AuditEvent.objects.filter(event_type="domain.provision_failed").exists()
 
 

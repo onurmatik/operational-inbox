@@ -322,7 +322,7 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
         "outbound_ready": domain.outbound_ready,
         "last_checked_at": domain.last_checked_at,
         "error": (
-            {"code": domain.error_code, "message": domain.error_message}
+            {"code": domain.error_code, "message": domain.public_error_message}
             if domain.error_code
             else None
         ),
@@ -1074,7 +1074,7 @@ def outbound_status(request: HttpRequest, organization_id: uuid.UUID, outbound_i
         "accepted_at": outbound.accepted_at,
         "delivered_at": outbound.delivered_at,
         "error": (
-            {"code": outbound.error_code, "message": outbound.error_message}
+            {"code": outbound.error_code, "message": outbound.public_error_message}
             if outbound.error_code
             else None
         ),

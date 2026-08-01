@@ -113,11 +113,11 @@
       {% if can_retry_provisioning %}
         {% if domain.error_code == 'ses_identity_collision' %}
           <p class="mt-2 max-w-2xl text-sm leading-6">
-            We found an existing SES identity. We can inspect it without overwriting it; before receiving or sending is enabled, you'll be asked to publish a new, unique DNS ownership record for this claim.
+            Operational Inbox found an existing email configuration for this domain. We can inspect it without overwriting it; before receiving or sending is enabled, you'll be asked to publish a new, unique DNS ownership record for this setup.
           </p>
         {% else %}
           <p class="mt-2 max-w-2xl text-sm leading-6">
-            The email service could not finish preparing this domain. A retry will inspect the current state and continue safely without changing your DNS.
+            Operational Inbox could not finish preparing this domain. A retry will inspect the current state and continue safely without changing your DNS.
           </p>
         {% endif %}
         <form method="post" action="{% url 'domain_retry_provisioning' domain.id %}" class="mt-4" data-domain-retry-form data-busy-label="Retrying setup…" aria-busy="false">
@@ -125,7 +125,7 @@
           <button class="oi-button-primary">Retry setup safely</button>
         </form>
       {% else %}
-        <p class="mt-2 max-w-2xl text-sm leading-6">{{ domain.error_message }} No DNS records or mail routing settings were changed.</p>
+        <p class="mt-2 max-w-2xl text-sm leading-6">{{ domain.public_error_message }} No DNS records or mail routing settings were changed.</p>
       {% endif %}
     </section>
   {% endif %}
@@ -147,10 +147,10 @@
     </section>
   {% endif %}
 
-  {% if domain.error_message %}
+  {% if domain.error_code %}
     <details class="mt-5 border border-line bg-paper/60 p-4 text-sm text-muted">
-      <summary class="cursor-pointer font-semibold text-ink">Support details</summary>
-      <p class="mt-2"><code class="font-mono">{{ domain.error_code }}</code> · {{ domain.error_message }}</p>
+      <summary class="cursor-pointer font-semibold text-ink">Support reference</summary>
+      <p class="mt-2">Share domain reference <code class="font-mono">{{ domain.id }}</code> if you contact support.</p>
     </details>
   {% endif %}
 
@@ -233,7 +233,7 @@
   {% if domain.existing_mx %}
     <section class="mt-8 border border-gold-strong/40 bg-gold-soft p-5">
       <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing MX detected — preserve it</h2>
-      <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to SES. Provider catch-all forwarding keeps the current mail service intact.</p>
+      <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to Operational Inbox. Provider catch-all forwarding keeps the current mail service intact.</p>
       <ul class="mt-3 space-y-1 font-mono text-xs text-gold-strong">
         {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
       </ul>
