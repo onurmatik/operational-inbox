@@ -40,6 +40,11 @@ urlpatterns = [
     ),
     path("app/domains/", views.domains_list, name="domains"),
     path("app/domains/new/", views.domain_create_view, name="domain_create"),
+    path(
+        "app/domains/inspect-mx/",
+        views.domain_mx_inspect,
+        name="domain_mx_inspect",
+    ),
     path("app/domains/<uuid:domain_id>/", views.domain_detail, name="domain_detail"),
     path(
         "app/domains/<uuid:domain_id>/test/",

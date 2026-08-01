@@ -46,14 +46,24 @@ def inspect_mx(hostname: str, resolver: dns.resolver.Resolver | None = None) -> 
     resolver = resolver or dns.resolver.Resolver()
     try:
         answers = resolver.resolve(hostname, "MX", lifetime=5)
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.NoNameservers):
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return []
+    except dns.resolver.NoNameservers as exc:
+        raise ValidationError(
+            "The domain's nameservers did not answer the MX lookup. Try again shortly."
+        ) from exc
     except (dns.exception.Timeout, dns.resolver.LifetimeTimeout) as exc:
         raise ValidationError("The MX lookup timed out. Try again shortly.") from exc
-    observations = [
-        MXObservation(preference=int(answer.preference), exchange=str(answer.exchange).rstrip("."))
-        for answer in answers
-    ]
+    observations = []
+    for answer in answers:
+        exchange = str(answer.exchange).rstrip(".")
+        if not exchange:
+            # RFC 7505 null MX (`0 .`) explicitly declares that the domain has
+            # no mail service. It is not an existing provider to preserve.
+            continue
+        observations.append(
+            MXObservation(preference=int(answer.preference), exchange=exchange)
+        )
     return sorted(observations, key=lambda item: (item.preference, item.exchange))
 
 
@@ -74,7 +84,6 @@ def _assert_limits(organization: Organization) -> None:
         raise DomainLimitError("Domain provisioning is temporarily rate limited. Try again later.")
 
 
-@transaction.atomic
 def create_domain(
     *, organization: Organization, project: Project, hostname: str, setup_mode: str
 ) -> Domain:
@@ -82,34 +91,45 @@ def create_domain(
         raise ValidationError("The project does not belong to this organization.")
     if setup_mode not in Domain.SetupMode.values:
         raise ValidationError({"setup_mode": "Select a supported setup mode."})
-    _assert_limits(organization)
     normalized = normalize_hostname(hostname)
-    if Domain.objects.filter(hostname=normalized).exclude(status=Domain.Status.DISABLED).exists():
-        raise ValidationError(
-            {"hostname": "This domain already has an active or pending ownership claim."}
-        )
     mx = inspect_mx(normalized)
-    domain = Domain.objects.create(
-        organization=organization,
-        project=project,
-        hostname=normalized,
-        setup_mode=setup_mode,
-        status=Domain.Status.PROVISIONING,
-        existing_mx=[{"preference": item.preference, "exchange": item.exchange} for item in mx],
-        claim_expires_at=timezone.now() + timedelta(hours=settings.DOMAIN_CLAIM_TTL_HOURS),
-    )
-    local_part = f"route-{secrets.token_urlsafe(24).lower()}"
-    InboundRoute.objects.create(
-        organization=organization,
-        domain=domain,
-        kind=(
-            InboundRoute.Kind.FORWARDING_ALIAS
-            if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
-            else InboundRoute.Kind.DIRECT_DOMAIN
-        ),
-        local_part=local_part,
-        address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
-    )
+    # DNS may take several seconds on a degraded nameserver. Keep it outside the
+    # write transaction so one lookup cannot hold SQLite's immediate write lock.
+    with transaction.atomic():
+        _assert_limits(organization)
+        if (
+            Domain.objects.filter(hostname=normalized)
+            .exclude(status=Domain.Status.DISABLED)
+            .exists()
+        ):
+            raise ValidationError(
+                {"hostname": "This domain already has an active or pending ownership claim."}
+            )
+        domain = Domain.objects.create(
+            organization=organization,
+            project=project,
+            hostname=normalized,
+            setup_mode=setup_mode,
+            status=Domain.Status.PROVISIONING,
+            existing_mx=[
+                {"preference": item.preference, "exchange": item.exchange} for item in mx
+            ],
+            claim_expires_at=timezone.now() + timedelta(
+                hours=settings.DOMAIN_CLAIM_TTL_HOURS
+            ),
+        )
+        local_part = f"route-{secrets.token_urlsafe(24).lower()}"
+        InboundRoute.objects.create(
+            organization=organization,
+            domain=domain,
+            kind=(
+                InboundRoute.Kind.FORWARDING_ALIAS
+                if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+                else InboundRoute.Kind.DIRECT_DOMAIN
+            ),
+            local_part=local_part,
+            address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
+        )
     return domain
 
 

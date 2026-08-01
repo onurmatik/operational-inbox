@@ -2,14 +2,21 @@
 {% block title %}Connect domain · Operational Inbox{% endblock %}
 {% block content %}
   <div class="max-w-2xl">
-    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Choose mail routing</p>
+    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Check existing mail service</p>
     <h1 class="mt-2 font-heading text-3xl font-semibold">Connect a domain</h1>
     <p class="mt-2 max-w-[68ch] text-sm leading-6 text-muted">
-      Choose how email should reach Operational Inbox. We check the domain's current MX records before showing exact setup steps, and we never change DNS for you.
+      We check public MX records first and recommend the safest setup. This inspection is read-only; we never change DNS for you.
     </p>
 
     {% with example_domain=form.hostname.value|default:"yourcompany.com" %}
-      <form method="post" class="mt-7 oi-panel p-5 sm:p-6">
+      <form
+        method="post"
+        id="domain-create-form"
+        class="mt-7 oi-panel p-5 sm:p-6"
+        data-domain-create
+        data-mx-inspect-url="{% url 'domain_mx_inspect' %}"
+        data-has-errors="{% if form.errors %}true{% else %}false{% endif %}"
+      >
         {% csrf_token %}
         {% if form.non_field_errors %}
           <div class="mb-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>
@@ -24,23 +31,36 @@
           {% for error in form.hostname.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
         </div>
 
-        <fieldset class="mt-6" aria-describedby="setup-mode-help">
+        <div
+          id="mx-inspection-status"
+          class="mt-5 hidden border p-4"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <p class="font-semibold" data-mx-status-title></p>
+          <p class="mt-1 text-sm leading-6" data-mx-status-body></p>
+          <p class="mt-2 hidden font-mono text-xs" data-mx-records></p>
+        </div>
+
+        <fieldset class="mt-6" aria-describedby="setup-mode-help" data-mx-choices>
           <legend class="font-semibold">How should email arrive?</legend>
-          <p id="setup-mode-help" class="mt-1 text-xs leading-5 text-muted">
+          <p id="setup-mode-help" class="mt-1 text-xs leading-5 text-muted" data-mx-choice-help>
             If this domain already has working mailboxes, keep the current provider. If it does not receive email yet, route it directly.
           </p>
 
-          <div class="mt-3 grid gap-3">
+          <div id="setup-mode-options" class="mt-3 grid gap-3">
             {% for choice in form.setup_mode %}
-              <label class="oi-choice-card">
+              <label class="oi-choice-card" data-setup-card="{{ choice.data.value }}">
                 <span class="oi-choice-control">{{ choice.tag }}</span>
                 <span class="min-w-0">
-                  <span class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                  <span class="flex flex-wrap items-center gap-2">
                     <strong>
                       {% if choice.data.value == 'PROVIDER_FORWARD' %}Keep your current email provider{% else %}Route this domain directly{% endif %}
                     </strong>
-                    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ choice.choice_label }}</span>
+                    <span class="oi-status oi-status-ready hidden" data-recommendation="{{ choice.data.value }}">Recommended</span>
                   </span>
+                  <span class="mt-1 block font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ choice.choice_label }}</span>
                   <span class="mt-1 block text-xs leading-5 text-muted">
                     {% if choice.data.value == 'PROVIDER_FORWARD' %}
                       Leave MX records unchanged. Add a catch-all rule at Google Workspace, Microsoft 365, or your current provider that forwards unmatched addresses to your private Operational Inbox route.
@@ -60,27 +80,24 @@
               </label>
             {% endfor %}
           </div>
+          <button
+            type="button"
+            class="mt-3 hidden text-xs font-semibold text-forest hover:underline"
+            aria-expanded="false"
+            aria-controls="setup-mode-options"
+            data-show-alternative
+          >Choose a different setup</button>
           {% for error in form.setup_mode.errors %}<p class="mt-2 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
         </fieldset>
 
+        <div class="mt-4 hidden border border-gold-strong/40 bg-gold-soft p-3 text-sm text-gold-strong" role="alert" data-override-warning></div>
+
         <div class="mt-6 flex flex-wrap items-center gap-2">
-          <button class="oi-button-primary">Check domain and continue</button>
+          <button type="button" class="oi-button-primary hidden" data-mx-check>Check MX records</button>
+          <button class="oi-button-primary" data-domain-submit>Check domain and continue</button>
           <a href="{% url 'domains' %}" class="oi-button text-muted hover:text-forest">Cancel</a>
         </div>
       </form>
     {% endwith %}
   </div>
-
-  <script>
-    (() => {
-      const hostname = document.getElementById("{{ form.hostname.id_for_label }}");
-      const examples = document.querySelectorAll("[data-domain-example]");
-      const updateExamples = () => {
-        const domain = hostname.value.trim().replace(/\.$/, "") || "yourcompany.com";
-        examples.forEach((example) => { example.textContent = `requests@${domain}`; });
-      };
-      hostname?.addEventListener("input", updateExamples);
-      updateExamples();
-    })();
-  </script>
 {% endblock %}

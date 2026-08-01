@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
+import dns.resolver
 import pytest
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
@@ -12,6 +13,7 @@ from django.utils import timezone
 from inbox.models import Domain, Organization, Project
 from inbox.services.domains import (
     create_domain,
+    inspect_mx,
     normalize_hostname,
     provision_ses_identity,
     recommended_setup,
@@ -27,6 +29,21 @@ def test_idna_domain_normalization():
     assert normalize_hostname("BÜCHER.example.") == "xn--bcher-kva.example"
     with pytest.raises(ValidationError):
         normalize_hostname("*@example.com")
+
+
+def test_null_mx_is_not_treated_as_an_existing_mail_provider():
+    resolver = Mock()
+    resolver.resolve.return_value = [Mock(preference=0, exchange=".")]
+
+    assert inspect_mx("example.org", resolver=resolver) == []
+
+
+def test_unavailable_nameservers_do_not_look_like_missing_mx():
+    resolver = Mock()
+    resolver.resolve.side_effect = dns.resolver.NoNameservers()
+
+    with pytest.raises(ValidationError, match="nameservers did not answer"):
+        inspect_mx("example.org", resolver=resolver)
 
 
 @pytest.mark.django_db

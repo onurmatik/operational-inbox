@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import posixpath
 import uuid
@@ -14,6 +15,7 @@ from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
 from django.core import signing
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
@@ -26,6 +28,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
+from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from sesame.utils import get_parameters
 from sesame.views import LoginView as SesameLoginView
@@ -67,7 +70,7 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.domains import create_domain, create_domain_test, normalize_hostname
+from inbox.services.domains import create_domain, create_domain_test, inspect_mx, normalize_hostname
 from inbox.services.drafts import (
     approve_exact_revision,
     create_draft,
@@ -932,6 +935,55 @@ def domains_list(request: HttpRequest) -> HttpResponse:
             "domains": Domain.objects.filter(organization=organization).select_related("project"),
             "limit": settings.MAX_DOMAINS_PER_ORGANIZATION,
         },
+    )
+
+
+@never_cache
+@verified_required
+@require_POST
+def domain_mx_inspect(request: HttpRequest) -> JsonResponse:
+    try:
+        hostname = normalize_hostname(request.POST.get("hostname", ""))
+    except ValidationError as exc:
+        return JsonResponse(
+            {
+                "code": "invalid_hostname",
+                "message": "; ".join(exc.messages),
+            },
+            status=400,
+        )
+
+    cache_digest = hashlib.sha256(hostname.encode("ascii")).hexdigest()
+    cache_key = f"domain-mx-inspection:v1:{cache_digest}"
+    serialized_records = cache.get(cache_key)
+    if serialized_records is None:
+        try:
+            mx_records = inspect_mx(hostname)
+        except ValidationError as exc:
+            return JsonResponse(
+                {
+                    "code": "mx_lookup_failed",
+                    "message": "; ".join(exc.messages),
+                },
+                status=503,
+            )
+        serialized_records = [
+            {"preference": record.preference, "exchange": record.exchange}
+            for record in mx_records
+        ]
+        cache.set(cache_key, serialized_records, timeout=60)
+
+    return JsonResponse(
+        {
+            "hostname": hostname,
+            "has_existing_mx": bool(serialized_records),
+            "recommended_setup_mode": (
+                Domain.SetupMode.PROVIDER_FORWARD
+                if serialized_records
+                else Domain.SetupMode.DIRECT_MX
+            ),
+            "mx_records": serialized_records,
+        }
     )
 
 

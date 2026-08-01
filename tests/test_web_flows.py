@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils import timezone
 
@@ -19,6 +21,7 @@ from inbox.models import (
     Project,
     Report,
 )
+from inbox.services.domains import MXObservation
 
 
 def test_choice_widgets_do_not_receive_text_input_styles():
@@ -49,11 +52,77 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
     assert b"Keep your current email provider" in response.content
     assert b"requests@portfolio.fit" in response.content
     assert b"Check domain and continue" in response.content
+    assert b"data-mx-inspect-url" in response.content
+    assert b"data-mx-check" in response.content
+    assert b"Choose a different setup" in response.content
+    assert b"We check public MX records first" in response.content
     assert response.content.count(b'class="oi-choice-card"') == 2
 
     invalid_response = client.post(reverse("domain_create"), {"hostname": "portfolio.fit"})
     assert invalid_response.status_code == 200
     assert b"This field is required." in invalid_response.content
+
+
+@pytest.mark.django_db
+def test_domain_mx_inspection_recommends_and_caches_public_dns_result(
+    client, owner, monkeypatch
+):
+    client.force_login(owner)
+    cache.clear()
+    calls = []
+
+    def no_existing_mx(hostname):
+        calls.append(hostname)
+        return []
+
+    monkeypatch.setattr("inbox.views.inspect_mx", no_existing_mx)
+    url = reverse("domain_mx_inspect")
+    first = client.post(url, {"hostname": "Portfolio.Fit."})
+    second = client.post(url, {"hostname": "portfolio.fit"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == {
+        "hostname": "portfolio.fit",
+        "has_existing_mx": False,
+        "recommended_setup_mode": Domain.SetupMode.DIRECT_MX,
+        "mx_records": [],
+    }
+    assert calls == ["portfolio.fit"]
+    assert "no-store" in first.headers["Cache-Control"]
+
+
+@pytest.mark.django_db
+def test_domain_mx_inspection_preserves_existing_mail_and_surfaces_dns_failures(
+    client, owner, monkeypatch
+):
+    client.force_login(owner)
+    cache.clear()
+    monkeypatch.setattr(
+        "inbox.views.inspect_mx",
+        lambda hostname: [MXObservation(10, "mx1.example.net")],
+    )
+    url = reverse("domain_mx_inspect")
+    existing = client.post(url, {"hostname": "mail.example.org"})
+
+    assert existing.status_code == 200
+    assert existing.json()["recommended_setup_mode"] == Domain.SetupMode.PROVIDER_FORWARD
+    assert existing.json()["mx_records"] == [
+        {"preference": 10, "exchange": "mx1.example.net"}
+    ]
+    assert client.get(url, {"hostname": "mail.example.org"}).status_code == 405
+
+    def unavailable(hostname):
+        raise ValidationError("The MX lookup timed out. Try again shortly.")
+
+    monkeypatch.setattr("inbox.views.inspect_mx", unavailable)
+    failed = client.post(url, {"hostname": "timeout.example.org"})
+    invalid = client.post(url, {"hostname": "not-a-domain"})
+
+    assert failed.status_code == 503
+    assert failed.json()["code"] == "mx_lookup_failed"
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == "invalid_hostname"
 
 
 @pytest.mark.django_db
