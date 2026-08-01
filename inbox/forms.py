@@ -12,6 +12,15 @@ from inbox.services.domains import normalize_hostname
 class StyledFormMixin:
     def _style_fields(self) -> None:
         for field in self.fields.values():
+            if isinstance(
+                field.widget,
+                (
+                    forms.CheckboxInput,
+                    forms.CheckboxSelectMultiple,
+                    forms.RadioSelect,
+                ),
+            ):
+                continue
             existing = field.widget.attrs.get("class", "")
             field.widget.attrs["class"] = f"oi-input {existing}".strip()
 

@@ -6,6 +6,7 @@ import pytest
 from django.urls import reverse
 from django.utils import timezone
 
+from inbox.forms import APITokenForm, DomainForm, ScheduleForm
 from inbox.models import (
     APIToken,
     Attachment,
@@ -18,6 +19,41 @@ from inbox.models import (
     Project,
     Report,
 )
+
+
+def test_choice_widgets_do_not_receive_text_input_styles():
+    domain_form = DomainForm()
+    assert domain_form.fields["hostname"].widget.attrs["class"] == "oi-input"
+    assert "class" not in domain_form.fields["setup_mode"].widget.attrs
+    assert 'type="radio"' in str(domain_form["setup_mode"])
+    assert 'type="radio" name="setup_mode" value="DIRECT_MX" class="oi-input"' not in str(
+        domain_form["setup_mode"]
+    )
+
+    assert "class" not in ScheduleForm().fields["is_enabled"].widget.attrs
+    assert "class" not in APITokenForm().fields["scopes"].widget.attrs
+
+
+@pytest.mark.django_db
+def test_domain_create_explains_the_routing_tradeoff(client, owner, organization, project):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session["pending_domain"] = "portfolio.fit"
+    session.save()
+
+    response = client.get(reverse("domain_create"))
+
+    assert response.status_code == 200
+    assert b"Route this domain directly" in response.content
+    assert b"Keep your current email provider" in response.content
+    assert b"requests@portfolio.fit" in response.content
+    assert b"Check domain and continue" in response.content
+    assert response.content.count(b'class="oi-choice-card"') == 2
+
+    invalid_response = client.post(reverse("domain_create"), {"hostname": "portfolio.fit"})
+    assert invalid_response.status_code == 200
+    assert b"This field is required." in invalid_response.content
 
 
 @pytest.mark.django_db

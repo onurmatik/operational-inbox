@@ -419,19 +419,21 @@ The StageOps registry contains an `operationalinbox` app on `hetzner-stage`:
   (daily), and backup (daily) cron commands.
 
 The tracked [`.deploy/fabfile.py`](.deploy/fabfile.py) contract deploys only `origin/main` to
-`/srv/apps/operationalinbox`. It clones/fetches the configured private repository over SSH using
-a forwarded agent or host deploy key, checks out
-`main`, creates or reuses the Python 3.12 virtual environment, installs the frozen production
-[`requirements.txt`](requirements.txt), and safely merges only an explicit environment allowlist.
+`/srv/apps/operationalinbox`. It mints a short-lived GitHub App installation token locally,
+clones/fetches the configured private repository over HTTPS without persisting credentials on the
+host, checks out `main`, creates or reuses the Python 3.12 virtual environment, installs the frozen
+production [`requirements.txt`](requirements.txt), and safely merges only an explicit environment
+allowlist.
 It then stops the cold service, acquires every cron/deploy lock, backs up and verifies SQLite,
 runs migrations, collects static files, executes `check --deploy`, and restarts the socket.
 
-Prepare ignored local deployment configuration:
+Prepare the ignored local GitHub App credentials and production runtime configuration:
 
 ```console
-cp .deploy/deploy.env.example .deploy/deploy.env
+cp .deploy/.credentials.env.example .deploy/.credentials.env
+chmod 600 .deploy/.credentials.env
 cp .env.example .env-prod
-# Fill only production runtime values in .env-prod; keep DJANGO_EMAIL_BACKEND=ses.
+# Fill the GitHub App values and only production runtime values; keep DJANGO_EMAIL_BACKEND=ses.
 
 python3 -m pip install -r .deploy/requirements.txt
 cd .deploy

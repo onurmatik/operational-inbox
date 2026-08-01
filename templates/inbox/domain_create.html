@@ -1,1 +1,86 @@
-{% extends "app_base.html" %}{% block title %}Connect domain · Operational Inbox{% endblock %}{% block content %}<div class="max-w-3xl"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Detect existing mail service</p><h1 class="mt-2 font-heading text-3xl font-semibold">Connect a domain safely</h1><p class="mt-2 text-sm leading-6 text-muted">We inspect MX records before giving instructions. If mail is already hosted elsewhere, provider catch-all forwarding is the recommended path. Customer DNS is never changed by the application.</p><form method="post" class="mt-7 oi-panel p-6">{% csrf_token %}{% if form.non_field_errors %}<div class="mb-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>{% endif %}<div><label class="oi-label" for="{{ form.hostname.id_for_label }}">Domain or dedicated inbound subdomain</label>{{ form.hostname }}{% for error in form.hostname.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div><fieldset class="mt-6"><legend class="font-semibold">Setup path</legend><div class="mt-3 grid gap-3">{% for choice in form.setup_mode %}<label class="flex cursor-pointer gap-3 border border-line p-4 hover:border-forest">{{ choice.tag }}<span><strong>{{ choice.choice_label }}</strong><span class="mt-1 block text-xs leading-5 text-muted">{% if choice.data.value == 'PROVIDER_FORWARD' %}Keep existing MX and forward provider catch-all to a high-entropy @inbound.operationalinbox.com route.{% else %}Point this domain or subdomain MX directly to SES after reviewing exact records.{% endif %}</span></span></label>{% endfor %}</div></fieldset><div class="mt-6 flex gap-3"><button class="oi-button-primary">Inspect MX and create claim</button><a href="{% url 'domains' %}" class="oi-button-secondary">Cancel</a></div></form></div>{% endblock %}
+{% extends "app_base.html" %}
+{% block title %}Connect domain · Operational Inbox{% endblock %}
+{% block content %}
+  <div class="max-w-2xl">
+    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Choose mail routing</p>
+    <h1 class="mt-2 font-heading text-3xl font-semibold">Connect a domain</h1>
+    <p class="mt-2 max-w-[68ch] text-sm leading-6 text-muted">
+      Choose how email should reach Operational Inbox. We check the domain's current MX records before showing exact setup steps, and we never change DNS for you.
+    </p>
+
+    {% with example_domain=form.hostname.value|default:"yourcompany.com" %}
+      <form method="post" class="mt-7 oi-panel p-5 sm:p-6">
+        {% csrf_token %}
+        {% if form.non_field_errors %}
+          <div class="mb-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>
+        {% endif %}
+
+        <div>
+          <label class="oi-label" for="{{ form.hostname.id_for_label }}">Domain to receive email at</label>
+          {{ form.hostname }}
+          <p class="mt-2 text-xs leading-5 text-muted">
+            Email will look like <code class="font-mono text-ink" data-domain-example>requests@{{ example_domain }}</code>. Use a dedicated subdomain if you want to keep this inbox separate from your main company email.
+          </p>
+          {% for error in form.hostname.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
+        </div>
+
+        <fieldset class="mt-6" aria-describedby="setup-mode-help">
+          <legend class="font-semibold">How should email arrive?</legend>
+          <p id="setup-mode-help" class="mt-1 text-xs leading-5 text-muted">
+            If this domain already has working mailboxes, keep the current provider. If it does not receive email yet, route it directly.
+          </p>
+
+          <div class="mt-3 grid gap-3">
+            {% for choice in form.setup_mode %}
+              <label class="oi-choice-card">
+                <span class="oi-choice-control">{{ choice.tag }}</span>
+                <span class="min-w-0">
+                  <span class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <strong>
+                      {% if choice.data.value == 'PROVIDER_FORWARD' %}Keep your current email provider{% else %}Route this domain directly{% endif %}
+                    </strong>
+                    <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ choice.choice_label }}</span>
+                  </span>
+                  <span class="mt-1 block text-xs leading-5 text-muted">
+                    {% if choice.data.value == 'PROVIDER_FORWARD' %}
+                      Leave MX records unchanged. Add a catch-all rule at Google Workspace, Microsoft 365, or your current provider that forwards unmatched addresses to your private Operational Inbox route.
+                    {% else %}
+                      Point this domain's MX records to Amazon SES. Every address at this domain will be received by Operational Inbox instead of another mail provider.
+                    {% endif %}
+                  </span>
+                  <span class="mt-2 block border-l-2 border-line pl-2 text-xs leading-5 text-ink">
+                    <span class="font-semibold">Example:</span>
+                    {% if choice.data.value == 'PROVIDER_FORWARD' %}
+                      Existing mailboxes stay with your provider; an unmatched address such as <code class="font-mono" data-domain-example>requests@{{ example_domain }}</code> is forwarded here.
+                    {% else %}
+                      <code class="font-mono" data-domain-example>requests@{{ example_domain }}</code> arrives here directly. Existing mailboxes at this domain would no longer receive mail through their old provider.
+                    {% endif %}
+                  </span>
+                </span>
+              </label>
+            {% endfor %}
+          </div>
+          {% for error in form.setup_mode.errors %}<p class="mt-2 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
+        </fieldset>
+
+        <div class="mt-6 flex flex-wrap items-center gap-2">
+          <button class="oi-button-primary">Check domain and continue</button>
+          <a href="{% url 'domains' %}" class="oi-button text-muted hover:text-forest">Cancel</a>
+        </div>
+      </form>
+    {% endwith %}
+  </div>
+
+  <script>
+    (() => {
+      const hostname = document.getElementById("{{ form.hostname.id_for_label }}");
+      const examples = document.querySelectorAll("[data-domain-example]");
+      const updateExamples = () => {
+        const domain = hostname.value.trim().replace(/\.$/, "") || "yourcompany.com";
+        examples.forEach((example) => { example.textContent = `requests@${domain}`; });
+      };
+      hostname?.addEventListener("input", updateExamples);
+      updateExamples();
+    })();
+  </script>
+{% endblock %}

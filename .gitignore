@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 .env-prod
-.deploy/deploy.env
+.deploy/.credentials.env
 .idea/
 .vscode/
 __pycache__/

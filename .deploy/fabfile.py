@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import os
 import shlex
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -28,12 +31,13 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
+load_env(DEPLOY_DIR / ".credentials.env")
 load_env(DEPLOY_DIR / "deploy.env")
 load_env(DEPLOY_DIR.parent / ".env-prod")
 
 PROJECT_NAME = os.environ.get("PROJECT_NAME", "operationalinbox")
 DOMAIN = os.environ.get("DOMAIN", "operationalinbox.com")
-GITHUB_REPO = os.environ.get("GITHUB_REPO", "onurmatik/operational-inbox")
+GITHUB_APP_REPO = os.environ.get("GITHUB_APP_REPO", "onurmatik/operational-inbox")
 DEPLOY_HOST = os.environ.get("DEPLOY_HOST", "46.225.14.95")
 KEY_FILENAME = os.environ.get("KEY_FILENAME", "hetzner-stage")
 DEPLOY_USER = os.environ.get("DEPLOY_USER", "root")
@@ -42,8 +46,7 @@ APP_USER = os.environ.get("APP_USER", "ubuntu")
 PROJECT_DIR = f"/srv/apps/{PROJECT_NAME}"
 VENV_DIR = f"{PROJECT_DIR}/venv"
 BACKUP_DIR = f"/var/backups/{PROJECT_NAME}"
-REPO_URL = f"git@github.com:{GITHUB_REPO}.git"
-GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+REPO_URL = f"https://github.com/{GITHUB_APP_REPO}.git"
 RUNTIME_ENV_KEYS = (
     "MAX_PROJECTS_PER_ORGANIZATION",
     "MAX_DOMAINS_PER_ORGANIZATION",
@@ -79,6 +82,49 @@ RUNTIME_ENV_KEYS = (
 
 def quote(value: str) -> str:
     return shlex.quote(value)
+
+
+def get_github_token() -> str:
+    """Mint a short-lived token locally and fail before touching the server."""
+
+    helper = DEPLOY_DIR / "scripts" / "get_github_app_token.py"
+    if not helper.is_file():
+        raise RuntimeError("GitHub App token helper is missing.")
+    try:
+        result = subprocess.run(  # noqa: S603 - interpreter and helper are fixed local paths.
+            [sys.executable, str(helper)],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("GitHub App token minting timed out.") from exc
+    token = result.stdout.strip()
+    if result.returncode != 0 or not token:
+        raise RuntimeError(
+            "GitHub App token minting failed. Check .deploy/.credentials.env "
+            "and the app installation's repository access."
+        )
+    return token
+
+
+def authenticated_git_command(git_arguments: str, token: str) -> str:
+    auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    header = quote(f"Authorization: Basic {auth}")
+    return (
+        "GIT_TERMINAL_PROMPT=0 git -c credential.helper= "
+        f"-c http.extraHeader={header} {git_arguments}"
+    )
+
+
+def run_authenticated_git(connection: Connection, git_arguments: str, token: str) -> None:
+    result = connection.run(
+        authenticated_git_command(git_arguments, token),
+        warn=True,
+        hide=True,
+    )
+    if result.failed:
+        raise RuntimeError("Authenticated GitHub operation failed.")
 
 
 def app_run(connection: Connection, command: str, *, warn: bool = False):
@@ -173,28 +219,32 @@ fi
 @task
 def deploy(_context) -> None:
     """Deploy the origin/main release to the StageOps Hetzner host."""
+    github_token = get_github_token()
     connection = Connection(
         host=DEPLOY_HOST,
         user=DEPLOY_USER,
-        forward_agent=True,
         connect_kwargs={"key_filename": str(Path(f"~/.ssh/{KEY_FILENAME}").expanduser())},
     )
-    git_prefix = f"GIT_SSH_COMMAND={quote(GIT_SSH_COMMAND)}"
 
     connection.run(f"mkdir -p {quote(PROJECT_DIR)}")
     connection.run(f"chown {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
     if connection.run(f"test -d {quote(PROJECT_DIR + '/.git')}", warn=True, hide=True).ok:
         connection.run(
-            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
-            f"-C {quote(PROJECT_DIR)} fetch origin main --prune"
+            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
+            f"remote set-url origin {quote(REPO_URL)}"
+        )
+        run_authenticated_git(
+            connection,
+            f"-c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
+            "fetch origin main --prune",
+            github_token,
         )
         connection.run(
-            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
-            f"-C {quote(PROJECT_DIR)} checkout main"
+            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} checkout main"
         )
         connection.run(
-            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
-            f"-C {quote(PROJECT_DIR)} reset --hard origin/main"
+            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
+            "reset --hard origin/main"
         )
     else:
         is_empty = connection.run(
@@ -204,7 +254,11 @@ def deploy(_context) -> None:
         ).ok
         if not is_empty:
             raise RuntimeError(f"{PROJECT_DIR} exists and is not an empty Git checkout")
-        connection.run(f"{git_prefix} git clone {quote(REPO_URL)} {quote(PROJECT_DIR)}")
+        run_authenticated_git(
+            connection,
+            f"clone {quote(REPO_URL)} {quote(PROJECT_DIR)}",
+            github_token,
+        )
     connection.run(f"chown -R {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
 
     ensure_runtime_env(connection)

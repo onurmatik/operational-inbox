@@ -6,11 +6,12 @@ tracked and WhiteNoise serves collected static files.
 
 ## Prerequisites
 
-1. Create the private GitHub repository `onurmatik/operational-inbox` and push this project to
-   its `main` branch.
-   Load a GitHub-authorized SSH key into the local agent before deploying, or install a read-only
-   deploy key for that repository on the host. Fabric forwards the local agent and clones over
-   SSH; no GitHub token is written to disk.
+1. Install the deployment GitHub App with read access to the private
+   `onurmatik/operational-inbox` repository. Copy `.credentials.env.example` to the ignored
+   `.credentials.env`, fill its App ID, installation ID, and local private-key path, then set mode
+   `0600`. Fabric mints a short-lived installation token locally and uses it only as an ephemeral
+   HTTPS header for remote Git operations. No GitHub credential is installed on the host or saved
+   in the repository's remote URL.
 2. Deploy the CDK stack in `us-east-1`, create an access key for the emitted
    `operational-inbox-hetzner` IAM user out of band, and place the non-empty runtime values in
    the ignored root `.env-prod` file.
@@ -28,6 +29,10 @@ CR/LF are rejected. The persistent server `.env` is mode `0600` and is updated a
 ## Deploy
 
 ```console
+cp .deploy/.credentials.env.example .deploy/.credentials.env
+chmod 600 .deploy/.credentials.env
+# Fill the three GitHub App values in .deploy/.credentials.env.
+
 python3 -m pip install -r .deploy/requirements.txt
 cd .deploy
 python3 -m fabric deploy

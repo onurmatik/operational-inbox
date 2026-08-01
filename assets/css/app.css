@@ -93,6 +93,25 @@
     @apply mb-1.5 block text-sm font-semibold text-ink;
   }
 
+  .oi-choice-card {
+    @apply flex cursor-pointer items-start gap-3 border border-line bg-white p-4 transition-colors hover:border-forest;
+  }
+
+  .oi-choice-card:has(input:checked) {
+    @apply border-forest bg-paper/60;
+  }
+
+  .oi-choice-control {
+    @apply mt-0.5 flex size-[18px] shrink-0 items-center justify-center;
+  }
+
+  .oi-choice-control input[type="radio"] {
+    width: 16px;
+    height: 16px;
+    flex: none;
+    accent-color: var(--color-forest);
+  }
+
   .oi-panel {
     @apply rounded-none border border-line bg-surface;
   }
