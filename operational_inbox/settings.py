@@ -66,28 +66,16 @@ WSGI_APPLICATION = "operational_inbox.wsgi.application"
 ASGI_APPLICATION = "operational_inbox.asgi.application"
 
 database_url = os.getenv("DJANGO_DATABASE_URL", "sqlite:///db.sqlite3")
-if database_url.startswith("postgres"):
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("POSTGRES_DB", "operational_inbox"),
-            "USER": os.getenv("POSTGRES_USER", "postgres"),
-            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-            "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
-            "PORT": os.getenv("POSTGRES_PORT", "5432"),
-            "CONN_MAX_AGE": 60,
-            "OPTIONS": {"connect_timeout": 20},
-        }
+if not database_url.startswith("sqlite:///"):
+    raise ImproperlyConfigured("DJANGO_DATABASE_URL must use the sqlite:/// scheme.")
+sqlite_path = database_url.removeprefix("sqlite:///")
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / sqlite_path,
+        "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
     }
-else:
-    sqlite_path = database_url.removeprefix("sqlite:///")
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / sqlite_path,
-            "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
-        }
-    }
+}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

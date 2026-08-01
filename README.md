@@ -221,7 +221,7 @@ Automatic acknowledgements and every form of autonomous external reply are disab
 - Python 3.12
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js/npm only for local Tailwind and CDK work
-- SQLite 3 (the default) or PostgreSQL for compatibility testing
+- SQLite 3
 
 ### Setup
 
@@ -297,8 +297,7 @@ python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
 - dedicated AWS `us-east-1` credentials plus bucket, queue, topic, configuration-set, and
   receipt-rule names;
 - OpenAI API key and model names;
-- backup encryption key and destination;
-- optional PostgreSQL connection values.
+- backup encryption key and destination.
 
 Production AWS credentials belong only in ignored `.env-prod` and the mode-`0600` server `.env`.
 Use a dedicated access key created out of band for the stack's least-privilege IAM user. CDK does
@@ -316,10 +315,8 @@ credential-compromise boundary, deploy the email data plane in a dedicated AWS a
 account, use an out-of-band policy reconciler that replaces the wildcard with the current managed
 identity ARNs.
 
-SQLite uses WAL, a 20-second busy timeout, `IMMEDIATE` short transactions, one Gunicorn worker,
-and two threads. PostgreSQL is supported through the same models and is exercised separately in
-CI; it is the intended next step when sustained concurrent writes or multiple application workers
-become necessary.
+SQLite is the only configured application database. It uses WAL, a 20-second busy timeout,
+`IMMEDIATE` short transactions, one Gunicorn worker, and two threads.
 
 ## API
 
@@ -485,14 +482,13 @@ uv run pytest
 uv run python manage.py makemigrations --check --dry-run
 npm run css:build
 npx cdk synth --quiet
-DJANGO_DEBUG=false DJANGO_SECRET_KEY=ci-only-not-for-production \
+DJANGO_DEBUG=false DJANGO_SECRET_KEY=local-deploy-check-secret-key-with-at-least-fifty-characters-000000 \
   DJANGO_ALLOWED_HOSTS=operationalinbox.com \
   DJANGO_SECURE_COOKIES=true DJANGO_SECURE_SSL_REDIRECT=true \
   uv run python manage.py check --deploy
 ```
 
-CI repeats linting, formatting, typing, coverage, SQLite and PostgreSQL tests, migration drift,
-OpenAPI and Tailwind drift, Django's deployment checks, and CDK assertions/synthesis.
+These checks are intentionally local; this repository does not install a GitHub Actions workflow.
 
 ## MVP boundaries
 
