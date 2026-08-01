@@ -109,6 +109,8 @@ def test_deploy_contract_uses_private_ssh_and_fixed_production_mail_backend():
     source = (Path(__file__).parents[1] / ".deploy" / "fabfile.py").read_text()
     assert 'REPO_URL = f"git@github.com:' in source
     assert "forward_agent=True" in source
+    assert 'git_prefix = f"GIT_SSH_COMMAND={quote(GIT_SSH_COMMAND)}"' in source
+    assert "env=git_environment" not in source
     assert "safe.directory=" in source
     assert "DJANGO_EMAIL_BACKEND=ses" in source
     assert '"DJANGO_EMAIL_BACKEND",' not in source

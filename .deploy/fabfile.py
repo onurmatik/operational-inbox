@@ -43,6 +43,7 @@ PROJECT_DIR = f"/srv/apps/{PROJECT_NAME}"
 VENV_DIR = f"{PROJECT_DIR}/venv"
 BACKUP_DIR = f"/var/backups/{PROJECT_NAME}"
 REPO_URL = f"git@github.com:{GITHUB_REPO}.git"
+GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 RUNTIME_ENV_KEYS = (
     "MAX_PROJECTS_PER_ORGANIZATION",
     "MAX_DOMAINS_PER_ORGANIZATION",
@@ -178,26 +179,22 @@ def deploy(_context) -> None:
         forward_agent=True,
         connect_kwargs={"key_filename": str(Path(f"~/.ssh/{KEY_FILENAME}").expanduser())},
     )
-    git_environment = {
-        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-    }
+    git_prefix = f"GIT_SSH_COMMAND={quote(GIT_SSH_COMMAND)}"
 
     connection.run(f"mkdir -p {quote(PROJECT_DIR)}")
     connection.run(f"chown {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
     if connection.run(f"test -d {quote(PROJECT_DIR + '/.git')}", warn=True, hide=True).ok:
         connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
-            "fetch origin main --prune",
-            env=git_environment,
+            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
+            f"-C {quote(PROJECT_DIR)} fetch origin main --prune"
         )
         connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} checkout main",
-            env=git_environment,
+            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
+            f"-C {quote(PROJECT_DIR)} checkout main"
         )
         connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
-            "reset --hard origin/main",
-            env=git_environment,
+            f"{git_prefix} git -c safe.directory={quote(PROJECT_DIR)} "
+            f"-C {quote(PROJECT_DIR)} reset --hard origin/main"
         )
     else:
         is_empty = connection.run(
@@ -207,7 +204,7 @@ def deploy(_context) -> None:
         ).ok
         if not is_empty:
             raise RuntimeError(f"{PROJECT_DIR} exists and is not an empty Git checkout")
-        connection.run(f"git clone {quote(REPO_URL)} {quote(PROJECT_DIR)}", env=git_environment)
+        connection.run(f"{git_prefix} git clone {quote(REPO_URL)} {quote(PROJECT_DIR)}")
     connection.run(f"chown -R {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
 
     ensure_runtime_env(connection)
