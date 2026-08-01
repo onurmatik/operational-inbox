@@ -8,6 +8,7 @@ from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 import pytest
+from django.core.exceptions import ValidationError
 from django.core.mail import EmailMessage as DjangoEmailMessage
 from django.test import override_settings
 from django.urls import reverse
@@ -22,6 +23,7 @@ from inbox.models import (
     DomainDNSRecord,
     DomainTest,
     DurableJob,
+    InboundRoute,
     IngressEvent,
     Message,
     MessageRecipient,
@@ -34,6 +36,7 @@ from inbox.models import (
 )
 from inbox.services.domains import (
     apply_domain_readiness,
+    build_dns_instructions,
     create_domain,
     create_domain_test,
     expire_unverified_claims,
@@ -213,9 +216,57 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
         ownership_verified=True,
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
-    test, address = create_domain_test(domain)
+    local_part = f"route-{domain.id.hex[:12]}"
+    InboundRoute.objects.create(
+        organization=organization,
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part=local_part,
+        address=f"{local_part}@inbound.example.net",
+    )
+    build_dns_instructions(
+        domain,
+        verification_token="ownership-proof",
+        dkim_tokens=[],
+    )
+    domain.dns_records.filter(is_required=True).update(
+        status=DomainDNSRecord.Status.VALID
+    )
+    reconciler = Mock()
+    test, address = create_domain_test(domain, receipt_rule_reconciler=reconciler)
     assert address.startswith("test-") and address.endswith(f"@{domain.hostname}")
     assert len(test.token_hash) == 64
+    with pytest.raises(ValidationError, match="generated recently"):
+        create_domain_test(domain, receipt_rule_reconciler=reconciler)
+    assert reconciler.call_count == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "status",
+    [
+        Domain.Status.PROVISIONING,
+        Domain.Status.PENDING_DNS,
+        Domain.Status.ERROR,
+        Domain.Status.DISABLED,
+    ],
+)
+def test_delivery_test_rejects_premature_domain_states(
+    organization, project, status
+):
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname=f"{status.casefold().replace('_', '-')}.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=status,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+
+    with pytest.raises(ValidationError, match="Verify the required DNS records"):
+        create_domain_test(domain, receipt_rule_reconciler=lambda: None)
+
+    assert not DomainTest.objects.filter(domain=domain).exists()
 
 
 @pytest.mark.django_db

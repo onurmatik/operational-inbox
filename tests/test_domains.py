@@ -218,3 +218,68 @@ def test_reclaimed_domain_reuses_only_a_previously_managed_ses_identity(organiza
     foreign.refresh_from_db()
     assert foreign.status == Domain.Status.ERROR
     assert foreign.error_code == "ses_identity_collision"
+
+
+@pytest.mark.django_db
+def test_provisioning_cannot_resurrect_a_domain_disabled_during_aws_calls(
+    organization, project
+):
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname="disabled-during-provision.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {
+        "VerificationAttributes": {}
+    }
+    ses.verify_domain_identity.return_value = {"VerificationToken": "proof"}
+
+    def disable_before_dkim_finishes(**kwargs):
+        Domain.objects.filter(id=domain.id).update(status=Domain.Status.DISABLED)
+        return {"DkimTokens": ["one", "two", "three"]}
+
+    ses.verify_domain_dkim.side_effect = disable_before_dkim_finishes
+
+    result = provision_ses_identity(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert result.status == Domain.Status.DISABLED
+    assert domain.status == Domain.Status.DISABLED
+    assert domain.ses_identity_status == "MANAGED"
+    assert not domain.dns_records.exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "status",
+    [
+        Domain.Status.PENDING_DNS,
+        Domain.Status.PENDING_TEST,
+        Domain.Status.READY,
+        Domain.Status.DEGRADED,
+        Domain.Status.ERROR,
+    ],
+)
+def test_replayed_provisioning_never_regresses_an_advanced_domain(
+    organization, project, status
+):
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname=f"replayed-{status.casefold().replace('_', '-')}.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=status,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    ses = Mock()
+
+    result = provision_ses_identity(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert result.status == status
+    assert domain.status == status
+    ses.get_identity_verification_attributes.assert_not_called()

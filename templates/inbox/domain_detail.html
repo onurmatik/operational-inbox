@@ -8,47 +8,122 @@
 
   <div class="flex flex-col gap-4 border-b border-line pb-6 sm:flex-row sm:items-end sm:justify-between">
     <div>
-      <span id="domain-status" class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
-        {{ domain.get_status_display }}
+      <span id="domain-status" data-status="{{ domain.status }}" class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
+        {% if domain.status == 'PROVISIONING' %}Preparing DNS instructions{% elif domain.status == 'PENDING_DNS' %}Action required{% elif domain.status == 'PENDING_TEST' %}Test required{% else %}{{ domain.get_status_display }}{% endif %}
       </span>
       <h1 class="mt-3 font-heading text-3xl font-semibold">{{ domain.hostname }}</h1>
-      <p class="mt-1 text-sm text-muted">{{ domain.get_setup_mode_display }} · project {{ domain.project.name }}</p>
+      <p class="mt-1 text-sm text-muted">
+        {% if domain.setup_mode == 'DIRECT_MX' %}Incoming email routes directly to Operational Inbox{% else %}Incoming email is forwarded by your current provider{% endif %}
+        · project {{ domain.project.name }}
+      </p>
     </div>
     <div class="flex flex-wrap gap-2">
-      <button
-        id="dns-check-button"
-        type="button"
-        class="oi-button-secondary"
-        data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
-        data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
-      >Check DNS now</button>
-      <form method="post" action="{% url 'domain_create_test' domain.id %}">
-        {% csrf_token %}
-        <button class="oi-button-primary">Create test delivery</button>
-      </form>
-      <form method="post" action="{% url 'domain_disable' domain.id %}" onsubmit="return confirm('Disable this domain and all inbound routes?')">
-        {% csrf_token %}
-        <button class="oi-button-secondary text-coral-strong">Disable</button>
-      </form>
+      {% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}
+        <button
+          id="dns-check-button"
+          type="button"
+          class="oi-button-primary"
+          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-last-checked="{{ domain.last_checked_at|date:'c' }}"
+        >I've updated DNS — Check records</button>
+      {% elif domain.status == 'PENDING_TEST' %}
+        {% if not new_test_address %}
+          <form method="post" action="{% url 'domain_create_test' domain.id %}" data-domain-test-form aria-busy="false">
+            {% csrf_token %}
+            <button class="oi-button-primary">Generate test address</button>
+          </form>
+        {% endif %}
+        <button
+          id="dns-check-button"
+          type="button"
+          class="oi-button-secondary"
+          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-last-checked="{{ domain.last_checked_at|date:'c' }}"
+        >Check DNS again</button>
+      {% elif domain.status == 'READY' %}
+        <button
+          id="dns-check-button"
+          type="button"
+          class="oi-button-secondary"
+          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-last-checked="{{ domain.last_checked_at|date:'c' }}"
+        >Check DNS now</button>
+      {% endif %}
     </div>
   </div>
 
   <div id="dns-check-feedback" class="mt-5 hidden border p-4 text-sm" role="status" aria-live="polite"></div>
 
-  <section class="mt-6 grid gap-3 sm:grid-cols-2" aria-label="Domain readiness">
-    <div class="oi-panel p-4">
-      <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Inbound readiness</p>
-      <p class="mt-2 font-semibold {% if domain.inbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
-        {% if domain.inbound_ready %}Ready to receive{% else %}Waiting for DNS and test delivery{% endif %}
+  {% if domain.status == 'PROVISIONING' %}
+    <section
+      class="mt-6 border border-blue-strong/40 bg-blue-soft p-5 text-blue-strong"
+      aria-live="polite"
+      aria-busy="true"
+      data-provisioning-poll
+      data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+    >
+      <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">Automatic step</p>
+      <h2 class="mt-2 font-heading text-lg font-semibold">Preparing your DNS instructions</h2>
+      <p class="mt-2 max-w-2xl text-sm leading-6">
+        We're creating the exact records needed to connect {{ domain.hostname }}. There's nothing for you to change yet, and we have not changed your DNS. This page will update automatically when the records are ready.
       </p>
-    </div>
-    <div class="oi-panel p-4">
-      <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Outbound readiness</p>
-      <p class="mt-2 font-semibold {% if domain.outbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
-        {% if domain.outbound_ready %}SES identity and DKIM ready{% else %}Waiting for SES identity and DKIM{% endif %}
-      </p>
-    </div>
-  </section>
+      <p class="mt-3 text-xs" data-provisioning-status>This normally takes up to five minutes.</p>
+    </section>
+
+    <section class="mt-6 oi-panel p-5">
+      <h2 class="font-heading text-lg font-semibold">What happens next</h2>
+      <ol class="mt-4 grid gap-4 text-sm sm:grid-cols-3">
+        <li><strong class="block">1. Open your DNS provider</strong><span class="mt-1 block text-muted">Use the service that manages DNS for {{ domain.hostname }}.</span></li>
+        <li><strong class="block">2. Add the exact records</strong><span class="mt-1 block text-muted">We'll show each host, value, and priority here.</span></li>
+        <li><strong class="block">3. Verify and test</strong><span class="mt-1 block text-muted">Return here to check DNS and send one real test email.</span></li>
+      </ol>
+    </section>
+  {% elif domain.status == 'PENDING_DNS' %}
+    <section class="mt-6 border border-gold-strong/40 bg-gold-soft p-5 text-gold-strong">
+      <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">Action required · DNS setup</p>
+      <h2 class="mt-2 font-heading text-lg font-semibold">Update DNS for {{ domain.hostname }}</h2>
+      <p class="mt-2 max-w-2xl text-sm leading-6">Open the DNS settings at the provider that manages {{ domain.hostname }} and add the records below exactly as shown. Operational Inbox can verify these records, but cannot change them for you.</p>
+      {% if domain.setup_mode == 'DIRECT_MX' %}
+        <p class="mt-3 border-l-2 border-gold-strong pl-3 text-sm font-semibold">Adding the MX record below will route incoming email for every address at {{ domain.hostname }} to Operational Inbox.</p>
+      {% endif %}
+    </section>
+  {% elif domain.status == 'PENDING_TEST' %}
+    <section class="mt-6 border border-mint-strong/40 bg-mint-soft p-5 text-mint-strong">
+      <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">DNS verified · Final check</p>
+      <h2 class="mt-2 font-heading text-lg font-semibold">Confirm delivery with a real email</h2>
+      <p class="mt-2 max-w-2xl text-sm leading-6">The required DNS records are verified. Generate a private test address, then send one real email to confirm that the complete receiving path works.</p>
+    </section>
+  {% elif domain.status == 'READY' %}
+    <section class="mt-6 border border-mint-strong/40 bg-mint-soft p-5 text-mint-strong">
+      <h2 class="font-heading text-lg font-semibold">{{ domain.hostname }} is connected</h2>
+      <p class="mt-2 text-sm">Incoming delivery has been verified with a real test email.</p>
+    </section>
+  {% elif domain.status == 'DEGRADED' %}
+    <section class="mt-6 border border-coral-strong/40 bg-coral-soft p-5 text-coral-strong">
+      <h2 class="font-heading text-lg font-semibold">DNS needs attention</h2>
+      <p class="mt-2 text-sm">A required record no longer matches. Correct the affected records below, then check DNS again.</p>
+    </section>
+  {% endif %}
+
+  {% if domain.status != 'PROVISIONING' and domain.status != 'ERROR' and domain.status != 'DISABLED' %}
+    <section class="mt-6 grid gap-3 sm:grid-cols-2" aria-label="Domain readiness">
+      <div class="oi-panel p-4">
+        <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Receiving</p>
+        <p class="mt-2 font-semibold {% if domain.inbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
+          {% if domain.inbound_ready %}Ready to receive{% elif domain.status == 'PENDING_TEST' %}Waiting for a real test email{% else %}Waiting for required DNS records{% endif %}
+        </p>
+      </div>
+      <div class="oi-panel p-4">
+        <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Sending</p>
+        <p class="mt-2 font-semibold {% if domain.outbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
+          {% if domain.outbound_ready %}Verified for sending{% else %}Waiting for domain and DKIM verification{% endif %}
+        </p>
+      </div>
+    </section>
+  {% endif %}
 
   {% if domain.error_message %}
     <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-4 text-sm text-coral-strong">
@@ -57,7 +132,7 @@
     </div>
   {% endif %}
 
-  {% if new_test_address %}
+  {% if new_test_address and domain.status == 'PENDING_TEST' %}
     <div class="mt-5 border border-blue-strong/40 bg-blue-soft p-4">
       <p class="font-semibold text-blue-strong">Send a real email to this address within 24 hours:</p>
       <div class="mt-2 flex items-center gap-2">
@@ -69,54 +144,69 @@
   {% endif %}
 
   {% if domain.setup_mode == 'PROVIDER_FORWARD' %}
-    {% with route=domain.inbound_routes.all.0 %}
-      {% if route %}
-        <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5">
-          <h2 class="font-heading text-lg font-semibold text-blue-strong">Provider catch-all forwarding</h2>
-          <p class="mt-2 text-sm text-blue-strong">Keep the current MX records. Configure your mail provider's catch-all to forward to this private, high-entropy route:</p>
-          <div class="mt-3 flex items-center gap-2">
-            <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ route.address }}</code>
-            <button type="button" class="oi-button-secondary" data-copy="#forwarding-route">Copy</button>
-          </div>
-        </section>
-      {% endif %}
-    {% endwith %}
+    {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
+      {% with route=domain.inbound_routes.all.0 %}
+        {% if route %}
+          <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5">
+            <h2 class="font-heading text-lg font-semibold text-blue-strong">Provider catch-all forwarding</h2>
+            <p class="mt-2 text-sm text-blue-strong">Keep the current MX records. Configure your mail provider's catch-all to forward to this private, high-entropy route:</p>
+            <div class="mt-3 flex items-center gap-2">
+              <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ route.address }}</code>
+              <button type="button" class="oi-button-secondary" data-copy="#forwarding-route">Copy</button>
+            </div>
+          </section>
+        {% endif %}
+      {% endwith %}
+    {% endif %}
   {% endif %}
 
-  <section class="mt-8">
-    <div class="mb-3">
-      <h2 class="font-heading text-lg font-semibold">Exact DNS checklist</h2>
-      <p class="text-sm text-muted">Add these records at your DNS provider. The application verifies them but never writes them.</p>
-    </div>
-    <div class="oi-panel overflow-x-auto">
-      <table class="w-full min-w-[760px] text-left text-sm">
-        <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase text-muted">
-          <tr><th class="px-4 py-3">Purpose</th><th class="px-4 py-3">Type</th><th class="px-4 py-3">Host</th><th class="px-4 py-3">Exact value</th><th class="px-4 py-3">Status</th></tr>
-        </thead>
-        <tbody class="divide-y divide-line">
-          {% for record in domain.dns_records.all %}
-            <tr>
-              <td class="px-4 py-4">{{ record.get_purpose_display }}{% if not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}</td>
-              <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
-              <td class="px-4 py-4"><code id="dns-name-{{ record.id }}" class="break-all font-mono text-xs">{{ record.name }}</code></td>
-              <td class="px-4 py-4">
-                <div class="flex items-start gap-2">
-                  <code id="dns-value-{{ record.id }}" class="max-w-md break-all bg-paper px-2 py-1 font-mono text-xs">{% if record.priority %}{{ record.priority }} {% endif %}{{ record.value }}</code>
-                  <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-value-{{ record.id }}">Copy</button>
-                </div>
-              </td>
-              <td class="px-4 py-4">
-                <span class="{% if record.status == 'VALID' %}oi-status oi-status-ready{% elif record.status == 'INVALID' or record.status == 'MISSING' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{{ record.get_status_display }}</span>
-                {% if record.error_message %}<p class="mt-2 max-w-xs text-xs text-coral-strong">{{ record.error_message }}</p>{% endif %}
-              </td>
-            </tr>
-          {% empty %}
-            <tr><td colspan="5" class="p-8 text-center text-sm text-muted">SES identity provisioning is queued. DNS records will appear here after reconciliation.</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+  {% with dns_records=domain.dns_records.all %}
+    {% if dns_records %}
+      {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
+        <section class="mt-8">
+        <div class="mb-3">
+          <h2 class="font-heading text-lg font-semibold">{% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
+          <p class="text-sm text-muted">Copy each record exactly into your DNS provider. Operational Inbox verifies these values but never changes DNS for you.</p>
+        </div>
+        <div class="oi-panel overflow-x-auto">
+          <table class="w-full min-w-[820px] text-left text-sm">
+            <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase text-muted">
+              <tr><th class="px-4 py-3">Purpose</th><th class="px-4 py-3">Type</th><th class="px-4 py-3">Name / Host</th><th class="px-4 py-3">Priority</th><th class="px-4 py-3">Value / Points to</th><th class="px-4 py-3">Status</th></tr>
+            </thead>
+            <tbody class="divide-y divide-line">
+              {% for record in dns_records %}
+                <tr>
+                  <td class="px-4 py-4">
+                    {{ record.get_purpose_display }}
+                    {% if record.purpose == 'DKIM' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
+                  </td>
+                  <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
+                  <td class="px-4 py-4">
+                    <div class="flex items-start gap-2">
+                      <code id="dns-name-{{ record.id }}" class="break-all font-mono text-xs">{{ record.name }}</code>
+                      <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-name-{{ record.id }}" aria-label="Copy DNS host">Copy</button>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4 font-mono">{{ record.priority|default:"—" }}</td>
+                  <td class="px-4 py-4">
+                    <div class="flex items-start gap-2">
+                      <code id="dns-value-{{ record.id }}" class="max-w-md break-all bg-paper px-2 py-1 font-mono text-xs">{{ record.value }}</code>
+                      <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-value-{{ record.id }}" aria-label="Copy DNS value">Copy</button>
+                    </div>
+                  </td>
+                  <td class="px-4 py-4">
+                    <span class="{% if record.status == 'VALID' %}oi-status oi-status-ready{% elif record.status == 'INVALID' or record.status == 'MISSING' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{{ record.get_status_display }}</span>
+                    {% if record.error_message %}<p class="mt-2 max-w-xs text-xs text-coral-strong">{{ record.error_message }}</p>{% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        </section>
+      {% endif %}
+    {% endif %}
+  {% endwith %}
 
   {% if domain.existing_mx %}
     <section class="mt-8 border border-gold-strong/40 bg-gold-soft p-5">
@@ -128,7 +218,67 @@
     </section>
   {% endif %}
 
+  {% if domain.status != 'DISABLED' %}
+    <section class="mt-10 flex flex-col gap-4 border-t border-line pt-5 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h2 class="font-semibold">{% if domain.status == 'PROVISIONING' %}Stop this setup{% else %}Disable this domain{% endif %}</h2>
+        <p class="mt-1 text-xs text-muted">This stops inbound routing and removes the domain from active setup.</p>
+      </div>
+      <form method="post" action="{% url 'domain_disable' domain.id %}" onsubmit="return confirm('Disable this domain and all inbound routes?')">
+        {% csrf_token %}
+        <button class="oi-button-secondary text-coral-strong">{% if domain.status == 'PROVISIONING' %}Stop setup{% else %}Disable domain{% endif %}</button>
+      </form>
+    </section>
+  {% endif %}
+
   <script>
+    document.addEventListener("submit", (event) => {
+      const form = event.target.closest("[data-domain-test-form]");
+      if (!form) return;
+      if (form.getAttribute("aria-busy") === "true") {
+        event.preventDefault();
+        return;
+      }
+      form.setAttribute("aria-busy", "true");
+      const button = form.querySelector("button");
+      button.disabled = true;
+      button.textContent = "Generating test address…";
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const provisioningPanel = document.querySelector("[data-provisioning-poll]");
+      if (!provisioningPanel) return;
+      const statusText = provisioningPanel.querySelector("[data-provisioning-status]");
+      const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+      const poll = async () => {
+        let consecutiveErrors = 0;
+        for (let attempt = 0; attempt < 72; attempt += 1) {
+          await wait(attempt === 0 ? 2000 : 5000);
+          try {
+            const domain = await window.OperationalInbox.request(provisioningPanel.dataset.detailUrl);
+            consecutiveErrors = 0;
+            if (domain.status !== "PROVISIONING") {
+              window.location.reload();
+              return;
+            }
+            if (domain.error?.message) {
+              statusText.textContent = domain.error.message;
+            }
+          } catch (error) {
+            consecutiveErrors += 1;
+            if (consecutiveErrors >= 3) {
+              provisioningPanel.setAttribute("aria-busy", "false");
+              statusText.textContent = "We couldn't refresh this status automatically. Reload the page to try again.";
+              return;
+            }
+          }
+        }
+        provisioningPanel.setAttribute("aria-busy", "false");
+        statusText.textContent = "Setup is still continuing in the background. You can leave this page and return later.";
+      };
+      poll();
+    });
+
     document.addEventListener("click", async (event) => {
       const copyButton = event.target.closest("[data-copy]");
       if (copyButton) {
@@ -147,24 +297,30 @@
         feedback.textContent = message;
       };
       checkButton.disabled = true;
+      feedback.setAttribute("aria-busy", "true");
       try {
+        const beforeCheck = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
         await window.OperationalInbox.request(checkButton.dataset.checkUrl, {method: "POST"});
-        showFeedback("DNS check queued. This page will refresh when the worker records a result.");
-        const initialStatus = document.getElementById("domain-status").textContent.trim().toUpperCase();
+        showFeedback("Checking public DNS. Changes can take a little while to become visible; this page will refresh when the check finishes.");
+        const initialStatus = beforeCheck.status;
+        const initialCheckedAt = beforeCheck.last_checked_at || "";
         for (let attempt = 0; attempt < 36; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 5000));
           const domain = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
-          const hasPendingRecord = (domain.dns_records || []).some((record) => record.status === "PENDING");
-          if (domain.error || domain.status === "READY" || domain.status === "DEGRADED" || (!hasPendingRecord && domain.status !== initialStatus)) {
+          if (
+            domain.status !== initialStatus ||
+            (domain.last_checked_at && domain.last_checked_at !== initialCheckedAt)
+          ) {
             window.location.reload();
             return;
           }
         }
-        showFeedback("The check is still queued. Background verification will continue; refresh shortly.");
+        showFeedback("The check is still running in the background. You can leave this page and return later.");
       } catch (error) {
-        showFeedback(error.message || "The DNS check could not be queued.", true);
+        showFeedback(error.message || "The DNS check could not be started.", true);
       } finally {
         checkButton.disabled = false;
+        feedback.setAttribute("aria-busy", "false");
       }
     });
   </script>

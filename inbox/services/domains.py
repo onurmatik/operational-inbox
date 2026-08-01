@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -218,6 +219,15 @@ def expire_unverified_claims() -> int:
 
 def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
     if domain.status == Domain.Status.DISABLED:
+        if domain.ses_identity_status == "PROVISIONING":
+            Domain.objects.filter(
+                id=domain.id,
+                status=Domain.Status.DISABLED,
+                ses_identity_status="PROVISIONING",
+            ).update(ses_identity_status="MANAGED", updated_at=timezone.now())
+            domain.ses_identity_status = "MANAGED"
+        return domain
+    if domain.status != Domain.Status.PROVISIONING:
         return domain
     client = ses_client or boto3.client("ses", region_name=settings.AWS_REGION)
     attributes = client.get_identity_verification_attributes(Identities=[domain.hostname]).get(
@@ -237,54 +247,110 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
         }
         and not previously_managed
     ):
-        domain.status = Domain.Status.ERROR
-        domain.error_code = "ses_identity_collision"
-        domain.error_message = (
-            "This SES identity already exists and was not created by Operational Inbox. "
-            "Manual review is required."
-        )
-        domain.save(update_fields=("status", "error_code", "error_message", "updated_at"))
-        return domain
+        with transaction.atomic():
+            locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+            if locked_domain.status == Domain.Status.DISABLED:
+                return locked_domain
+            if locked_domain.status != Domain.Status.PROVISIONING:
+                return locked_domain
+            locked_domain.status = Domain.Status.ERROR
+            locked_domain.error_code = "ses_identity_collision"
+            locked_domain.error_message = (
+                "This SES identity already exists and was not created by Operational Inbox. "
+                "Manual review is required."
+            )
+            locked_domain.save(
+                update_fields=("status", "error_code", "error_message", "updated_at")
+            )
+            return locked_domain
     if domain.hostname not in attributes and domain.ses_identity_status != "PROVISIONING":
         domain.ses_identity_status = "PROVISIONING"
         domain.save(update_fields=("ses_identity_status", "updated_at"))
     verification = client.verify_domain_identity(Domain=domain.hostname)
     dkim = client.verify_domain_dkim(Domain=domain.hostname)
-    build_dns_instructions(
-        domain,
-        verification_token=str(verification["VerificationToken"]),
-        dkim_tokens=[str(value) for value in dkim.get("DkimTokens", [])],
-    )
-    domain.ses_identity_status = "MANAGED"
-    domain.status = Domain.Status.PENDING_DNS
-    domain.error_code = ""
-    domain.error_message = ""
-    domain.save(
-        update_fields=(
-            "ses_identity_status",
-            "status",
-            "error_code",
-            "error_message",
-            "updated_at",
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        if locked_domain.status == Domain.Status.DISABLED:
+            if locked_domain.ses_identity_status == "PROVISIONING":
+                locked_domain.ses_identity_status = "MANAGED"
+                locked_domain.save(update_fields=("ses_identity_status", "updated_at"))
+            return locked_domain
+        if locked_domain.status != Domain.Status.PROVISIONING:
+            return locked_domain
+        build_dns_instructions(
+            locked_domain,
+            verification_token=str(verification["VerificationToken"]),
+            dkim_tokens=[str(value) for value in dkim.get("DkimTokens", [])],
         )
-    )
-    return domain
+        locked_domain.ses_identity_status = "MANAGED"
+        locked_domain.status = Domain.Status.PENDING_DNS
+        locked_domain.error_code = ""
+        locked_domain.error_message = ""
+        locked_domain.save(
+            update_fields=(
+                "ses_identity_status",
+                "status",
+                "error_code",
+                "error_message",
+                "updated_at",
+            )
+        )
+        return locked_domain
 
 
-@transaction.atomic
-def create_domain_test(domain: Domain) -> tuple[DomainTest, str]:
+def _assert_domain_test_ready(domain: Domain) -> None:
+    required_records = domain.dns_records.filter(is_required=True)
+    if (
+        domain.status != Domain.Status.PENDING_TEST
+        or not domain.ownership_verified
+        or not required_records.exists()
+        or required_records.exclude(status=DomainDNSRecord.Status.VALID).exists()
+        or not domain.inbound_routes.filter(is_active=True).exists()
+    ):
+        raise ValidationError(
+            "Verify the required DNS records before generating a test address."
+        )
+
+
+def _assert_domain_test_cooldown(domain: Domain, *, now=None) -> None:
+    now = now or timezone.now()
+    cooldown_started_at = now - timedelta(seconds=settings.DOMAIN_TEST_COOLDOWN_SECONDS)
+    if domain.tests.filter(created_at__gte=cooldown_started_at).exists():
+        raise ValidationError(
+            "A test address was generated recently. Use that address or wait a minute "
+            "before generating another one."
+        )
+
+
+def create_domain_test(
+    domain: Domain, *, receipt_rule_reconciler: Callable[[], object] | None = None
+) -> tuple[DomainTest, str]:
+    _assert_domain_test_ready(domain)
+    _assert_domain_test_cooldown(domain)
+    if receipt_rule_reconciler is None:
+        from inbox.services.receipt_rules import reconcile_receipt_rule
+
+        receipt_rule_reconciler = reconcile_receipt_rule
+    # Ensure SES can actually accept the test before revealing a one-time
+    # address. Keep this network call outside the SQLite write transaction.
+    receipt_rule_reconciler()
+
     raw = secrets.token_urlsafe(24).lower()
     local_part = f"test-{raw}"
-    test = DomainTest.objects.create(
-        organization=domain.organization,
-        domain=domain,
-        token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        expires_at=timezone.now() + timedelta(hours=24),
-    )
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        _assert_domain_test_ready(locked_domain)
+        _assert_domain_test_cooldown(locked_domain)
+        test = DomainTest.objects.create(
+            organization=locked_domain.organization,
+            domain=locked_domain,
+            token_hash=hashlib.sha256(raw.encode()).hexdigest(),
+            expires_at=timezone.now() + timedelta(hours=24),
+        )
     # The customer sends to its own domain. Direct mode therefore exercises the
     # customer MX; forwarding mode exercises the provider catch-all before the
     # envelope reaches the tenant's high-entropy service route.
-    return test, f"{local_part}@{domain.hostname}"
+    return test, f"{local_part}@{locked_domain.hostname}"
 
 
 def apply_domain_readiness(

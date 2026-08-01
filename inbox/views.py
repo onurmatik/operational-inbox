@@ -86,6 +86,33 @@ PENDING_DOMAIN_SESSION_KEY = "pending_domain"
 MAGIC_LINK_SCOPE = "operational-inbox-login"
 MAGIC_LINK_MAX_AGE_SECONDS = 10 * 60
 ONBOARDING_STATE_SALT = "operational-inbox-onboarding-v1"
+DOMAIN_TEST_SESSION_PREFIX = "domain_test_address:"
+
+
+def _domain_test_session_key(domain_id: uuid.UUID) -> str:
+    return f"{DOMAIN_TEST_SESSION_PREFIX}{domain_id}"
+
+
+def _active_domain_test_address(request: HttpRequest, domain: Domain) -> str | None:
+    key = _domain_test_session_key(domain.id)
+    if domain.status in {Domain.Status.READY, Domain.Status.ERROR, Domain.Status.DISABLED}:
+        request.session.pop(key, None)
+        return None
+    payload = request.session.get(key)
+    if not isinstance(payload, dict):
+        request.session.pop(key, None)
+        return None
+    address = payload.get("address")
+    expires_at = payload.get("expires_at")
+    if (
+        not isinstance(address, str)
+        or not address
+        or not isinstance(expires_at, (int, float))
+        or expires_at <= timezone.now().timestamp()
+    ):
+        request.session.pop(key, None)
+        return None
+    return address
 
 
 def _unique_slug(model, *, organization=None, value: str) -> str:
@@ -1017,7 +1044,10 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
             )
             _audit(organization, request, "domain.claim_created", domain)
             request.session.pop(PENDING_DOMAIN_SESSION_KEY, None)
-            messages.success(request, "Domain claim created. Provisioning has been queued.")
+            messages.success(
+                request,
+                f"{domain.hostname} was added. We're preparing your DNS instructions.",
+            )
             return redirect("domain_detail", domain_id=domain.id)
     return render(
         request,
@@ -1040,7 +1070,7 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         {
             "active_nav": "domains",
             "domain": domain,
-            "new_test_address": request.session.pop(f"domain_test_address:{domain.id}", None),
+            "new_test_address": _active_domain_test_address(request, domain),
         },
     )
 
@@ -1050,10 +1080,27 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     organization = current_organization(request)
     domain = tenant_get_or_404(Domain.objects, organization=organization, id=domain_id)
-    _, address = create_domain_test(domain)
-    request.session[f"domain_test_address:{domain.id}"] = address
-    _audit(organization, request, "domain.test_created", domain)
-    messages.success(request, "A new 24-hour test-delivery address was created.")
+    try:
+        test, address = create_domain_test(domain)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    except Exception:
+        logger.exception("Domain test route activation failed", extra={"domain_id": domain.id})
+        messages.error(
+            request,
+            "The receiving route is still being activated. "
+            "Try generating the test address again shortly.",
+        )
+    else:
+        request.session[_domain_test_session_key(domain.id)] = {
+            "address": address,
+            "expires_at": test.expires_at.timestamp(),
+        }
+        _audit(organization, request, "domain.test_created", domain)
+        messages.success(
+            request,
+            "Test address generated. Send a real email to it within 24 hours.",
+        )
     return redirect("domain_detail", domain_id=domain.id)
 
 

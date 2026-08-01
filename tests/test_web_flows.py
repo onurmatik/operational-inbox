@@ -16,12 +16,46 @@ from inbox.models import (
     Classification,
     Conversation,
     Domain,
+    DomainDNSRecord,
+    DomainTest,
+    InboundRoute,
     Notification,
     Organization,
     Project,
     Report,
 )
-from inbox.services.domains import MXObservation
+from inbox.services.domains import MXObservation, build_dns_instructions
+
+
+def _setup_domain(
+    organization,
+    project,
+    *,
+    hostname: str,
+    status: str,
+    setup_mode: str = Domain.SetupMode.DIRECT_MX,
+) -> Domain:
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname=hostname,
+        setup_mode=setup_mode,
+        status=status,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    local_part = f"route-{domain.id.hex[:12]}"
+    InboundRoute.objects.create(
+        organization=organization,
+        domain=domain,
+        kind=(
+            InboundRoute.Kind.DIRECT_DOMAIN
+            if setup_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS
+        ),
+        local_part=local_part,
+        address=f"{local_part}@inbound.example.net",
+    )
+    return domain
 
 
 def test_choice_widgets_do_not_receive_text_input_styles():
@@ -123,6 +157,183 @@ def test_domain_mx_inspection_preserves_existing_mail_and_surfaces_dns_failures(
     assert failed.json()["code"] == "mx_lookup_failed"
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "invalid_hostname"
+
+
+@pytest.mark.django_db
+def test_domain_detail_provisioning_waits_and_auto_polls_without_actions(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="preparing.example.org",
+        status=Domain.Status.PROVISIONING,
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"Preparing your DNS instructions" in response.content
+    assert b"nothing for you to change yet" in response.content
+    assert b'aria-live="polite"' in response.content
+    assert b'aria-busy="true"' in response.content
+    assert b"data-provisioning-poll" in response.content
+    assert f"/domains/{domain.id}".encode() in response.content
+    assert b"domain.error?.message" in response.content
+    assert b"domain.error ||" not in response.content
+    assert b'id="dns-check-button"' not in response.content
+    assert b"Generate test address" not in response.content
+    assert b"DNS records to add" not in response.content
+
+
+@pytest.mark.django_db
+def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="dns.example.org",
+        status=Domain.Status.PENDING_DNS,
+    )
+    build_dns_instructions(
+        domain,
+        verification_token="ownership-proof",
+        dkim_tokens=["dkim-one"],
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"Update DNS for dns.example.org" in response.content
+    assert b"cannot change them for you" in response.content
+    assert b"incoming email for every address" in response.content
+    assert b"I've updated DNS" in response.content
+    assert b"_amazonses.dns.example.org" in response.content
+    assert b"ownership-proof" in response.content
+    assert b"inbound-smtp.us-east-1.amazonaws.com" in response.content
+    assert b"dkim-one._domainkey.dns.example.org" in response.content
+    assert b"dkim-one.dkim.amazonses.com" in response.content
+    assert b"Required for sending" in response.content
+    assert b"Generate test address" not in response.content
+
+
+@pytest.mark.django_db
+def test_domain_detail_pending_test_enables_delivery_test(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="test-ready.example.org",
+        status=Domain.Status.PENDING_TEST,
+    )
+    domain.ownership_verified = True
+    domain.save(update_fields=("ownership_verified", "updated_at"))
+    build_dns_instructions(
+        domain,
+        verification_token="ownership-proof",
+        dkim_tokens=["dkim-one"],
+    )
+    domain.dns_records.filter(is_required=True).update(
+        status=DomainDNSRecord.Status.VALID
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"Confirm delivery with a real email" in response.content
+    assert b"Generate test address" in response.content
+    assert b"Check DNS again" in response.content
+
+    session = client.session
+    session[f"domain_test_address:{domain.id}"] = {
+        "address": "test-private@test-ready.example.org",
+        "expires_at": (timezone.now() + timedelta(hours=1)).timestamp(),
+    }
+    session.save()
+    first_reveal = client.get(reverse("domain_detail", args=[domain.id]))
+    second_reveal = client.get(reverse("domain_detail", args=[domain.id]))
+    assert b"test-private@test-ready.example.org" in first_reveal.content
+    assert b"test-private@test-ready.example.org" in second_reveal.content
+    assert b"Generate test address" not in second_reveal.content
+
+
+@pytest.mark.django_db
+def test_web_rejects_premature_domain_test_creation(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="not-ready.example.org",
+        status=Domain.Status.PENDING_DNS,
+    )
+
+    response = client.post(
+        reverse("domain_create_test", args=[domain.id]),
+        follow=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Verify the required DNS records" in response.content
+    assert not DomainTest.objects.filter(domain=domain).exists()
+    assert not AuditEvent.objects.filter(
+        organization=organization,
+        event_type="domain.test_created",
+        object_id=domain.id,
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="failed-forward.example.org",
+        status=Domain.Status.ERROR,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    build_dns_instructions(
+        domain,
+        verification_token="ownership-proof",
+        dkim_tokens=["dkim-one"],
+    )
+    domain.error_code = "domain_provision_failed"
+    domain.error_message = "Setup could not be completed."
+    domain.save(update_fields=("error_code", "error_message", "updated_at"))
+    route = domain.inbound_routes.get()
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"Setup could not be completed." in response.content
+    assert b"Provider catch-all forwarding" not in response.content
+    assert route.address.encode() not in response.content
+    assert b"DNS records to add" not in response.content
+    assert b"ownership-proof" not in response.content
 
 
 @pytest.mark.django_db

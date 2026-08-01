@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Any, Literal
@@ -25,6 +26,7 @@ from inbox.models import (
     Classification,
     Conversation,
     Domain,
+    DurableJob,
     Message,
     Notification,
     Organization,
@@ -48,6 +50,8 @@ from inbox.services.drafts import (
     revise_draft,
 )
 from inbox.services.jobs import enqueue_job
+
+logger = logging.getLogger(__name__)
 
 
 class APIError(Exception):
@@ -316,6 +320,7 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
         "status": domain.status,
         "inbound_ready": domain.inbound_ready,
         "outbound_ready": domain.outbound_ready,
+        "last_checked_at": domain.last_checked_at,
         "error": (
             {"code": domain.error_code, "message": domain.error_message}
             if domain.error_code
@@ -619,12 +624,42 @@ def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: u
     require_scope(request, APIToken.Scope.WRITE)
     organization = api_organization(request, organization_id)
     domain = scoped_object(Domain, organization, domain_id)
+    if domain.status not in {
+        Domain.Status.PENDING_DNS,
+        Domain.Status.PENDING_TEST,
+        Domain.Status.READY,
+        Domain.Status.DEGRADED,
+    } or not domain.dns_records.exists():
+        raise APIError(
+            "dns_instructions_not_ready",
+            "DNS instructions must be ready before requesting a check.",
+            status=409,
+        )
+    requested_at = timezone.now()
     job = enqueue_job(
         kind="dns_check",
-        idempotency_key=f"dns-check:{domain.id}:{timezone.now():%Y%m%d%H%M}",
+        idempotency_key=f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M}",
         payload={"domain_id": str(domain.id)},
         organization=organization,
     )
+    if job.status == DurableJob.Status.RETRY:
+        expedited = DurableJob.objects.filter(
+            id=job.id,
+            status=DurableJob.Status.RETRY,
+        ).update(due_at=requested_at, updated_at=requested_at)
+        if expedited:
+            job.due_at = requested_at
+        else:
+            job.refresh_from_db()
+    if job.status in {DurableJob.Status.COMPLETE, DurableJob.Status.FAILED}:
+        job = enqueue_job(
+            kind="dns_check",
+            idempotency_key=(
+                f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M%S%f}"
+            ),
+            payload={"domain_id": str(domain.id)},
+            organization=organization,
+        )
     record_api_audit(request, organization, "domain.check_requested", domain)
     return Status(202, {"status": "queued", "job_id": str(job.id)})
 
@@ -639,7 +674,21 @@ def domains_test(request: HttpRequest, organization_id: uuid.UUID, domain_id: uu
     require_scope(request, APIToken.Scope.WRITE)
     organization = api_organization(request, organization_id)
     domain = scoped_object(Domain, organization, domain_id)
-    test, address = create_domain_test(domain)
+    try:
+        test, address = create_domain_test(domain)
+    except DjangoValidationError as exc:
+        raise APIError(
+            "domain_not_ready_for_test",
+            "; ".join(exc.messages),
+            status=409,
+        ) from exc
+    except Exception as exc:
+        logger.exception("Domain test route activation failed", extra={"domain_id": domain.id})
+        raise APIError(
+            "receiving_route_not_ready",
+            "The receiving route is still being activated. Try again shortly.",
+            status=503,
+        ) from exc
     record_api_audit(request, organization, "domain.test_created", test)
     return Status(
         201,

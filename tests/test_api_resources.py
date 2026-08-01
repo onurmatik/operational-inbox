@@ -9,6 +9,9 @@ from django.utils import timezone
 from inbox.models import (
     Attachment,
     AuditEvent,
+    Domain,
+    DomainDNSRecord,
+    DurableJob,
     Notification,
     ReplyDraft,
     Report,
@@ -43,6 +46,56 @@ def test_session_api_resource_surface(
     assert domain_response.status_code == 202
     domain_id = domain_response.json()["id"]
     assert client.get(f"{base}/domains/{domain_id}").status_code == 200
+    premature_check = client.post(
+        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+    )
+    assert premature_check.status_code == 409
+    assert premature_check.json()["code"] == "dns_instructions_not_ready"
+    premature_test = client.post(
+        f"{base}/domains/{domain_id}/test", data={}, content_type="application/json"
+    )
+    assert premature_test.status_code == 409
+    assert premature_test.json()["code"] == "domain_not_ready_for_test"
+
+    domain = Domain.objects.get(id=domain_id)
+    domain.status = Domain.Status.PENDING_TEST
+    domain.ownership_verified = True
+    domain.save(update_fields=("status", "ownership_verified", "updated_at"))
+    DomainDNSRecord.objects.create(
+        organization=organization,
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name="_amazonses.inbound.example.org",
+        value="ownership-proof",
+        status=DomainDNSRecord.Status.VALID,
+    )
+    first_check = client.post(
+        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+    )
+    assert first_check.status_code == 202
+    first_check_id = first_check.json()["job_id"]
+    retry_due_at = timezone.now() + timedelta(hours=1)
+    DurableJob.objects.filter(id=first_check_id).update(
+        status=DurableJob.Status.RETRY,
+        due_at=retry_due_at,
+    )
+    repeated_check = client.post(
+        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+    )
+    assert repeated_check.status_code == 202
+    assert repeated_check.json()["job_id"] == first_check_id
+    expedited = DurableJob.objects.get(id=first_check_id)
+    assert expedited.due_at < retry_due_at
+    DurableJob.objects.filter(id=first_check_id).update(status=DurableJob.Status.COMPLETE)
+    completed_check = client.post(
+        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+    )
+    assert completed_check.status_code == 202
+    assert completed_check.json()["job_id"] != first_check_id
+    monkeypatch.setattr(
+        "inbox.services.receipt_rules.reconcile_receipt_rule", lambda: None
+    )
     test_delivery = client.post(
         f"{base}/domains/{domain_id}/test", data={}, content_type="application/json"
     )
