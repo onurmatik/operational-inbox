@@ -1,0 +1,29 @@
+{% load static %}
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{% block title %}Operational Inbox{% endblock %}</title>
+    <link rel="icon" href="{% static 'img/logo.svg' %}" type="image/svg+xml">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    <script src="{% static 'js/app.js' %}" defer></script>
+    {% block head %}{% endblock %}
+  </head>
+  <body class="min-h-full bg-paper text-ink">
+    {% if messages %}
+      <div class="fixed right-4 top-4 z-[70] w-[min(28rem,calc(100vw-2rem))] space-y-2" aria-live="polite">
+        {% for message in messages %}
+          <div id="flash-{{ forloop.counter }}" class="border border-line-strong bg-white p-4 text-sm shadow-[0_12px_32px_rgba(17,41,29,0.12)]">
+            <div class="flex items-start justify-between gap-4">
+              <p>{{ message }}</p>
+              <button type="button" class="text-muted hover:text-ink" data-dismiss="#flash-{{ forloop.counter }}" aria-label="Dismiss message">×</button>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% block body %}{% endblock %}
+  </body>
+</html>

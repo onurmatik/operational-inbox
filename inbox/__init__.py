@@ -1,0 +1,1 @@
+"""Operational Inbox application package."""

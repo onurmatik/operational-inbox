@@ -1,0 +1,25 @@
+{% extends "app_base.html" %}
+{% block title %}Inbox · Operational Inbox{% endblock %}
+{% block content %}
+  <div class="border-b border-line pb-6"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Complete record</p><h1 class="mt-1 font-heading text-3xl font-semibold">Inbox</h1><p class="mt-1 text-sm text-muted">Classification highlights messages; it never removes them from this list.</p></div>
+  <form method="get" class="mt-5 grid gap-3 border border-line bg-white p-4 md:grid-cols-5">
+    <div class="md:col-span-2"><label for="q" class="oi-label text-xs">Search</label><input id="q" name="q" value="{{ filters.q }}" class="oi-input" placeholder="Subject, sender, or body"></div>
+    <div><label for="state" class="oi-label text-xs">State</label><select id="state" name="state" class="oi-input"><option value="">All states</option>{% for value,label in conversation_states %}<option value="{{ value }}" {% if filters.state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+    <div><label for="classification" class="oi-label text-xs">Classification</label><select id="classification" name="classification" class="oi-input"><option value="">All classifications</option>{% for value,label in classification_categories %}<option value="{{ value }}" {% if filters.classification == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+    <div><label for="security" class="oi-label text-xs">Security</label><div class="flex gap-2"><select id="security" name="security" class="oi-input"><option value="">All verdicts</option><option value="suspicious" {% if filters.security == 'suspicious' %}selected{% endif %}>Suspicious</option><option value="quarantined" {% if filters.security == 'quarantined' %}selected{% endif %}>Quarantined</option></select><button class="oi-button-primary">Apply</button></div></div>
+  </form>
+  <div class="mt-5 oi-panel divide-y divide-line">
+    {% for conversation in conversations %}<a href="{% url 'conversation_detail' conversation.id %}" class="grid gap-3 p-4 hover:bg-paper/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><span class="font-semibold">{{ conversation.subject|default:"(no subject)" }}</span>{% if conversation.status == 'QUARANTINED' %}<span class="oi-status oi-status-danger">Quarantined</span>{% elif conversation.status == 'WAITING_EXTERNAL' %}<span class="oi-status oi-status-info">Waiting external</span>{% elif conversation.status == 'RESOLVED' %}<span class="oi-status oi-status-ready">Resolved</span>{% else %}<span class="oi-status oi-status-pending">Open</span>{% endif %}</div>{% with preview=conversation.messages.last %}<p class="mt-1 truncate text-sm text-muted">{{ preview.from_address }} · {% if preview.is_quarantined %}Content locked by the malware quarantine.{% else %}{{ preview.text_body|truncatechars:160 }}{% endif %}</p>{% endwith %}<p class="mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ conversation.project.name }} · {{ conversation.message_count }} message{{ conversation.message_count|pluralize }}</p></div><time class="font-mono text-xs text-muted">{{ conversation.last_message_at|date:"Y-m-d H:i" }} UTC</time></a>{% empty %}<div class="p-12 text-center"><p class="font-semibold">No conversations match these filters</p><p class="mt-1 text-sm text-muted">Clear filters to return to the complete inbox.</p><a href="{% url 'inbox' %}" class="oi-button-secondary mt-4">Clear filters</a></div>{% endfor %}
+  </div>
+  {% if page_obj.paginator.num_pages > 1 %}
+    <nav class="mt-5 flex items-center justify-between border border-line bg-white p-3 text-sm" aria-label="Inbox pages">
+      <div>
+        {% if page_obj.has_previous %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
+      </div>
+      <span class="font-mono text-xs text-muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+      <div>
+        {% if page_obj.has_next %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% endif %}
+      </div>
+    </nav>
+  {% endif %}
+{% endblock %}

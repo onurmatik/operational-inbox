@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% load static %}
+{% block body %}
+  <div class="min-h-screen lg:grid lg:grid-cols-[224px_minmax(0,1fr)]">
+    <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-50 hidden w-56 flex-col border-r border-line bg-white lg:flex">
+      <a href="{% url 'dashboard' %}" class="flex h-14 items-center gap-3 border-b border-line px-4 font-heading text-[17px] font-semibold tracking-tight">
+        <img src="{% static 'img/logo.svg' %}" alt="" class="size-7">
+        <span>Operational Inbox</span>
+      </a>
+      <div class="border-b border-line bg-paper/50 px-4 py-3">
+        <label for="organization-switcher" class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Organization</label>
+        <form method="post" action="{% url 'organization_switch' %}" class="mt-1">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{{ request.get_full_path }}">
+          <select id="organization-switcher" name="organization_id" class="w-full border-0 bg-transparent p-0 text-sm font-semibold text-ink focus:outline-none" onchange="this.form.submit()">
+            {% for organization in nav_organizations %}
+              <option value="{{ organization.id }}" {% if organization.id == current_organization.id %}selected{% endif %}>{{ organization.name }}</option>
+            {% endfor %}
+          </select>
+        </form>
+        {% if current_project %}<p class="mt-1 truncate text-xs text-muted">{{ current_project.name }}</p>{% endif %}
+      </div>
+      <nav class="flex-1 overflow-y-auto py-4 text-sm" aria-label="Primary navigation">
+        <a href="{% url 'dashboard' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'overview' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▦</span>Overview</a>
+        <a href="{% url 'inbox' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'inbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▤</span>Inbox{% if nav_quarantine_count %}<span class="ml-auto bg-quarantine-soft px-1.5 font-mono text-[10px] text-quarantine-strong">{{ nav_quarantine_count }}</span>{% endif %}</a>
+        <a href="{% url 'reports' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'reports' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▥</span>Reports</a>
+        <a href="{% url 'notifications' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'notifications' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◇</span>Notifications{% if nav_unread_notifications %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_unread_notifications }}</span>{% endif %}</a>
+        <p class="mb-1 mt-5 px-4 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Settings</p>
+        <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'domains' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◎</span>Domains</a>
+        <a href="{% url 'projects' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'projects' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">□</span>Projects</a>
+        <a href="{% url 'schedules_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'schedules' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Schedules &amp; retention</a>
+        <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'api_tokens' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">⌁</span>API tokens</a>
+        <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'audit' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">≡</span>Audit</a>
+      </nav>
+      <div class="border-t border-line p-4">
+        <p class="truncate text-xs font-semibold">{{ request.user.email }}</p>
+        <form method="post" action="{% url 'logout' %}" class="mt-2">{% csrf_token %}<button class="text-xs font-semibold text-muted hover:text-forest">Sign out</button></form>
+      </div>
+    </aside>
+    <div class="min-w-0 lg:col-start-2">
+      <header class="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-white px-4 lg:px-6">
+        <button id="sidebar-toggle" type="button" class="oi-button-secondary min-h-9 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">Menu</button>
+        <div class="hidden min-w-0 items-center gap-2 text-sm sm:flex">
+          <span class="truncate text-muted">{{ current_organization.name }}</span><span class="text-line-strong">/</span><span class="truncate font-semibold">{{ current_project.name|default:"All projects" }}</span>
+        </div>
+        <a href="{% url 'domain_create' %}" class="oi-button-primary min-h-9">Connect domain</a>
+      </header>
+      <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <script>
+    document.addEventListener("DOMContentLoaded", () => {
+      const button = document.getElementById("sidebar-toggle");
+      const sidebar = document.getElementById("app-sidebar");
+      button?.addEventListener("click", () => {
+        const open = sidebar.classList.toggle("hidden") === false;
+        sidebar.classList.toggle("flex", open);
+        button.setAttribute("aria-expanded", String(open));
+      });
+    });
+  </script>
+{% endblock %}

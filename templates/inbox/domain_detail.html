@@ -1,0 +1,171 @@
+{% extends "app_base.html" %}
+{% block title %}{{ domain.hostname }} · Operational Inbox{% endblock %}
+{% block content %}
+  <nav class="mb-4 text-xs text-muted">
+    <a href="{% url 'domains' %}" class="hover:text-forest">Domains</a>
+    <span class="mx-2">/</span>{{ domain.hostname }}
+  </nav>
+
+  <div class="flex flex-col gap-4 border-b border-line pb-6 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <span id="domain-status" class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
+        {{ domain.get_status_display }}
+      </span>
+      <h1 class="mt-3 font-heading text-3xl font-semibold">{{ domain.hostname }}</h1>
+      <p class="mt-1 text-sm text-muted">{{ domain.get_setup_mode_display }} · project {{ domain.project.name }}</p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <button
+        id="dns-check-button"
+        type="button"
+        class="oi-button-secondary"
+        data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
+        data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+      >Check DNS now</button>
+      <form method="post" action="{% url 'domain_create_test' domain.id %}">
+        {% csrf_token %}
+        <button class="oi-button-primary">Create test delivery</button>
+      </form>
+      <form method="post" action="{% url 'domain_disable' domain.id %}" onsubmit="return confirm('Disable this domain and all inbound routes?')">
+        {% csrf_token %}
+        <button class="oi-button-secondary text-coral-strong">Disable</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="dns-check-feedback" class="mt-5 hidden border p-4 text-sm" role="status" aria-live="polite"></div>
+
+  <section class="mt-6 grid gap-3 sm:grid-cols-2" aria-label="Domain readiness">
+    <div class="oi-panel p-4">
+      <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Inbound readiness</p>
+      <p class="mt-2 font-semibold {% if domain.inbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
+        {% if domain.inbound_ready %}Ready to receive{% else %}Waiting for DNS and test delivery{% endif %}
+      </p>
+    </div>
+    <div class="oi-panel p-4">
+      <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Outbound readiness</p>
+      <p class="mt-2 font-semibold {% if domain.outbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
+        {% if domain.outbound_ready %}SES identity and DKIM ready{% else %}Waiting for SES identity and DKIM{% endif %}
+      </p>
+    </div>
+  </section>
+
+  {% if domain.error_message %}
+    <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-4 text-sm text-coral-strong">
+      <strong>{{ domain.error_code }}</strong>
+      <p class="mt-1">{{ domain.error_message }}</p>
+    </div>
+  {% endif %}
+
+  {% if new_test_address %}
+    <div class="mt-5 border border-blue-strong/40 bg-blue-soft p-4">
+      <p class="font-semibold text-blue-strong">Send a real email to this address within 24 hours:</p>
+      <div class="mt-2 flex items-center gap-2">
+        <code id="test-address" class="break-all bg-white px-3 py-2 font-mono text-sm">{{ new_test_address }}</code>
+        <button type="button" class="oi-button-secondary" data-copy="#test-address">Copy</button>
+      </div>
+      <p class="mt-2 text-xs text-blue-strong">This address uses the customer domain, so the test exercises the selected MX or provider-forwarding path.</p>
+    </div>
+  {% endif %}
+
+  {% if domain.setup_mode == 'PROVIDER_FORWARD' %}
+    {% with route=domain.inbound_routes.all.0 %}
+      {% if route %}
+        <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5">
+          <h2 class="font-heading text-lg font-semibold text-blue-strong">Provider catch-all forwarding</h2>
+          <p class="mt-2 text-sm text-blue-strong">Keep the current MX records. Configure your mail provider's catch-all to forward to this private, high-entropy route:</p>
+          <div class="mt-3 flex items-center gap-2">
+            <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ route.address }}</code>
+            <button type="button" class="oi-button-secondary" data-copy="#forwarding-route">Copy</button>
+          </div>
+        </section>
+      {% endif %}
+    {% endwith %}
+  {% endif %}
+
+  <section class="mt-8">
+    <div class="mb-3">
+      <h2 class="font-heading text-lg font-semibold">Exact DNS checklist</h2>
+      <p class="text-sm text-muted">Add these records at your DNS provider. The application verifies them but never writes them.</p>
+    </div>
+    <div class="oi-panel overflow-x-auto">
+      <table class="w-full min-w-[760px] text-left text-sm">
+        <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase text-muted">
+          <tr><th class="px-4 py-3">Purpose</th><th class="px-4 py-3">Type</th><th class="px-4 py-3">Host</th><th class="px-4 py-3">Exact value</th><th class="px-4 py-3">Status</th></tr>
+        </thead>
+        <tbody class="divide-y divide-line">
+          {% for record in domain.dns_records.all %}
+            <tr>
+              <td class="px-4 py-4">{{ record.get_purpose_display }}{% if not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}</td>
+              <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
+              <td class="px-4 py-4"><code id="dns-name-{{ record.id }}" class="break-all font-mono text-xs">{{ record.name }}</code></td>
+              <td class="px-4 py-4">
+                <div class="flex items-start gap-2">
+                  <code id="dns-value-{{ record.id }}" class="max-w-md break-all bg-paper px-2 py-1 font-mono text-xs">{% if record.priority %}{{ record.priority }} {% endif %}{{ record.value }}</code>
+                  <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-value-{{ record.id }}">Copy</button>
+                </div>
+              </td>
+              <td class="px-4 py-4">
+                <span class="{% if record.status == 'VALID' %}oi-status oi-status-ready{% elif record.status == 'INVALID' or record.status == 'MISSING' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{{ record.get_status_display }}</span>
+                {% if record.error_message %}<p class="mt-2 max-w-xs text-xs text-coral-strong">{{ record.error_message }}</p>{% endif %}
+              </td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="p-8 text-center text-sm text-muted">SES identity provisioning is queued. DNS records will appear here after reconciliation.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {% if domain.existing_mx %}
+    <section class="mt-8 border border-gold-strong/40 bg-gold-soft p-5">
+      <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing MX detected — preserve it</h2>
+      <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to SES. Provider catch-all forwarding keeps the current mail service intact.</p>
+      <ul class="mt-3 space-y-1 font-mono text-xs text-gold-strong">
+        {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
+  <script>
+    document.addEventListener("click", async (event) => {
+      const copyButton = event.target.closest("[data-copy]");
+      if (copyButton) {
+        const element = document.querySelector(copyButton.dataset.copy);
+        await navigator.clipboard.writeText(element.textContent.trim());
+        copyButton.textContent = "Copied";
+        setTimeout(() => { copyButton.textContent = "Copy"; }, 1500);
+        return;
+      }
+
+      const checkButton = event.target.closest("#dns-check-button");
+      if (!checkButton) return;
+      const feedback = document.getElementById("dns-check-feedback");
+      const showFeedback = (message, isError = false) => {
+        feedback.className = `mt-5 border p-4 text-sm ${isError ? "border-coral-strong/40 bg-coral-soft text-coral-strong" : "border-blue-strong/40 bg-blue-soft text-blue-strong"}`;
+        feedback.textContent = message;
+      };
+      checkButton.disabled = true;
+      try {
+        await window.OperationalInbox.request(checkButton.dataset.checkUrl, {method: "POST"});
+        showFeedback("DNS check queued. This page will refresh when the worker records a result.");
+        const initialStatus = document.getElementById("domain-status").textContent.trim().toUpperCase();
+        for (let attempt = 0; attempt < 36; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+          const domain = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
+          const hasPendingRecord = (domain.dns_records || []).some((record) => record.status === "PENDING");
+          if (domain.error || domain.status === "READY" || domain.status === "DEGRADED" || (!hasPendingRecord && domain.status !== initialStatus)) {
+            window.location.reload();
+            return;
+          }
+        }
+        showFeedback("The check is still queued. Background verification will continue; refresh shortly.");
+      } catch (error) {
+        showFeedback(error.message || "The DNS check could not be queued.", true);
+      } finally {
+        checkButton.disabled = false;
+      }
+    });
+  </script>
+{% endblock %}

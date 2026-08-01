@@ -1,0 +1,13 @@
+{
+  "name": "operational-inbox-assets",
+  "private": true,
+  "scripts": {
+    "css:build": "tailwindcss -i assets/css/app.css -o inbox/static/css/app.css --minify",
+    "css:watch": "tailwindcss -i assets/css/app.css -o inbox/static/css/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.0",
+    "aws-cdk": "^2.1134.0",
+    "tailwindcss": "^4.1.0"
+  }
+}

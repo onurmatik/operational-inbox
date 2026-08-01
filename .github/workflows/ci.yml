@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  quality-and-sqlite:
+    name: Quality, contracts, and SQLite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          version: "0.8.9"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check Python formatting
+        run: uv run ruff format --check .
+
+      - name: Lint Python
+        run: uv run ruff check .
+
+      - name: Type-check Python
+        run: uv run mypy operational_inbox inbox infra
+
+      - name: Check migration drift
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      - name: Check production requirements drift
+        run: |
+          uv export --frozen --no-dev --no-hashes --no-header --no-emit-project --output-file /tmp/requirements.txt
+          diff --unified requirements.txt /tmp/requirements.txt
+
+      - name: Check OpenAPI schema drift
+        run: uv run python manage.py export_openapi --check
+
+      - name: Check Tailwind build drift
+        run: |
+          npm run css:build
+          git diff --exit-code -- inbox/static/css/app.css
+
+      - name: Run SQLite tests with coverage
+        run: uv run pytest
+
+      - name: Run CDK assertions
+        run: uv run pytest tests/test_infra_stack.py --no-cov
+
+      - name: Synthesize CDK stack
+        run: npx cdk synth --quiet
+
+      - name: Run Django deployment checks
+        env:
+          DJANGO_ALLOWED_HOSTS: operationalinbox.com
+          DJANGO_DEBUG: "false"
+          DJANGO_SECRET_KEY: ci-only-secret-key-with-at-least-fifty-characters-000000000000
+          DJANGO_SECURE_COOKIES: "true"
+          DJANGO_SECURE_SSL_REDIRECT: "true"
+          PUBLIC_BASE_URL: https://operationalinbox.com
+        run: uv run python manage.py check --deploy
+
+  postgresql:
+    name: PostgreSQL 16
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: operational_inbox
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d operational_inbox"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/operational_inbox
+      POSTGRES_DB: operational_inbox
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          version: "0.8.9"
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --all-groups
+
+      - name: Apply migrations
+        run: uv run python manage.py migrate --noinput
+
+      - name: Run PostgreSQL tests
+        run: uv run pytest --no-cov

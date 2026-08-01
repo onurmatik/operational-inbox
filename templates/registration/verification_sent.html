@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Verify your email · Operational Inbox{% endblock %}
+{% block body %}
+  <main class="grid min-h-screen place-items-center px-4">
+    <section class="w-full max-w-lg border border-line bg-white p-8">
+      <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Verification required</p>
+      <h1 class="mt-2 font-heading text-3xl font-semibold">Check your email</h1>
+      <p class="mt-4 text-sm leading-6 text-muted">If an unverified account exists{% if verification_email %} for <strong class="text-ink">{{ verification_email }}</strong>{% endif %}, its latest 24-hour verification link can be used before signing in.</p>
+      <div class="mt-6 flex flex-wrap gap-2">
+        <a href="{% url 'login' %}" class="oi-button-secondary">Return to sign in</a>
+        <a href="{% url 'verification_resend' %}" class="oi-button-primary">Request a new link</a>
+      </div>
+    </section>
+  </main>
+{% endblock %}
