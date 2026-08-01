@@ -109,9 +109,17 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "inbox.User"
-LOGIN_URL = "login"
+AUTHENTICATION_BACKENDS = [
+    "django.contrib.auth.backends.ModelBackend",
+    "sesame.backends.ModelBackend",
+]
+LOGIN_URL = "signup"
 LOGIN_REDIRECT_URL = "dashboard"
-LOGOUT_REDIRECT_URL = "login"
+LOGOUT_REDIRECT_URL = "home"
+
+SESAME_MAX_AGE = 600
+SESAME_ONE_TIME = False
+SESAME_TOKENS = ["sesame.tokens_v2"]
 
 email_backend_mode = (
     os.getenv("DJANGO_EMAIL_BACKEND", "console" if DEBUG else "ses").strip().casefold()

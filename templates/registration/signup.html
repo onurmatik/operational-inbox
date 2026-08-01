@@ -1,17 +1,63 @@
 {% extends "base.html" %}
 {% load static %}
-{% block title %}Create account · Operational Inbox{% endblock %}
+{% block title %}Continue with email · Operational Inbox{% endblock %}
 {% block body %}
-  <main class="grid min-h-screen place-items-center px-4 py-12">
-    <section class="relative w-full max-w-[560px] border border-line-strong bg-white p-7 sm:p-9">
-      <div class="mb-7 flex items-center gap-3"><img src="{% static 'img/logo.svg' %}" alt="" class="size-9"><div><p class="font-heading text-lg font-semibold">Operational Inbox</p><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Secure self-service setup</p></div></div>
-      <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Account</p><h1 class="mt-2 font-heading text-3xl font-semibold">Create your operational workspace</h1><p class="mt-2 text-sm text-muted">Email verification is required. Each organization has one owner and may contain up to 10 projects and 5 domains.</p>
-      {% if form.non_field_errors %}<div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>{% endif %}
-      <form method="post" class="mt-7 grid gap-5 sm:grid-cols-2">{% csrf_token %}
-        {% for field in form %}<div class="{% if field.name == 'email' or field.name == 'password1' or field.name == 'password2' %}sm:col-span-2{% endif %}"><label for="{{ field.id_for_label }}" class="oi-label">{{ field.label }}</label>{{ field }}{% if field.help_text %}<div class="mt-1 text-xs leading-5 text-muted">{{ field.help_text|safe }}</div>{% endif %}{% for error in field.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>{% endfor %}
-        <button type="submit" class="oi-button-primary sm:col-span-2">Create account and send verification</button>
-      </form>
-      <p class="mt-6 border-t border-line pt-5 text-center text-sm text-muted">Already registered? <a href="{% url 'login' %}" class="font-semibold text-forest hover:underline">Sign in</a></p>
-    </section>
-  </main>
+  <div class="flex min-h-screen flex-col">
+    <header class="flex h-16 shrink-0 items-center border-b border-line bg-white px-4 md:px-8">
+      <a href="{% url 'home' %}" class="flex items-center gap-3" aria-label="Operational Inbox home">
+        <img src="{% static 'img/logo.svg' %}" alt="" class="size-9">
+        <span>
+          <span class="block font-heading text-lg font-semibold leading-tight">Operational Inbox</span>
+          <span class="block font-mono text-[9px] uppercase tracking-[0.1em] text-muted">Human-approved operations</span>
+        </span>
+      </a>
+    </header>
+
+    <main class="grid flex-1 place-items-center px-4 py-12">
+      <section class="w-full max-w-[480px] border border-line-strong bg-white p-7 sm:p-9" aria-labelledby="signup-title">
+        {% if sent %}
+          <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-mint-strong">Magic link sent</p>
+          <h1 id="signup-title" class="mt-3 font-heading text-3xl font-semibold tracking-tight">Check your inbox</h1>
+          <p class="mt-3 text-sm leading-6 text-muted">
+            Check{% if email %} <strong class="break-all font-semibold text-ink">{{ email }}</strong>{% else %} your email{% endif %} for the next step. If this address is eligible, open the secure link to continue{% if pending_domain %} setting up <strong class="font-semibold text-ink">{{ pending_domain }}</strong>{% endif %}.
+          </p>
+          <p class="mt-5 border-t border-line pt-5 text-sm text-muted">You can close this page after opening the link.</p>
+          <a href="{% url 'signup' %}" class="oi-button-secondary mt-6 w-full">Use another email</a>
+        {% else %}
+          <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">
+            {% if pending_domain %}Set up {{ pending_domain }}{% else %}Passwordless access{% endif %}
+          </p>
+          <h1 id="signup-title" class="mt-3 font-heading text-3xl font-semibold tracking-tight">Continue with email</h1>
+          <p class="mt-3 text-sm leading-6 text-muted">
+            {% if pending_domain %}
+              We’ll email you a secure link to continue setting up <strong class="font-semibold text-ink">{{ pending_domain }}</strong>.
+            {% else %}
+              Enter your email to sign in or create your account.
+            {% endif %}
+          </p>
+
+          {% if auth_error %}
+            <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong" role="alert">{{ auth_error }}</div>
+          {% endif %}
+          {% if form.non_field_errors %}
+            <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong" role="alert">{{ form.non_field_errors }}</div>
+          {% endif %}
+
+          <form method="post" class="mt-7" novalidate>
+            {% csrf_token %}
+            <label for="{% if form.email %}{{ form.email.id_for_label }}{% else %}id_email{% endif %}" class="oi-label">Email address</label>
+            {% if form.email %}
+              {{ form.email }}
+              {% for error in form.email.errors %}<p class="mt-1.5 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
+            {% else %}
+              <input type="email" name="email" id="id_email" value="{{ email|default:'' }}" autocomplete="email" class="oi-input" required>
+            {% endif %}
+            {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+            <button type="submit" class="oi-button-primary mt-5 w-full">Email me a magic link</button>
+          </form>
+          <p class="mt-4 text-center text-sm text-muted">No password required.</p>
+        {% endif %}
+      </section>
+    </main>
+  </div>
 {% endblock %}

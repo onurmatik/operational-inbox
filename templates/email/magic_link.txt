@@ -1,0 +1,8 @@
+Operational Inbox
+
+Use this secure link to sign in or create your account:
+{% autoescape off %}{{ login_url }}{% endautoescape %}
+{% if pending_domain %}
+You’ll continue setting up {{ pending_domain }} after signing in.
+{% endif %}
+If you didn’t request this email, you can ignore it.

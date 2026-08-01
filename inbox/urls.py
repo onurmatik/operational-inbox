@@ -4,6 +4,7 @@ from inbox import views
 
 urlpatterns = [
     path("", views.home, name="home"),
+    path("start/", views.start_onboarding, name="start_onboarding"),
     path("signup/", views.signup, name="signup"),
     path("verify/sent/", views.verification_sent, name="verification_sent"),
     path("verify/resend/", views.verification_resend, name="verification_resend"),

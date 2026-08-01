@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% load static %}
+{% block title %}Operational Inbox · Official domain mail control{% endblock %}
+{% block body %}
+  <div class="flex min-h-screen flex-col">
+    <header class="flex h-16 shrink-0 items-center justify-between border-b border-line bg-white px-4 md:px-8">
+      <a href="{% url 'home' %}" class="flex items-center gap-3" aria-label="Operational Inbox home">
+        <img src="{% static 'img/logo.svg' %}" alt="" class="size-9">
+        <span>
+          <span class="block font-heading text-lg font-semibold leading-tight">Operational Inbox</span>
+          <span class="block font-mono text-[9px] uppercase tracking-[0.1em] text-muted">Human-approved operations</span>
+        </span>
+      </a>
+      <a href="{% url 'login' %}" class="text-sm font-semibold text-muted transition-colors hover:text-ink">Sign in</a>
+    </header>
+
+    <main class="flex-1">
+      <section class="mx-auto max-w-[1440px] px-4 py-16 text-center md:px-8 md:py-24">
+        <p class="mb-4 font-mono text-[11px] uppercase tracking-[0.08em] text-muted">Domain-first email operations</p>
+        <h1 class="mx-auto max-w-3xl font-heading text-[40px] font-semibold leading-[1.1] tracking-tight md:text-[60px]">
+          Manage every operational email<br>
+          <span class="text-forest">for your domain.</span>
+        </h1>
+        <p class="mx-auto mt-6 max-w-xl text-base leading-7 text-muted md:text-lg">
+          Route official inbound mail into a secure, inspectable, and human-approved inbox designed for high-stakes organizational control.
+        </p>
+
+        <form action="{% url 'start_onboarding' %}" method="post" class="mx-auto mt-12 max-w-xl text-left">
+          {% csrf_token %}
+          <label for="domain-input" class="oi-label">Enter your domain to start managing mail</label>
+          <div class="flex flex-col gap-3 sm:flex-row">
+            <input
+              type="text"
+              id="domain-input"
+              name="hostname"
+              value="{{ hostname|default:'' }}"
+              placeholder="your-domain.com"
+              class="oi-input flex-1"
+              autocomplete="url"
+              autocapitalize="none"
+              spellcheck="false"
+              required
+            >
+            <button type="submit" class="oi-button-primary whitespace-nowrap sm:px-8">
+              Start managing mail
+              <img src="{% static 'img/arrow-right.svg' %}" alt="" class="size-[18px] brightness-0 invert" aria-hidden="true">
+            </button>
+          </div>
+          {% if domain_error %}<p class="mt-2 text-xs text-coral-strong" role="alert">{{ domain_error }}</p>{% endif %}
+          <p class="mt-4 text-center text-sm text-muted">No password required.</p>
+        </form>
+      </section>
+
+      <section class="mx-auto max-w-[1120px] px-4 pb-20 md:px-8" aria-label="Operational Inbox preview">
+        <div class="overflow-hidden border border-line bg-white">
+          <div class="flex items-center justify-between border-b border-line bg-paper/60 px-4 py-3 sm:px-5">
+            <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Operational Inbox / example-corp.com</p>
+            <span class="oi-status oi-status-ready">Connected</span>
+          </div>
+
+          <div class="grid gap-4 p-4 sm:grid-cols-3 sm:p-5">
+            <div class="border border-line p-4">
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domain readiness</p>
+              <p class="mt-2 font-mono text-2xl">100%</p>
+              <p class="mt-1 text-xs text-muted">Inbound and outbound ready</p>
+            </div>
+            <div class="border border-line p-4">
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Active review</p>
+              <p class="mt-2 font-mono text-2xl">03</p>
+              <p class="mt-1 text-xs text-muted">Requiring human approval</p>
+            </div>
+            <div class="border border-line p-4">
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Quarantined</p>
+              <p class="mt-2 font-mono text-2xl">01</p>
+              <p class="mt-1 text-xs text-muted">Blocked security verdict</p>
+            </div>
+          </div>
+
+          <div class="mx-4 mb-4 overflow-x-auto border border-line sm:mx-5 sm:mb-5">
+            <table class="w-full min-w-[620px] text-left text-sm">
+              <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
+                <tr>
+                  <th class="px-4 py-3 font-medium">Conversation</th>
+                  <th class="px-4 py-3 font-medium">Classification</th>
+                  <th class="px-4 py-3 font-medium">Security state</th>
+                  <th class="px-4 py-3 text-right font-medium">Review</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-line">
+                <tr>
+                  <td class="px-4 py-3">
+                    <p class="font-semibold">Security audit: Q4 review</p>
+                    <p class="mt-0.5 text-xs text-muted">audit-service@partner.org</p>
+                  </td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-info">Official</span></td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-ready">Ready</span></td>
+                  <td class="px-4 py-3 text-right font-semibold text-forest">Inspect</td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-3">
+                    <p class="font-semibold">Billing dispute: INV-9920</p>
+                    <p class="mt-0.5 text-xs text-muted">billing@vendor.example</p>
+                  </td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-info">Billing</span></td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-pending">Needs review</span></td>
+                  <td class="px-4 py-3 text-right font-semibold text-forest">Inspect</td>
+                </tr>
+                <tr>
+                  <td class="px-4 py-3">
+                    <p class="font-semibold">Urgent: password reset link</p>
+                    <p class="mt-0.5 text-xs text-muted">unauthorized relay detected</p>
+                  </td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-info">System</span></td>
+                  <td class="px-4 py-3"><span class="oi-status oi-status-danger">Quarantined</span></td>
+                  <td class="px-4 py-3 text-right font-semibold text-coral-strong">Verdict</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+{% endblock %}

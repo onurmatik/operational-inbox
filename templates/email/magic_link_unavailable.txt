@@ -1,0 +1,5 @@
+Operational Inbox
+
+A public magic-link sign-in was requested for this email address.
+
+This account cannot use public magic-link access. If you did not make this request, you can ignore this email.

@@ -2,20 +2,51 @@
 {% load static %}
 {% block title %}Sign in · Operational Inbox{% endblock %}
 {% block body %}
-  <main class="grid min-h-screen place-items-center px-4 py-12">
-    <section class="relative w-full max-w-[440px] border border-line-strong bg-white p-7 sm:p-9" aria-labelledby="login-title">
-      <div class="absolute -left-px -top-px size-3 border-l-2 border-t-2 border-forest"></div><div class="absolute -right-px -top-px size-3 border-r-2 border-t-2 border-forest"></div><div class="absolute -bottom-px -left-px size-3 border-b-2 border-l-2 border-forest"></div><div class="absolute -bottom-px -right-px size-3 border-b-2 border-r-2 border-forest"></div>
-      <div class="mb-8 flex items-center gap-3"><img src="{% static 'img/logo.svg' %}" alt="" class="size-9"><div><p class="font-heading text-lg font-semibold">Operational Inbox</p><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Human-approved operations</p></div></div>
-      <h1 id="login-title" class="font-heading text-3xl font-semibold">Sign in</h1>
-      <p class="mt-2 text-sm text-muted">Review official inbound correspondence without maintaining another mailbox.</p>
-      {% if form.non_field_errors %}<div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>{% endif %}
-      <form method="post" class="oi-form mt-7 space-y-5">{% csrf_token %}
-        <div><label for="{{ form.username.id_for_label }}" class="oi-label">Email address</label>{{ form.username }}{% for error in form.username.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>
-        <div><div class="flex justify-between"><label for="{{ form.password.id_for_label }}" class="oi-label">Password</label><a href="{% url 'password_reset' %}" class="text-xs font-semibold text-forest hover:underline">Forgot password?</a></div>{{ form.password }}{% for error in form.password.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>
-        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
-        <button type="submit" class="oi-button-primary w-full">Sign in</button>
-      </form>
-      <p class="mt-6 border-t border-line pt-5 text-center text-sm text-muted">New to Operational Inbox? <a href="{% url 'signup' %}" class="font-semibold text-forest hover:underline">Create an account</a></p>
-    </section>
-  </main>
+  <div class="flex min-h-screen flex-col">
+    <header class="flex h-16 shrink-0 items-center border-b border-line bg-white px-4 md:px-8">
+      <a href="{% url 'home' %}" class="flex items-center gap-3" aria-label="Operational Inbox home">
+        <img src="{% static 'img/logo.svg' %}" alt="" class="size-9">
+        <span>
+          <span class="block font-heading text-lg font-semibold leading-tight">Operational Inbox</span>
+          <span class="block font-mono text-[9px] uppercase tracking-[0.1em] text-muted">Human-approved operations</span>
+        </span>
+      </a>
+    </header>
+
+    <main class="grid flex-1 place-items-center px-4 py-12">
+      <section class="w-full max-w-[480px] border border-line-strong bg-white p-7 sm:p-9" aria-labelledby="login-title">
+        {% if sent %}
+          <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-mint-strong">Magic link sent</p>
+          <h1 id="login-title" class="mt-3 font-heading text-3xl font-semibold tracking-tight">Check your inbox</h1>
+          <p class="mt-3 text-sm leading-6 text-muted">We sent a secure sign-in link{% if email %} to <strong class="break-all font-semibold text-ink">{{ email }}</strong>{% endif %}.</p>
+          <a href="{% url 'login' %}" class="oi-button-secondary mt-6 w-full">Use another email</a>
+        {% else %}
+          <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Passwordless access</p>
+          <h1 id="login-title" class="mt-3 font-heading text-3xl font-semibold tracking-tight">Sign in with email</h1>
+          <p class="mt-3 text-sm leading-6 text-muted">Enter your email and we’ll send you a secure sign-in link.</p>
+
+          {% if auth_error %}
+            <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong" role="alert">{{ auth_error }}</div>
+          {% endif %}
+          {% if form.non_field_errors %}
+            <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong" role="alert">{{ form.non_field_errors }}</div>
+          {% endif %}
+
+          <form method="post" class="mt-7" novalidate>
+            {% csrf_token %}
+            <label for="{% if form.email %}{{ form.email.id_for_label }}{% else %}id_email{% endif %}" class="oi-label">Email address</label>
+            {% if form.email %}
+              {{ form.email }}
+              {% for error in form.email.errors %}<p class="mt-1.5 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
+            {% else %}
+              <input type="email" name="email" id="id_email" value="{{ email|default:'' }}" autocomplete="email" class="oi-input" required>
+            {% endif %}
+            {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+            <button type="submit" class="oi-button-primary mt-5 w-full">Email me a magic link</button>
+          </form>
+          <p class="mt-4 text-center text-sm text-muted">No password required.</p>
+        {% endif %}
+      </section>
+    </main>
+  </div>
 {% endblock %}

@@ -1,27 +1,34 @@
 from __future__ import annotations
 
+import logging
+import posixpath
 import uuid
 from datetime import timedelta
 from functools import wraps
 from ipaddress import ip_address
 from typing import Any
+from urllib.parse import unquote, urlencode, urljoin, urlsplit
 
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import login
+from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
+from django.core import signing
 from django.core.exceptions import ValidationError
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
 from django.db import connection, transaction
 from django.db.models import Count, Q
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
+from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils.text import slugify
-from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.http import require_GET, require_http_methods, require_POST
+from sesame.utils import get_parameters
+from sesame.views import LoginView as SesameLoginView
 
 from inbox.forms import (
     APITokenForm,
@@ -31,6 +38,7 @@ from inbox.forms import (
     RetentionForm,
     ScheduleForm,
     SignupForm,
+    StartOnboardingForm,
     VerificationResendForm,
 )
 from inbox.models import (
@@ -59,7 +67,7 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.domains import create_domain, create_domain_test
+from inbox.services.domains import create_domain, create_domain_test, normalize_hostname
 from inbox.services.drafts import (
     approve_exact_revision,
     create_draft,
@@ -68,6 +76,13 @@ from inbox.services.drafts import (
 )
 from inbox.services.jobs import enqueue_job
 from inbox.services.tenancy import current_organization, get_owned_organization, tenant_get_or_404
+
+logger = logging.getLogger(__name__)
+
+PENDING_DOMAIN_SESSION_KEY = "pending_domain"
+MAGIC_LINK_SCOPE = "operational-inbox-login"
+MAGIC_LINK_MAX_AGE_SECONDS = 10 * 60
+ONBOARDING_STATE_SALT = "operational-inbox-onboarding-v1"
 
 
 def _unique_slug(model, *, organization=None, value: str) -> str:
@@ -81,6 +96,186 @@ def _unique_slug(model, *, organization=None, value: str) -> str:
         candidate = f"{base[:65]}-{index}"
         index += 1
     return candidate
+
+
+def _safe_next(request: HttpRequest, value: str | None) -> str:
+    """Return a normalized in-app URL or the appropriate onboarding default."""
+
+    fallback = (
+        reverse("domain_create")
+        if request.session.get(PENDING_DOMAIN_SESSION_KEY)
+        else reverse("dashboard")
+    )
+    if not value or not value.startswith("/") or value.startswith("//"):
+        return fallback
+    parsed = urlsplit(value)
+    decoded_path = parsed.path
+    for _ in range(3):
+        next_decoded_path = unquote(decoded_path)
+        if next_decoded_path == decoded_path:
+            break
+        decoded_path = next_decoded_path
+    normalized_path = posixpath.normpath(decoded_path)
+    if "\\" in decoded_path or not (
+        normalized_path == "/app" or normalized_path.startswith("/app/")
+    ):
+        return fallback
+    if not url_has_allowed_host_and_scheme(
+        value,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return fallback
+    return value
+
+
+def _take_rate_limit_slot(
+    *, kind: str, fingerprint_hash: str, email_hash: str, limit: int, window_seconds: int
+) -> SignupAttempt | None:
+    """Atomically reserve one request slot in the durable sliding window."""
+
+    since = timezone.now() - timedelta(seconds=window_seconds)
+    with transaction.atomic():
+        recent_attempts = SignupAttempt.objects.filter(
+            kind=kind,
+            created_at__gte=since,
+        ).filter(Q(fingerprint_hash=fingerprint_hash) | Q(email_hash=email_hash))
+        if recent_attempts.count() >= limit:
+            return None
+        return SignupAttempt.objects.create(
+            kind=kind,
+            fingerprint_hash=fingerprint_hash,
+            email_hash=email_hash,
+        )
+
+
+def _signed_onboarding_state(user: User, pending_domain: str | None) -> str:
+    if not pending_domain:
+        return ""
+    return signing.dumps(
+        {"user_id": str(user.pk), "domain": pending_domain},
+        salt=ONBOARDING_STATE_SALT,
+        compress=True,
+    )
+
+
+def _restore_onboarding_state(request: HttpRequest, user: User) -> None:
+    value = request.GET.get("onboarding", "")
+    if not value:
+        return
+    try:
+        payload = signing.loads(
+            value,
+            salt=ONBOARDING_STATE_SALT,
+            max_age=MAGIC_LINK_MAX_AGE_SECONDS,
+        )
+        if payload.get("user_id") != str(user.pk):
+            return
+        pending_domain = normalize_hostname(str(payload.get("domain", "")))
+    except (AttributeError, signing.BadSignature, ValidationError):
+        return
+    request.session[PENDING_DOMAIN_SESSION_KEY] = pending_domain
+
+
+def _default_workspace_label(email: str, pending_domain: str | None) -> str:
+    email_domain = email.rpartition("@")[2]
+    return (pending_domain or email_domain or email)[:120]
+
+
+def _ensure_default_workspace(
+    user: User, pending_domain: str | None = None
+) -> tuple[Organization, Project]:
+    """Idempotently give a passwordless account a usable default tenant."""
+
+    label = _default_workspace_label(user.email, pending_domain)
+    organization = user.organizations.filter(is_active=True).order_by("created_at").first()
+    if organization is None:
+        organization = Organization.objects.create(
+            owner=user,
+            name=label,
+            slug=_unique_slug(Organization, value=label),
+            timezone=settings.TIME_ZONE,
+        )
+    project = (
+        Project.objects.filter(organization=organization, is_active=True)
+        .order_by("created_at")
+        .first()
+    )
+    if project is None:
+        project = Project.objects.create(
+            organization=organization,
+            name=label,
+            slug=_unique_slug(Project, organization=organization, value=label),
+        )
+    ReportSchedule.objects.get_or_create(organization=organization)
+    RetentionPolicy.objects.get_or_create(organization=organization)
+    return organization, project
+
+
+def _prepare_magic_link_user(
+    email: str, pending_domain: str | None
+) -> tuple[User, Organization, Project] | None:
+    """Create/reactivate an eligible user without reviving a verified disabled account."""
+
+    with transaction.atomic():
+        user = User.objects.select_for_update().filter(email=email).first()
+        if user is None:
+            user = User(email=email, is_active=True)
+            user.set_unusable_password()
+            user.save()
+        elif user.is_staff or user.is_superuser:
+            return None
+        elif not user.is_active:
+            if user.email_verified_at is not None:
+                return None
+            user.is_active = True
+            user.set_unusable_password()
+            user.save(update_fields=("is_active", "password"))
+        organization, project = _ensure_default_workspace(user, pending_domain)
+    return user, organization, project
+
+
+def _auth_error_message(value: str) -> str:
+    if value == "invalid-link":
+        return "That sign-in link is invalid or has expired. Request a new link below."
+    return ""
+
+
+def _send_branded_auth_email(
+    *,
+    recipient: str,
+    subject: str,
+    text_template: str,
+    html_template: str,
+    context: dict[str, Any],
+) -> None:
+    message = EmailMultiAlternatives(
+        subject,
+        render_to_string(text_template, context),
+        settings.DEFAULT_FROM_EMAIL,
+        [recipient],
+    )
+    message.attach_alternative(render_to_string(html_template, context), "text/html")
+    if message.send() != 1:
+        raise RuntimeError("Authentication email backend reported no delivery.")
+
+
+def _signup_context(
+    request: HttpRequest,
+    *,
+    form: SignupForm,
+    sent: bool = False,
+    email: str = "",
+    auth_error: str = "",
+) -> dict[str, Any]:
+    return {
+        "form": form,
+        "sent": sent,
+        "email": email,
+        "auth_error": auth_error,
+        "pending_domain": request.session.get(PENDING_DOMAIN_SESSION_KEY),
+        "next": _safe_next(request, request.POST.get("next") or request.GET.get("next")),
+    }
 
 
 def _signup_client_ip(request: HttpRequest) -> str:
@@ -158,8 +353,39 @@ def health_ready(request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "ready"})
 
 
+@require_GET
 def home(request: HttpRequest) -> HttpResponse:
-    return redirect("dashboard" if request.user.is_authenticated else "login")
+    if request.user.is_authenticated:
+        return redirect("dashboard")
+    hostname = request.session.get(PENDING_DOMAIN_SESSION_KEY, "")
+    return render(
+        request,
+        "onboarding/landing.html",
+        {
+            "form": StartOnboardingForm(initial={"hostname": hostname}),
+            "hostname": hostname,
+            "domain_error": "",
+        },
+    )
+
+
+@require_POST
+def start_onboarding(request: HttpRequest) -> HttpResponse:
+    form = StartOnboardingForm(request.POST)
+    if not form.is_valid():
+        domain_error = form.errors.get("hostname", ["Enter a valid domain name."])[0]
+        return render(
+            request,
+            "onboarding/landing.html",
+            {
+                "form": form,
+                "hostname": request.POST.get("hostname", ""),
+                "domain_error": domain_error,
+            },
+            status=400,
+        )
+    request.session[PENDING_DOMAIN_SESSION_KEY] = form.cleaned_data["hostname"]
+    return redirect("signup")
 
 
 @verified_required
@@ -179,9 +405,10 @@ def organization_switch(request: HttpRequest) -> HttpResponse:
     return redirect(next_url)
 
 
+@require_http_methods(["GET", "POST"])
 def signup(request: HttpRequest) -> HttpResponse:
     if request.user.is_authenticated:
-        return redirect("dashboard")
+        return redirect(_safe_next(request, request.GET.get("next")))
     form = SignupForm(request.POST or None)
     attempt = None
     if request.method == "POST":
@@ -189,64 +416,149 @@ def signup(request: HttpRequest) -> HttpResponse:
         email_hash = token_digest(
             f"signup-email:{request.POST.get('email', '').strip().casefold()}"
         )
-        since = timezone.now() - timedelta(seconds=settings.SIGNUP_RATE_WINDOW_SECONDS)
-        recent_attempts = SignupAttempt.objects.filter(
-            kind=SignupAttempt.Kind.SIGNUP, created_at__gte=since
-        ).filter(Q(fingerprint_hash=fingerprint) | Q(email_hash=email_hash))
-        if recent_attempts.count() >= settings.SIGNUP_RATE_LIMIT:
-            form.add_error(None, "Too many signup attempts. Try again later.")
-            response = render(request, "registration/signup.html", {"form": form})
-            response.status_code = 429
-            response["Retry-After"] = str(settings.SIGNUP_RATE_WINDOW_SECONDS)
-            return response
-        attempt = SignupAttempt.objects.create(
+        attempt = _take_rate_limit_slot(
             kind=SignupAttempt.Kind.SIGNUP,
             fingerprint_hash=fingerprint,
             email_hash=email_hash,
+            limit=settings.SIGNUP_RATE_LIMIT,
+            window_seconds=settings.SIGNUP_RATE_WINDOW_SECONDS,
         )
-    if request.method == "POST" and form.is_valid():
-        assert attempt is not None
-        with transaction.atomic():
-            user = form.save(commit=False)
-            user.email = form.cleaned_data["email"]
-            user.is_active = False
-            user.save()
-            organization = Organization.objects.create(
-                owner=user,
-                name=form.cleaned_data["organization_name"],
-                slug=_unique_slug(Organization, value=form.cleaned_data["organization_name"]),
-                timezone=form.cleaned_data["timezone"],
-            )
-            Project.objects.create(
-                organization=organization,
-                name=form.cleaned_data["project_name"],
-                slug=_unique_slug(
-                    Project,
-                    organization=organization,
-                    value=form.cleaned_data["project_name"],
+        if attempt is None:
+            form.add_error(None, "Too many signup attempts. Try again later.")
+            response = render(
+                request,
+                "registration/signup.html",
+                _signup_context(
+                    request,
+                    form=form,
+                    email=request.POST.get("email", "").strip(),
                 ),
             )
-            ReportSchedule.objects.create(organization=organization)
-            RetentionPolicy.objects.create(organization=organization)
-            _, raw = EmailVerificationToken.issue(user, timezone.now() + timedelta(hours=24))
+            response.status_code = 429
+            response["Retry-After"] = str(settings.SIGNUP_RATE_WINDOW_SECONDS)
+            return response
+    if request.method == "POST" and form.is_valid():
+        assert attempt is not None
+        email = form.cleaned_data["email"]
+        prepared = _prepare_magic_link_user(
+            email,
+            request.session.get(PENDING_DOMAIN_SESSION_KEY),
+        )
+        logo_url = urljoin(
+            f"{settings.PUBLIC_BASE_URL}/",
+            f"{settings.STATIC_URL.lstrip('/')}img/logo.svg",
+        )
+        if prepared is None:
+            try:
+                _send_branded_auth_email(
+                    recipient=email,
+                    subject="Your Operational Inbox sign-in request",
+                    text_template="email/magic_link_unavailable.txt",
+                    html_template="email/magic_link_unavailable.html",
+                    context={"logo_url": logo_url},
+                )
+            except Exception:
+                logger.exception("Magic-link delivery failed")
+                form.add_error(None, "We could not send the link. Try again in a moment.")
+                return render(
+                    request,
+                    "registration/signup.html",
+                    _signup_context(request, form=form, email=email),
+                    status=503,
+                )
             SignupAttempt.objects.filter(id=attempt.id).update(accepted=True)
-        verify_url = request.build_absolute_uri(reverse("verify_email", args=[raw]))
+            return render(
+                request,
+                "registration/signup.html",
+                _signup_context(request, form=form, sent=True, email=email),
+            )
+
+        user, _, _ = prepared
+        next_url = _safe_next(request, request.POST.get("next"))
+        parameters = get_parameters(user, scope=MAGIC_LINK_SCOPE)
+        parameters["next"] = next_url
+        onboarding_state = _signed_onboarding_state(
+            user,
+            request.session.get(PENDING_DOMAIN_SESSION_KEY),
+        )
+        if onboarding_state:
+            parameters["onboarding"] = onboarding_state
+        callback_path = f"{reverse('sesame_login')}?{urlencode(parameters)}"
+        login_url = urljoin(f"{settings.PUBLIC_BASE_URL}/", callback_path.lstrip("/"))
+        email_context = {
+            "login_url": login_url,
+            "logo_url": logo_url,
+            "pending_domain": request.session.get(PENDING_DOMAIN_SESSION_KEY),
+        }
         try:
-            send_mail(
-                "Verify your Operational Inbox email",
-                f"Verify your email address within 24 hours:\n\n{verify_url}",
-                settings.DEFAULT_FROM_EMAIL,
-                [user.email],
+            _send_branded_auth_email(
+                recipient=user.email,
+                subject="Your Operational Inbox sign-in link",
+                text_template="email/magic_link.txt",
+                html_template="email/magic_link.html",
+                context=email_context,
             )
         except Exception:
-            messages.warning(
+            logger.exception("Magic-link delivery failed")
+            form.add_error(None, "We could not send the link. Try again in a moment.")
+            return render(
                 request,
-                "The account was created, but verification delivery is delayed. "
-                "Use the resend form to request a new link.",
+                "registration/signup.html",
+                _signup_context(request, form=form, email=email),
+                status=503,
             )
-        request.session["verification_email"] = user.email
-        return redirect("verification_sent")
-    return render(request, "registration/signup.html", {"form": form})
+        SignupAttempt.objects.filter(id=attempt.id).update(accepted=True)
+        return render(
+            request,
+            "registration/signup.html",
+            _signup_context(request, form=form, sent=True, email=email),
+        )
+    return render(
+        request,
+        "registration/signup.html",
+        _signup_context(
+            request,
+            form=form,
+            auth_error=_auth_error_message(request.GET.get("auth_error", "")),
+        ),
+        status=400 if request.method == "POST" else 200,
+    )
+
+
+@require_GET
+def login_redirect(request: HttpRequest) -> HttpResponse:
+    next_url = request.GET.get("next")
+    if next_url:
+        return redirect(f"{reverse('signup')}?{urlencode({'next': _safe_next(request, next_url)})}")
+    return redirect("signup")
+
+
+class OperationalInboxSesameLoginView(SesameLoginView):
+    scope = MAGIC_LINK_SCOPE
+    max_age = MAGIC_LINK_MAX_AGE_SECONDS
+
+    def login_failed(self) -> HttpResponse:
+        query = urlencode({"auth_error": "invalid-link"})
+        return redirect(f"{reverse('signup')}?{query}")
+
+    def login_success(self) -> HttpResponse:
+        with transaction.atomic():
+            user = User.objects.select_for_update().get(pk=self.request.user.pk)
+            if user.is_staff or user.is_superuser:
+                logout(self.request)
+                return self.login_failed()
+            _restore_onboarding_state(self.request, user)
+            if user.email_verified_at is None:
+                user.email_verified_at = timezone.now()
+                user.save(update_fields=("email_verified_at",))
+            organization, project = _ensure_default_workspace(
+                user,
+                self.request.session.get(PENDING_DOMAIN_SESSION_KEY),
+            )
+        self.request.user = user
+        self.request.session["organization_id"] = str(organization.id)
+        self.request.session["project_id"] = str(project.id)
+        return redirect(_safe_next(self.request, self.request.GET.get("next")))
 
 
 def verification_sent(request: HttpRequest) -> HttpResponse:
@@ -265,12 +577,14 @@ def verification_resend(request: HttpRequest) -> HttpResponse:
         email = form.cleaned_data["email"]
         fingerprint = token_digest(f"verification-resend-ip:{_signup_client_ip(request)}")
         email_hash = token_digest(f"verification-resend-email:{email}")
-        since = timezone.now() - timedelta(seconds=settings.VERIFICATION_RESEND_RATE_WINDOW_SECONDS)
-        recent = SignupAttempt.objects.filter(
+        attempt = _take_rate_limit_slot(
             kind=SignupAttempt.Kind.VERIFICATION_RESEND,
-            created_at__gte=since,
-        ).filter(Q(fingerprint_hash=fingerprint) | Q(email_hash=email_hash))
-        if recent.count() >= settings.VERIFICATION_RESEND_RATE_LIMIT:
+            fingerprint_hash=fingerprint,
+            email_hash=email_hash,
+            limit=settings.VERIFICATION_RESEND_RATE_LIMIT,
+            window_seconds=settings.VERIFICATION_RESEND_RATE_WINDOW_SECONDS,
+        )
+        if attempt is None:
             form.add_error(None, "Too many verification requests. Try again later.")
             response = render(
                 request,
@@ -280,11 +594,6 @@ def verification_resend(request: HttpRequest) -> HttpResponse:
             response.status_code = 429
             response["Retry-After"] = str(settings.VERIFICATION_RESEND_RATE_WINDOW_SECONDS)
             return response
-        attempt = SignupAttempt.objects.create(
-            kind=SignupAttempt.Kind.VERIFICATION_RESEND,
-            fingerprint_hash=fingerprint,
-            email_hash=email_hash,
-        )
         user = User.objects.filter(
             email=email,
             is_active=False,
@@ -632,7 +941,11 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     project = _selected_project(request, organization)
     if project is None:
         raise Http404
-    form = DomainForm(request.POST or None)
+    pending_domain = request.session.get(PENDING_DOMAIN_SESSION_KEY, "")
+    form = DomainForm(
+        request.POST or None,
+        initial={"hostname": pending_domain} if pending_domain else None,
+    )
     if request.method == "POST" and form.is_valid():
         try:
             domain = create_domain(
@@ -651,6 +964,7 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
                 organization=organization,
             )
             _audit(organization, request, "domain.claim_created", domain)
+            request.session.pop(PENDING_DOMAIN_SESSION_KEY, None)
             messages.success(request, "Domain claim created. Provisioning has been queued.")
             return redirect("domain_detail", domain_id=domain.id)
     return render(

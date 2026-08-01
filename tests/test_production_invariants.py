@@ -440,15 +440,8 @@ def test_retention_redacts_normalized_personal_content(
 @pytest.mark.django_db
 @override_settings(SIGNUP_RATE_LIMIT=1, SIGNUP_RATE_WINDOW_SECONDS=3600)
 def test_signup_rate_limit_is_durable_and_returns_retry_after(client):
-    payload = {
-        "email": "not-an-email",
-        "organization_name": "Rate Limited",
-        "project_name": "Inbox",
-        "timezone": "UTC",
-        "password1": "short",
-        "password2": "different",
-    }
-    assert client.post(reverse("signup"), payload, REMOTE_ADDR="203.0.113.10").status_code == 200
+    payload = {"email": "not-an-email"}
+    assert client.post(reverse("signup"), payload, REMOTE_ADDR="203.0.113.10").status_code == 400
     limited = client.post(reverse("signup"), payload, REMOTE_ADDR="203.0.113.10")
     assert limited.status_code == 429
     assert limited["Retry-After"] == "3600"

@@ -94,7 +94,7 @@
   }
 
   .oi-panel {
-    @apply border border-line bg-surface;
+    @apply rounded-none border border-line bg-surface;
   }
 
   .oi-status {

@@ -3,7 +3,6 @@ from __future__ import annotations
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django import forms
-from django.contrib.auth.forms import UserCreationForm
 from django.core.exceptions import ValidationError
 
 from inbox.models import APIToken, Domain, Project, ReportSchedule, RetentionPolicy, User
@@ -17,32 +16,36 @@ class StyledFormMixin:
             field.widget.attrs["class"] = f"oi-input {existing}".strip()
 
 
-class SignupForm(StyledFormMixin, UserCreationForm):
-    organization_name = forms.CharField(max_length=120)
-    project_name = forms.CharField(max_length=120)
-    timezone = forms.CharField(max_length=64, initial="Europe/Istanbul")
-
-    class Meta:
-        model = User
-        fields = ("email", "organization_name", "project_name", "timezone")
+class StartOnboardingForm(StyledFormMixin, forms.Form):
+    hostname = forms.CharField(max_length=253)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.order_fields(
-            ["email", "organization_name", "project_name", "timezone", "password1", "password2"]
-        )
         self._style_fields()
-        self.fields["email"].widget.attrs.update(autocomplete="email")
-        self.fields["password1"].widget.attrs.update(autocomplete="new-password")
-        self.fields["password2"].widget.attrs.update(autocomplete="new-password")
+        self.fields["hostname"].widget.attrs.update(
+            placeholder="yourdomain.com",
+            autocomplete="url",
+            inputmode="url",
+            spellcheck="false",
+        )
 
-    def clean_timezone(self) -> str:
-        value = self.cleaned_data["timezone"].strip()
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValidationError("Enter a valid IANA timezone, such as Europe/Istanbul.") from exc
-        return value
+    def clean_hostname(self) -> str:
+        return normalize_hostname(self.cleaned_data["hostname"])
+
+
+class SignupForm(StyledFormMixin, forms.Form):
+    email = forms.EmailField(max_length=254)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._style_fields()
+        self.fields["email"].widget.attrs.update(
+            autocomplete="email",
+            placeholder="you@company.com",
+        )
+
+    def clean_email(self) -> str:
+        return User.objects.normalize_email(self.cleaned_data["email"]).casefold()
 
 
 class VerificationResendForm(StyledFormMixin, forms.Form):

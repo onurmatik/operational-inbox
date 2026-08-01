@@ -350,6 +350,18 @@ wheels = [
 ]
 
 [[package]]
+name = "django-sesame"
+version = "3.2.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a7/97/5340660eff87af3e1eb318b483677eae9b30512eebede6fbe29b3b502713/django_sesame-3.2.3.tar.gz", hash = "sha256:09977a1c55bdbcce0a024c712c4d683e1a69543a217626ffa1d5f7ef7ebffc58", size = 17597, upload-time = "2025-05-02T19:06:42.124Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/09/b8/61d44649c57efc58ad6851192db0c3afed2b161a474bb1d010446d6d8637/django_sesame-3.2.3-py3-none-any.whl", hash = "sha256:5da0210a57a8f48dd61a6c8125e61121403042ed000c96187e4188a8241496d6", size = 20285, upload-time = "2025-05-02T19:06:40.814Z" },
+]
+
+[[package]]
 name = "django-stubs"
 version = "5.2.9"
 source = { registry = "https://pypi.org/simple" }
@@ -669,6 +681,7 @@ dependencies = [
     { name = "cryptography" },
     { name = "django" },
     { name = "django-ninja" },
+    { name = "django-sesame" },
     { name = "dnspython" },
     { name = "gunicorn" },
     { name = "nh3" },
@@ -701,6 +714,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=43,<47" },
     { name = "django", specifier = ">=5.2,<5.3" },
     { name = "django-ninja", specifier = ">=1.4,<2" },
+    { name = "django-sesame", specifier = ">=3.2.3,<3.3" },
     { name = "dnspython", specifier = ">=2.7,<3" },
     { name = "gunicorn", specifier = ">=23,<24" },
     { name = "nh3", specifier = ">=0.2.20,<1" },

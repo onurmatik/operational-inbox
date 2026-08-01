@@ -17,8 +17,10 @@ English.
 
 ## What is implemented
 
-- Open self-service signup with required email verification, generic throttled verification-link
-  resend, password reset, Argon2 password hashing, and configurable abuse limits.
+- Domain-first self-service onboarding with a single email field, throttled 10-minute
+  django-sesame magic links for both sign-in and sign-up, and configurable abuse limits.
+  The pending domain travels in short-lived, user-bound signed state so the email can be opened
+  in another browser. Staff and superuser accounts remain on Django admin's password login.
 - One owner per organization, with one user able to own multiple organizations. Team roles and
   memberships are intentionally absent from the MVP.
 - Organization/project onboarding, direct-MX and provider-forwarding domain onboarding, exact
@@ -116,9 +118,9 @@ inbound message reopens a resolved/waiting conversation and invalidates any exis
 approval.
 
 The default abuse controls are 10 projects and 5 active domains per organization, 5 domain
-provisioning attempts per hour, 5 signup attempts per hour, 3 verification-link resend attempts
-per hour, and a 72-hour unverified domain claim. All limits are configurable through environment
-variables.
+provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy verification-link resend
+attempts per hour, and a 72-hour unverified domain claim. All limits are configurable through
+environment variables.
 
 ## Domain onboarding without breaking mail
 
@@ -250,7 +252,7 @@ DJANGO_EMAIL_BACKEND=console
 OPENAI_API_KEY=
 ```
 
-With the console email backend, signup verification, verification-resend, and password-reset links
+With the console email backend, passwordless sign-in links and legacy verification-resend links
 are printed in the server terminal. Leave `OPENAI_API_KEY` blank to exercise graceful
 AI-unavailable behavior; add a key only when testing live Responses API calls. The ignored `.env`
 and `.env-prod` files must never be committed.
@@ -454,9 +456,9 @@ Do not change the existing root MX records for `operationalinbox.com`.
 5. Verify HTTPS and both `/health/live` and `/health/ready`.
 6. Confirm the minute cron consumes SQS, leaves the DLQ empty, and meets the 90-second inbound
    acceptance target.
-7. Exercise the complete path: signup -> verification -> organization/project -> DNS checklist ->
-   catch-all test -> inbox -> triage -> report -> draft -> exact approval -> SES reply ->
-   delivery/audit event.
+7. Exercise the complete path: enter domain -> request magic link -> organization/project defaults
+   -> choose the safe domain setup mode -> DNS checklist -> catch-all test -> inbox -> triage ->
+   report -> draft -> exact approval -> SES reply -> delivery/audit event.
 
 Before the first live deploy, create the empty private GitHub repository
 `onurmatik/operational-inbox`, commit and push this project to `main`, deploy the CDK stack, and
@@ -465,7 +467,8 @@ repository never fabricates credentials or changes DNS.
 
 ## Quality checks
 
-The test suite covers tenant isolation, signup and provisioning limits, IDNA and claim expiry,
+The test suite covers tenant isolation, domain-first onboarding, magic-link authentication,
+signup and provisioning limits, IDNA and claim expiry,
 MX safety, explicit receipt-rule reconciliation and the 500-recipient limit, duplicate and
 out-of-order AWS events, multi-project routing, malformed MIME, crash idempotency, sanitization,
 quarantine, prompt injection, attachment authorization, retention, threading, DST scheduling,

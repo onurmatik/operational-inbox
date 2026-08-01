@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Sign in to Operational Inbox</title>
+  </head>
+  <body style="margin:0;background:#f7f7f5;color:#18211c;font-family:Inter,Arial,sans-serif;">
+    <div style="padding:32px 16px;">
+      <div style="margin:0 auto;max-width:520px;border:1px solid #aeb8b1;background:#ffffff;">
+        <div style="border-bottom:1px solid #d9deda;padding:14px 24px;font-size:18px;font-weight:700;">
+          {% if logo_url %}<img src="{{ logo_url }}" width="32" height="32" alt="" style="display:inline-block;margin-right:10px;vertical-align:middle;">{% endif %}<span style="vertical-align:middle;">Operational Inbox</span>
+        </div>
+        <div style="padding:28px 24px;">
+          <h1 style="margin:0;font-size:28px;line-height:1.2;">Continue with your secure link</h1>
+          <p style="margin:16px 0 0;color:#68726c;font-size:15px;line-height:1.6;">Use this link to sign in or create your account{% if pending_domain %}, then continue setting up <strong style="color:#18211c;">{{ pending_domain }}</strong>{% endif %}.</p>
+          <p style="margin:24px 0;">
+            <a href="{{ login_url }}" style="display:inline-block;border-radius:2px;background:#1a3c2b;color:#ffffff;font-size:14px;font-weight:700;padding:12px 20px;text-decoration:none;">Continue to Operational Inbox</a>
+          </p>
+          <p style="margin:0;color:#68726c;font-size:13px;line-height:1.6;">If the button doesn’t work, copy and paste this link into your browser:</p>
+          <p style="margin:8px 0 0;overflow-wrap:anywhere;font-size:13px;line-height:1.6;"><a href="{{ login_url }}" style="color:#1a3c2b;">{{ login_url }}</a></p>
+          <p style="margin:24px 0 0;border-top:1px solid #d9deda;padding-top:18px;color:#68726c;font-size:13px;line-height:1.6;">If you didn’t request this email, you can ignore it.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
