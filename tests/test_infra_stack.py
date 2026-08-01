@@ -71,6 +71,48 @@ def test_no_access_key_and_required_observability() -> None:
     result.resource_count_is("AWS::SES::ConfigurationSetEventDestination", 1)
 
 
+def test_ses_identity_lifecycle_uses_required_wildcard_without_broad_sending() -> None:
+    result = template()
+    policies = result.find_resources("AWS::IAM::Policy")
+    app_policy = next(
+        resource
+        for resource in policies.values()
+        if resource["Properties"]["PolicyName"].startswith("HetznerApplicationUserDefaultPolicy")
+    )
+    statements = app_policy["Properties"]["PolicyDocument"]["Statement"]
+
+    lifecycle = next(
+        statement for statement in statements if statement.get("Sid") == "SESIdentityLifecycle"
+    )
+    assert lifecycle["Resource"] == "*"
+    assert set(lifecycle["Action"]) == {
+        "ses:GetIdentityDkimAttributes",
+        "ses:GetIdentityVerificationAttributes",
+        "ses:VerifyDomainDkim",
+        "ses:VerifyDomainIdentity",
+    }
+
+    sending = next(
+        statement for statement in statements if statement.get("Sid") == "SESOutboundSending"
+    )
+    assert sending["Resource"] == {
+        "Fn::Join": [
+            "",
+            [
+                "arn:",
+                {"Ref": "AWS::Partition"},
+                ":ses:us-east-1:111122223333:identity/*",
+            ],
+        ]
+    }
+    assert set(sending["Action"]) == {"ses:SendEmail", "ses:SendRawEmail"}
+    for statement in statements:
+        if statement.get("Resource") == "*":
+            assert not {"ses:SendEmail", "ses:SendRawEmail"}.intersection(
+                set(statement.get("Action", []))
+            )
+
+
 def test_sns_subscriptions_preserve_the_sns_envelope() -> None:
     result = template()
     result.resource_count_is("AWS::SNS::Subscription", 2)

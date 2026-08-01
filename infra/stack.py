@@ -283,15 +283,22 @@ class OperationalInboxEmailStack(Stack):
         )
         app_user.add_to_policy(
             iam.PolicyStatement(
-                sid="SESIdentityAndSending",
+                sid="SESIdentityLifecycle",
                 actions=[
                     "ses:GetIdentityDkimAttributes",
                     "ses:GetIdentityVerificationAttributes",
-                    "ses:SendEmail",
-                    "ses:SendRawEmail",
                     "ses:VerifyDomainDkim",
                     "ses:VerifyDomainIdentity",
                 ],
+                # These SES v1 identity lifecycle APIs do not support
+                # resource-level permissions. Keep the action list narrow.
+                resources=["*"],
+            )
+        )
+        app_user.add_to_policy(
+            iam.PolicyStatement(
+                sid="SESOutboundSending",
+                actions=["ses:SendEmail", "ses:SendRawEmail"],
                 resources=[f"arn:{self.partition}:ses:{self.region}:{self.account}:identity/*"],
             )
         )
