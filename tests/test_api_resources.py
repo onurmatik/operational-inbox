@@ -13,10 +13,123 @@ from inbox.models import (
     DomainDNSRecord,
     DurableJob,
     Notification,
+    Organization,
+    Project,
     ReplyDraft,
     Report,
 )
 from inbox.services.drafts import revise_draft
+
+
+@pytest.mark.django_db
+def test_domain_retry_api_starts_one_recoverable_attempt(client, owner, organization, project):
+    client.force_login(owner)
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname="api-retry.example.org",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.ERROR,
+        error_code="domain_provision_failed",
+        error_message="Setup failed.",
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    url = f"/api/v1/organizations/{organization.id}/domains/{domain.id}/retry"
+
+    first = client.post(url, data={}, content_type="application/json")
+    second = client.post(url, data={}, content_type="application/json")
+
+    assert first.status_code == 202
+    assert first.json()["started"] is True
+    assert second.status_code == 202
+    assert second.json()["started"] is False
+    assert second.json()["job_id"] == first.json()["job_id"]
+
+    domain.status = Domain.Status.PENDING_DNS
+    domain.save(update_fields=("status", "updated_at"))
+    rejected = client.post(url, data={}, content_type="application/json")
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "domain_retry_not_allowed"
+
+
+@pytest.mark.django_db
+def test_repeated_domain_create_returns_existing_claim(
+    client, monkeypatch, owner, organization, project
+):
+    client.force_login(owner)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    url = f"/api/v1/organizations/{organization.id}/domains"
+    payload = {
+        "project_id": str(project.id),
+        "hostname": "idempotent.example.org",
+        "setup_mode": "DIRECT_MX",
+    }
+
+    first = client.post(url, data=payload, content_type="application/json")
+    DurableJob.objects.get(kind="provision_domain", payload__domain_id=first.json()["id"]).delete()
+    second = client.post(url, data=payload, content_type="application/json")
+    third = client.post(url, data=payload, content_type="application/json")
+    mismatched = client.post(
+        url,
+        data={**payload, "setup_mode": "PROVIDER_FORWARD"},
+        content_type="application/json",
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 200
+    assert third.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert mismatched.status_code == 409
+    assert mismatched.json()["code"] == "domain_claim_conflict"
+    assert Domain.objects.filter(hostname="idempotent.example.org").count() == 1
+    assert (
+        DurableJob.objects.filter(
+            kind="provision_domain",
+            payload__domain_id=first.json()["id"],
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_cross_tenant_domain_conflict_is_enumeration_safe(
+    client, monkeypatch, owner, organization, project
+):
+    other_owner = type(owner).objects.create_user(email="other-owner@example.org")
+    other_organization = Organization.objects.create(
+        owner=other_owner,
+        name="Other",
+        slug="other",
+    )
+    other_project = Project.objects.create(
+        organization=other_organization,
+        name="Default",
+        slug="default",
+    )
+    Domain.objects.create(
+        organization=other_organization,
+        project=other_project,
+        hostname="claimed-elsewhere.example.org",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+
+    client.force_login(owner)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    response = client.post(
+        f"/api/v1/organizations/{organization.id}/domains",
+        data={
+            "project_id": str(project.id),
+            "hostname": "claimed-elsewhere.example.org",
+            "setup_mode": "DIRECT_MX",
+        },
+        content_type="application/json",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "domain_claim_conflict"
+    assert str(other_organization.id) not in response.content.decode()
 
 
 @pytest.mark.django_db
@@ -93,9 +206,7 @@ def test_session_api_resource_surface(
     )
     assert completed_check.status_code == 202
     assert completed_check.json()["job_id"] != first_check_id
-    monkeypatch.setattr(
-        "inbox.services.receipt_rules.reconcile_receipt_rule", lambda: None
-    )
+    monkeypatch.setattr("inbox.services.receipt_rules.reconcile_receipt_rule", lambda: None)
     test_delivery = client.post(
         f"{base}/domains/{domain_id}/test", data={}, content_type="application/json"
     )

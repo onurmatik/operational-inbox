@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from django.core.exceptions import ValidationError
+from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
@@ -32,6 +34,16 @@ from inbox.services.reports import (
     schedule_key,
 )
 
+RETRYABLE_DOMAIN_PROVISION_ERROR_CODES = frozenset(
+    {
+        "domain_provision_failed",
+        # Legacy releases treated an existing account-scoped SES identity as
+        # terminal. Current provisioning keeps it unchanged and requires a new,
+        # claim-bound DNS ownership proof before adoption.
+        "ses_identity_collision",
+    }
+)
+
 
 def enqueue_job(
     *, kind: str, idempotency_key: str, payload: dict[str, Any], organization=None, due_at=None
@@ -48,11 +60,72 @@ def enqueue_job(
     return job
 
 
+def can_retry_domain_provisioning(domain: Domain) -> bool:
+    return domain.status == Domain.Status.ERROR and (
+        domain.error_code in RETRYABLE_DOMAIN_PROVISION_ERROR_CODES
+    )
+
+
+def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]:
+    """Start one recoverable provisioning attempt, or return the active one."""
+
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        retry_generation = locked_domain.updated_at.strftime("%Y%m%d%H%M%S%f")
+        if locked_domain.status == Domain.Status.PROVISIONING:
+            active_job = (
+                DurableJob.objects.filter(
+                    kind="provision_domain",
+                    payload__domain_id=str(locked_domain.id),
+                    status__in=[
+                        DurableJob.Status.PENDING,
+                        DurableJob.Status.LEASED,
+                        DurableJob.Status.RETRY,
+                    ],
+                )
+                .order_by("created_at")
+                .first()
+            )
+            if active_job is not None:
+                return locked_domain, active_job, False
+        elif can_retry_domain_provisioning(locked_domain):
+            locked_domain.status = Domain.Status.PROVISIONING
+            locked_domain.inbound_ready = False
+            locked_domain.outbound_ready = False
+            locked_domain.error_code = ""
+            locked_domain.error_message = ""
+            locked_domain.save(
+                update_fields=(
+                    "status",
+                    "inbound_ready",
+                    "outbound_ready",
+                    "error_code",
+                    "error_message",
+                    "updated_at",
+                )
+            )
+        else:
+            raise ValidationError("This domain setup is not eligible for a provisioning retry.")
+
+        job = enqueue_job(
+            kind="provision_domain",
+            idempotency_key=(f"provision-domain:{locked_domain.id}:retry:{retry_generation}"),
+            payload={"domain_id": str(locked_domain.id)},
+            organization=locked_domain.organization,
+        )
+        return locked_domain, job, True
+
+
 def schedule_work(now=None) -> int:
     now = now or timezone.now()
     count = 0
     expire_unverified_claims()
     recover_stale_submissions(now=now)
+    # Repair the small commit/enqueue crash window in domain creation. Existing
+    # active jobs are returned unchanged, so this scan is idempotent.
+    for domain in Domain.objects.filter(status=Domain.Status.PROVISIONING):
+        _, _, started = retry_domain_provisioning(domain)
+        count += int(started)
     for message in Message.objects.filter(
         direction=Message.Direction.INBOUND,
         is_quarantined=False,

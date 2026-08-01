@@ -30,7 +30,7 @@
 
   const initDomainCreate = () => {
     const form = document.querySelector("[data-domain-create]");
-    if (!form || form.dataset.hasErrors === "true") return;
+    if (!form) return;
 
     const hostnameInput = form.querySelector("[name=hostname]");
     const checkButton = form.querySelector("[data-mx-check]");
@@ -292,7 +292,12 @@
       if (!inspectedInputValue || inspectedInputValue !== inputValue()) {
         event.preventDefault();
         checkMx();
+        return;
       }
+      form.setAttribute("aria-busy", "true");
+      submitButton.disabled = true;
+      submitButton.textContent = "Connecting domain…";
+      checkButton.disabled = true;
     });
 
     updateExamples();

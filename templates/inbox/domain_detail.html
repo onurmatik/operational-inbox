@@ -9,7 +9,7 @@
   <div class="flex flex-col gap-4 border-b border-line pb-6 sm:flex-row sm:items-end sm:justify-between">
     <div>
       <span id="domain-status" data-status="{{ domain.status }}" class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
-        {% if domain.status == 'PROVISIONING' %}Preparing DNS instructions{% elif domain.status == 'PENDING_DNS' %}Action required{% elif domain.status == 'PENDING_TEST' %}Test required{% else %}{{ domain.get_status_display }}{% endif %}
+        {% if domain.status == 'PROVISIONING' %}Preparing DNS instructions{% elif domain.status == 'PENDING_DNS' %}Action required{% elif domain.status == 'PENDING_TEST' %}Test required{% elif domain.status == 'ERROR' %}Setup paused{% else %}{{ domain.get_status_display }}{% endif %}
       </span>
       <h1 class="mt-3 font-heading text-3xl font-semibold">{{ domain.hostname }}</h1>
       <p class="mt-1 text-sm text-muted">
@@ -106,6 +106,28 @@
       <h2 class="font-heading text-lg font-semibold">DNS needs attention</h2>
       <p class="mt-2 text-sm">A required record no longer matches. Correct the affected records below, then check DNS again.</p>
     </section>
+  {% elif domain.status == 'ERROR' %}
+    <section class="mt-6 border border-coral-strong/40 bg-coral-soft p-5 text-coral-strong">
+      <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">Setup paused</p>
+      <h2 class="mt-2 font-heading text-lg font-semibold">Your DNS and mail routing were not changed</h2>
+      {% if can_retry_provisioning %}
+        {% if domain.error_code == 'ses_identity_collision' %}
+          <p class="mt-2 max-w-2xl text-sm leading-6">
+            We found an existing SES identity. We can inspect it without overwriting it; before receiving or sending is enabled, you'll be asked to publish a new, unique DNS ownership record for this claim.
+          </p>
+        {% else %}
+          <p class="mt-2 max-w-2xl text-sm leading-6">
+            The email service could not finish preparing this domain. A retry will inspect the current state and continue safely without changing your DNS.
+          </p>
+        {% endif %}
+        <form method="post" action="{% url 'domain_retry_provisioning' domain.id %}" class="mt-4" data-domain-retry-form data-busy-label="Retrying setup…" aria-busy="false">
+          {% csrf_token %}
+          <button class="oi-button-primary">Retry setup safely</button>
+        </form>
+      {% else %}
+        <p class="mt-2 max-w-2xl text-sm leading-6">{{ domain.error_message }} No DNS records or mail routing settings were changed.</p>
+      {% endif %}
+    </section>
   {% endif %}
 
   {% if domain.status != 'PROVISIONING' and domain.status != 'ERROR' and domain.status != 'DISABLED' %}
@@ -126,10 +148,10 @@
   {% endif %}
 
   {% if domain.error_message %}
-    <div class="mt-5 border border-coral-strong/40 bg-coral-soft p-4 text-sm text-coral-strong">
-      <strong>{{ domain.error_code }}</strong>
-      <p class="mt-1">{{ domain.error_message }}</p>
-    </div>
+    <details class="mt-5 border border-line bg-paper/60 p-4 text-sm text-muted">
+      <summary class="cursor-pointer font-semibold text-ink">Support details</summary>
+      <p class="mt-2"><code class="font-mono">{{ domain.error_code }}</code> · {{ domain.error_message }}</p>
+    </details>
   {% endif %}
 
   {% if new_test_address and domain.status == 'PENDING_TEST' %}
@@ -178,7 +200,7 @@
                 <tr>
                   <td class="px-4 py-4">
                     {{ record.get_purpose_display }}
-                    {% if record.purpose == 'DKIM' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
+                    {% if record.purpose == 'SES_VERIFICATION' and record.is_required %}<span class="block text-xs text-muted">Required for direct receiving and sending</span>{% elif record.purpose == 'DKIM' or record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
                   </td>
                   <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
                   <td class="px-4 py-4">
@@ -233,7 +255,7 @@
 
   <script>
     document.addEventListener("submit", (event) => {
-      const form = event.target.closest("[data-domain-test-form]");
+      const form = event.target.closest("[data-domain-test-form], [data-domain-retry-form]");
       if (!form) return;
       if (form.getAttribute("aria-busy") === "true") {
         event.preventDefault();
@@ -242,7 +264,7 @@
       form.setAttribute("aria-busy", "true");
       const button = form.querySelector("button");
       button.disabled = true;
-      button.textContent = "Generating test address…";
+      button.textContent = form.dataset.busyLabel || "Generating test address…";
     });
 
     document.addEventListener("DOMContentLoaded", () => {

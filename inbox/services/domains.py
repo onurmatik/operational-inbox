@@ -12,14 +12,30 @@ import dns.resolver
 import idna
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from inbox.models import Domain, DomainDNSRecord, DomainTest, InboundRoute, Organization, Project
+from inbox.models import (
+    AuditEvent,
+    Domain,
+    DomainDNSRecord,
+    DomainTest,
+    InboundRoute,
+    Organization,
+    Project,
+)
 
 
 class DomainLimitError(ValidationError):
     pass
+
+
+class DomainClaimConflict(ValidationError):
+    def __init__(self, *, existing_domain: Domain | None = None) -> None:
+        self.existing_domain = existing_domain
+        super().__init__(
+            {"hostname": "This domain already has an active or pending ownership claim."}
+        )
 
 
 @dataclass(frozen=True)
@@ -62,9 +78,7 @@ def inspect_mx(hostname: str, resolver: dns.resolver.Resolver | None = None) -> 
             # RFC 7505 null MX (`0 .`) explicitly declares that the domain has
             # no mail service. It is not an existing provider to preserve.
             continue
-        observations.append(
-            MXObservation(preference=int(answer.preference), exchange=exchange)
-        )
+        observations.append(MXObservation(preference=int(answer.preference), exchange=exchange))
     return sorted(observations, key=lambda item: (item.preference, item.exchange))
 
 
@@ -96,41 +110,53 @@ def create_domain(
     mx = inspect_mx(normalized)
     # DNS may take several seconds on a degraded nameserver. Keep it outside the
     # write transaction so one lookup cannot hold SQLite's immediate write lock.
-    with transaction.atomic():
-        _assert_limits(organization)
-        if (
+    existing = (
+        Domain.objects.filter(hostname=normalized).exclude(status=Domain.Status.DISABLED).first()
+    )
+    if existing is not None:
+        raise DomainClaimConflict(
+            existing_domain=existing if existing.organization_id == organization.id else None
+        )
+    try:
+        with transaction.atomic():
+            _assert_limits(organization)
+            domain = Domain.objects.create(
+                organization=organization,
+                project=project,
+                hostname=normalized,
+                setup_mode=setup_mode,
+                status=Domain.Status.PROVISIONING,
+                existing_mx=[
+                    {"preference": item.preference, "exchange": item.exchange} for item in mx
+                ],
+                claim_expires_at=timezone.now() + timedelta(hours=settings.DOMAIN_CLAIM_TTL_HOURS),
+            )
+            local_part = f"route-{secrets.token_urlsafe(24).lower()}"
+            InboundRoute.objects.create(
+                organization=organization,
+                domain=domain,
+                kind=(
+                    InboundRoute.Kind.FORWARDING_ALIAS
+                    if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+                    else InboundRoute.Kind.DIRECT_DOMAIN
+                ),
+                local_part=local_part,
+                address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
+            )
+    except IntegrityError as exc:
+        # Resolve the check/insert race against the database's global active
+        # hostname constraint. Do not turn an unrelated integrity failure into
+        # a claim conflict.
+        existing = (
             Domain.objects.filter(hostname=normalized)
             .exclude(status=Domain.Status.DISABLED)
-            .exists()
-        ):
-            raise ValidationError(
-                {"hostname": "This domain already has an active or pending ownership claim."}
-            )
-        domain = Domain.objects.create(
-            organization=organization,
-            project=project,
-            hostname=normalized,
-            setup_mode=setup_mode,
-            status=Domain.Status.PROVISIONING,
-            existing_mx=[
-                {"preference": item.preference, "exchange": item.exchange} for item in mx
-            ],
-            claim_expires_at=timezone.now() + timedelta(
-                hours=settings.DOMAIN_CLAIM_TTL_HOURS
-            ),
+            .first()
         )
-        local_part = f"route-{secrets.token_urlsafe(24).lower()}"
-        InboundRoute.objects.create(
-            organization=organization,
-            domain=domain,
-            kind=(
-                InboundRoute.Kind.FORWARDING_ALIAS
-                if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
-                else InboundRoute.Kind.DIRECT_DOMAIN
-            ),
-            local_part=local_part,
-            address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
-        )
+        if existing is None:
+            raise
+        raise DomainClaimConflict(
+            existing_domain=existing if existing.organization_id == organization.id else None
+        ) from exc
     return domain
 
 
@@ -140,52 +166,106 @@ def recommended_setup(domain: Domain) -> str:
     return domain.setup_mode
 
 
-def build_dns_instructions(
-    domain: Domain, *, verification_token: str, dkim_tokens: list[str]
-) -> None:
-    records = [
-        {
-            "purpose": DomainDNSRecord.Purpose.OWNERSHIP,
-            "record_type": "TXT",
-            "name": f"_amazonses.{domain.hostname}",
-            "value": verification_token,
-            "is_required": True,
-        }
-    ]
-    if domain.setup_mode == Domain.SetupMode.DIRECT_MX:
-        records.append(
-            {
-                "purpose": DomainDNSRecord.Purpose.MX,
-                "record_type": "MX",
-                "name": domain.hostname,
-                "value": "inbound-smtp.us-east-1.amazonaws.com",
-                "priority": 10,
-                "is_required": True,
-            }
-        )
-    records.extend(
-        {
-            "purpose": DomainDNSRecord.Purpose.DKIM,
-            "record_type": "CNAME",
-            "name": f"{token}._domainkey.{domain.hostname}",
-            "value": f"{token}.dkim.amazonses.com",
-            "is_required": False,
-        }
-        for token in dkim_tokens
+def application_ownership_record_name(domain: Domain) -> str:
+    return f"_operational-inbox-claim.{domain.hostname}"
+
+
+def _upsert_dns_instruction(
+    domain: Domain,
+    *,
+    purpose: str,
+    record_type: str,
+    name: str,
+    value: str,
+    is_required: bool,
+    priority: int | None = None,
+) -> DomainDNSRecord:
+    record, created = DomainDNSRecord.objects.get_or_create(
+        organization=domain.organization,
+        domain=domain,
+        purpose=purpose,
+        record_type=record_type,
+        name=name,
+        defaults={
+            "value": value,
+            "priority": priority,
+            "is_required": is_required,
+        },
     )
-    for record in records:
-        DomainDNSRecord.objects.update_or_create(
-            organization=domain.organization,
-            domain=domain,
-            purpose=record["purpose"],
-            record_type=record["record_type"],
-            name=record["name"],
-            value=record["value"],
-            defaults={
-                "priority": record.get("priority"),
-                "is_required": record["is_required"],
-            },
+    if created:
+        return record
+    if record.value == value and record.priority == priority and record.is_required == is_required:
+        return record
+    record.value = value
+    record.priority = priority
+    record.is_required = is_required
+    record.status = DomainDNSRecord.Status.PENDING
+    record.observed_values = []
+    record.last_checked_at = None
+    record.error_message = ""
+    record.save(
+        update_fields=(
+            "value",
+            "priority",
+            "is_required",
+            "status",
+            "observed_values",
+            "last_checked_at",
+            "error_message",
+            "updated_at",
         )
+    )
+    return record
+
+
+def build_dns_instructions(
+    domain: Domain,
+    *,
+    ownership_token: str,
+    verification_token: str,
+    dkim_tokens: list[str],
+) -> None:
+    _upsert_dns_instruction(
+        domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value=ownership_token,
+        is_required=True,
+    )
+    if verification_token:
+        _upsert_dns_instruction(
+            domain,
+            purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+            record_type="TXT",
+            name=f"_amazonses.{domain.hostname}",
+            value=verification_token,
+            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+        )
+    if domain.setup_mode == Domain.SetupMode.DIRECT_MX:
+        _upsert_dns_instruction(
+            domain,
+            purpose=DomainDNSRecord.Purpose.MX,
+            record_type="MX",
+            name=domain.hostname,
+            value="inbound-smtp.us-east-1.amazonaws.com",
+            priority=10,
+            is_required=True,
+        )
+    for token in dkim_tokens:
+        _upsert_dns_instruction(
+            domain,
+            purpose=DomainDNSRecord.Purpose.DKIM,
+            record_type="CNAME",
+            name=f"{token}._domainkey.{domain.hostname}",
+            value=f"{token}.dkim.amazonses.com",
+            is_required=False,
+        )
+    if dkim_tokens:
+        current_dkim_names = {f"{token}._domainkey.{domain.hostname}" for token in dkim_tokens}
+        domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exclude(
+            name__in=current_dkim_names
+        ).delete()
 
 
 def expire_unverified_claims() -> int:
@@ -219,13 +299,6 @@ def expire_unverified_claims() -> int:
 
 def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
     if domain.status == Domain.Status.DISABLED:
-        if domain.ses_identity_status == "PROVISIONING":
-            Domain.objects.filter(
-                id=domain.id,
-                status=Domain.Status.DISABLED,
-                ses_identity_status="PROVISIONING",
-            ).update(ses_identity_status="MANAGED", updated_at=timezone.now())
-            domain.ses_identity_status = "MANAGED"
         return domain
     if domain.status != Domain.Status.PROVISIONING:
         return domain
@@ -233,69 +306,179 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
     attributes = client.get_identity_verification_attributes(Identities=[domain.hostname]).get(
         "VerificationAttributes", {}
     )
-    previously_managed = (
-        Domain.objects.filter(hostname=domain.hostname, ses_identity_status="MANAGED")
-        .exclude(id=domain.id)
-        .exists()
+    identity_attributes = attributes.get(domain.hostname, {})
+    dkim_attributes = client.get_identity_dkim_attributes(Identities=[domain.hostname]).get(
+        "DkimAttributes", {}
     )
-    if (
-        domain.hostname in attributes
-        and domain.ses_identity_status
-        not in {
-            "MANAGED",
-            "PROVISIONING",
-        }
-        and not previously_managed
-    ):
-        with transaction.atomic():
-            locked_domain = Domain.objects.select_for_update().get(id=domain.id)
-            if locked_domain.status == Domain.Status.DISABLED:
-                return locked_domain
-            if locked_domain.status != Domain.Status.PROVISIONING:
-                return locked_domain
-            locked_domain.status = Domain.Status.ERROR
-            locked_domain.error_code = "ses_identity_collision"
-            locked_domain.error_message = (
-                "This SES identity already exists and was not created by Operational Inbox. "
-                "Manual review is required."
-            )
-            locked_domain.save(
-                update_fields=("status", "error_code", "error_message", "updated_at")
-            )
-            return locked_domain
-    if domain.hostname not in attributes and domain.ses_identity_status != "PROVISIONING":
+    identity_dkim_attributes = dkim_attributes.get(domain.hostname, {})
+    identity_exists = domain.hostname in attributes or domain.hostname in dkim_attributes
+    may_manage_identity = domain.ses_identity_origin == Domain.SESIdentityOrigin.MANAGED
+    verification_token = str(identity_attributes.get("VerificationToken", ""))
+    verification_status = str(identity_attributes.get("VerificationStatus", "")).upper()
+    dkim_tokens = [str(value) for value in identity_dkim_attributes.get("DkimTokens", [])]
+
+    if not identity_exists:
+        # Persist intent before the AWS calls. A retry can then distinguish an
+        # identity this application started creating from an unrelated existing
+        # identity without overloading the observed SES verification status.
         domain.ses_identity_status = "PROVISIONING"
-        domain.save(update_fields=("ses_identity_status", "updated_at"))
-    verification = client.verify_domain_identity(Domain=domain.hostname)
-    dkim = client.verify_domain_dkim(Domain=domain.hostname)
+        domain.ses_identity_origin = Domain.SESIdentityOrigin.MANAGED
+        domain.save(update_fields=("ses_identity_status", "ses_identity_origin", "updated_at"))
+        may_manage_identity = True
+
+    if may_manage_identity and (not verification_token or verification_status == "FAILED"):
+        verification = client.verify_domain_identity(Domain=domain.hostname)
+        verification_token = str(verification["VerificationToken"])
+        verification_status = "PENDING"
+    if may_manage_identity and (
+        not dkim_tokens
+        or str(identity_dkim_attributes.get("DkimVerificationStatus", "")).upper() == "FAILED"
+    ):
+        dkim = client.verify_domain_dkim(Domain=domain.hostname)
+        dkim_tokens = [str(value) for value in dkim.get("DkimTokens", [])]
+
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
         if locked_domain.status == Domain.Status.DISABLED:
-            if locked_domain.ses_identity_status == "PROVISIONING":
-                locked_domain.ses_identity_status = "MANAGED"
-                locked_domain.save(update_fields=("ses_identity_status", "updated_at"))
             return locked_domain
         if locked_domain.status != Domain.Status.PROVISIONING:
             return locked_domain
         build_dns_instructions(
             locked_domain,
-            verification_token=str(verification["VerificationToken"]),
-            dkim_tokens=[str(value) for value in dkim.get("DkimTokens", [])],
+            ownership_token=(
+                locked_domain.dns_records.filter(
+                    purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+                    name=application_ownership_record_name(locked_domain),
+                )
+                .values_list("value", flat=True)
+                .first()
+                or secrets.token_urlsafe(32)
+            ),
+            verification_token=verification_token,
+            dkim_tokens=dkim_tokens,
         )
-        locked_domain.ses_identity_status = "MANAGED"
+        locked_domain.ses_identity_status = verification_status or "PENDING"
+        locked_domain.ses_identity_origin = (
+            Domain.SESIdentityOrigin.MANAGED
+            if may_manage_identity
+            else Domain.SESIdentityOrigin.ADOPTION_PENDING
+        )
         locked_domain.status = Domain.Status.PENDING_DNS
         locked_domain.error_code = ""
         locked_domain.error_message = ""
         locked_domain.save(
             update_fields=(
                 "ses_identity_status",
+                "ses_identity_origin",
                 "status",
                 "error_code",
                 "error_message",
                 "updated_at",
             )
         )
+        if locked_domain.ses_identity_origin == Domain.SESIdentityOrigin.ADOPTION_PENDING:
+            AuditEvent.objects.get_or_create(
+                organization=locked_domain.organization,
+                actor_type=AuditEvent.ActorType.SYSTEM,
+                event_type="domain.ses_identity_adoption_pending",
+                object_type="Domain",
+                object_id=locked_domain.id,
+                request_id=f"provision:{locked_domain.id}:existing-identity",
+                defaults={
+                    "metadata": {
+                        "ses_verification_status": locked_domain.ses_identity_status,
+                        "dkim_instructions_available": bool(dkim_tokens),
+                    }
+                },
+            )
         return locked_domain
+
+
+def reconcile_ses_identity_adoption(
+    domain: Domain,
+    *,
+    ses_verification_status: str,
+    dkim_verification_status: str,
+    ses_client=None,
+) -> tuple[str, str] | None:
+    """Safely restart a claimed pre-existing SES identity when AWS reports failure."""
+
+    if domain.ses_identity_origin not in {
+        Domain.SESIdentityOrigin.ADOPTION_PENDING,
+        Domain.SESIdentityOrigin.ADOPTED,
+    }:
+        return None
+    if not domain.dns_records.filter(
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        name=application_ownership_record_name(domain),
+        status=DomainDNSRecord.Status.VALID,
+    ).exists():
+        return None
+
+    verification_status = str(ses_verification_status).upper()
+    dkim_status = str(dkim_verification_status).upper()
+    has_verification_instruction = domain.dns_records.filter(
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
+    ).exists()
+    has_dkim_instructions = domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exists()
+    restart_verification = verification_status not in {"PENDING", "SUCCESS"} or (
+        verification_status == "PENDING" and not has_verification_instruction
+    )
+    restart_dkim = dkim_status not in {"PENDING", "SUCCESS"} or (
+        dkim_status == "PENDING" and not has_dkim_instructions
+    )
+    if not restart_verification and not restart_dkim:
+        return verification_status, dkim_status
+
+    client = ses_client or boto3.client("ses", region_name=settings.AWS_REGION)
+    if restart_verification:
+        verification = client.verify_domain_identity(Domain=domain.hostname)
+        _upsert_dns_instruction(
+            domain,
+            purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+            record_type="TXT",
+            name=f"_amazonses.{domain.hostname}",
+            value=str(verification["VerificationToken"]),
+            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+        )
+        verification_status = "PENDING"
+    if restart_dkim:
+        dkim = client.verify_domain_dkim(Domain=domain.hostname)
+        dkim_tokens = [str(value) for value in dkim.get("DkimTokens", [])]
+        if not dkim_tokens:
+            raise RuntimeError("Amazon SES did not return DKIM tokens for the adopted identity.")
+        for token in dkim_tokens:
+            _upsert_dns_instruction(
+                domain,
+                purpose=DomainDNSRecord.Purpose.DKIM,
+                record_type="CNAME",
+                name=f"{token}._domainkey.{domain.hostname}",
+                value=f"{token}.dkim.amazonses.com",
+                is_required=False,
+            )
+        if dkim_tokens:
+            current_dkim_names = {f"{token}._domainkey.{domain.hostname}" for token in dkim_tokens}
+            domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exclude(
+                name__in=current_dkim_names
+            ).delete()
+        dkim_status = "PENDING"
+
+    domain.ses_identity_status = verification_status
+    domain.save(update_fields=("ses_identity_status", "updated_at"))
+    AuditEvent.objects.create(
+        organization=domain.organization,
+        actor_type=AuditEvent.ActorType.SYSTEM,
+        event_type="domain.ses_identity_reinitialized",
+        object_type="Domain",
+        object_id=domain.id,
+        request_id=f"dns:{domain.id}:reinit:{secrets.token_hex(4)}",
+        metadata={
+            "ses_verification_restarted": restart_verification,
+            "dkim_restarted": restart_dkim,
+        },
+    )
+    getattr(domain, "_prefetched_objects_cache", {}).pop("dns_records", None)
+    return verification_status, dkim_status
 
 
 def _assert_domain_test_ready(domain: Domain) -> None:
@@ -303,13 +486,15 @@ def _assert_domain_test_ready(domain: Domain) -> None:
     if (
         domain.status != Domain.Status.PENDING_TEST
         or not domain.ownership_verified
+        or (
+            domain.setup_mode == Domain.SetupMode.DIRECT_MX
+            and domain.ses_identity_status != "SUCCESS"
+        )
         or not required_records.exists()
         or required_records.exclude(status=DomainDNSRecord.Status.VALID).exists()
         or not domain.inbound_routes.filter(is_active=True).exists()
     ):
-        raise ValidationError(
-            "Verify the required DNS records before generating a test address."
-        )
+        raise ValidationError("Verify the required DNS records before generating a test address.")
 
 
 def _assert_domain_test_cooldown(domain: Domain, *, now=None) -> None:
@@ -366,13 +551,29 @@ def apply_domain_readiness(
         return False
     previous_ownership = domain.ownership_verified
     records = list(domain.dns_records.all())
+    requires_fresh_application_proof = domain.ses_identity_origin in {
+        Domain.SESIdentityOrigin.ADOPTION_PENDING,
+        Domain.SESIdentityOrigin.ADOPTED,
+    }
     ownership_dns = any(
         item.purpose == DomainDNSRecord.Purpose.OWNERSHIP
         and item.status == DomainDNSRecord.Status.VALID
+        and (
+            not requires_fresh_application_proof
+            or item.name == application_ownership_record_name(domain)
+        )
         for item in records
     )
     required_valid = bool(records) and all(
         not item.is_required or item.status == DomainDNSRecord.Status.VALID for item in records
+    )
+    observed_ses_status = str(
+        ses_verification_status
+        if ses_verification_status is not None
+        else domain.ses_identity_status
+    ).upper()
+    ses_receiving_ready = (
+        domain.setup_mode != Domain.SetupMode.DIRECT_MX or observed_ses_status == "SUCCESS"
     )
     test_received = domain.tests.filter(status=DomainTest.Status.RECEIVED).exists()
 
@@ -381,21 +582,42 @@ def apply_domain_readiness(
         domain.verified_at = now
     elif not ownership_dns:
         domain.verified_at = None
+    adoption_completed = (
+        ownership_dns and domain.ses_identity_origin == Domain.SESIdentityOrigin.ADOPTION_PENDING
+    )
+    if adoption_completed:
+        domain.ses_identity_origin = Domain.SESIdentityOrigin.ADOPTED
 
     if ses_verification_status is not None:
         domain.ses_identity_status = ses_verification_status.upper()
     if ses_verification_status is not None or dkim_verification_status is not None:
         domain.outbound_ready = (
-            str(ses_verification_status).upper() == "SUCCESS"
+            ownership_dns
+            and str(ses_verification_status).upper() == "SUCCESS"
             and str(dkim_verification_status).upper() == "SUCCESS"
         )
+    elif not ownership_dns:
+        # Never preserve send authorization after current DNS ownership proof
+        # disappears, even when SES observations are temporarily unavailable.
+        domain.outbound_ready = False
 
-    domain.inbound_ready = ownership_dns and required_valid and test_received
+    domain.inbound_ready = (
+        ownership_dns and required_valid and ses_receiving_ready and test_received
+    )
     if not ownership_dns or not required_valid:
         if domain.status in {Domain.Status.READY, Domain.Status.DEGRADED}:
             domain.status = Domain.Status.DEGRADED
             domain.error_code = "dns_drift"
             domain.error_message = "A required ownership or routing DNS record no longer matches."
+        else:
+            domain.status = Domain.Status.PENDING_DNS
+    elif not ses_receiving_ready:
+        if domain.status in {Domain.Status.READY, Domain.Status.DEGRADED}:
+            domain.status = Domain.Status.DEGRADED
+            domain.error_code = "ses_identity_not_ready"
+            domain.error_message = (
+                "Amazon SES no longer reports this direct-receiving identity as verified."
+            )
         else:
             domain.status = Domain.Status.PENDING_DNS
     elif domain.inbound_ready:
@@ -408,4 +630,14 @@ def apply_domain_readiness(
         domain.error_message = ""
     domain.last_checked_at = now
     domain.save()
+    if adoption_completed:
+        AuditEvent.objects.get_or_create(
+            organization=domain.organization,
+            actor_type=AuditEvent.ActorType.SYSTEM,
+            event_type="domain.ses_identity_adopted",
+            object_type="Domain",
+            object_id=domain.id,
+            request_id=f"dns:{domain.id}:identity-adopted",
+            defaults={"metadata": {"ownership_record": application_ownership_record_name(domain)}},
+        )
     return previous_ownership != domain.ownership_verified

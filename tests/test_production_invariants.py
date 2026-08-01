@@ -108,12 +108,13 @@ def test_generic_ses_email_does_not_enter_outbound_delivery_pipeline():
     assert "Tags" not in kwargs
 
 
-def test_deploy_contract_uses_private_ssh_and_fixed_production_mail_backend():
+def test_deploy_contract_uses_ephemeral_github_app_auth_and_fixed_mail_backend():
     source = (Path(__file__).parents[1] / ".deploy" / "fabfile.py").read_text()
-    assert 'REPO_URL = f"git@github.com:' in source
-    assert "forward_agent=True" in source
-    assert 'git_prefix = f"GIT_SSH_COMMAND={quote(GIT_SSH_COMMAND)}"' in source
-    assert "env=git_environment" not in source
+    assert 'REPO_URL = f"https://github.com/' in source
+    assert "get_github_token()" in source
+    assert "http.extraHeader" in source
+    assert "GIT_TERMINAL_PROMPT=0" in source
+    assert "forward_agent=True" not in source
     assert "safe.directory=" in source
     assert "DJANGO_EMAIL_BACKEND=ses" in source
     assert '"DJANGO_EMAIL_BACKEND",' not in source
@@ -214,6 +215,7 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
         setup_mode=setup_mode,
         status=Domain.Status.PENDING_TEST,
         ownership_verified=True,
+        ses_identity_status="SUCCESS",
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
     local_part = f"route-{domain.id.hex[:12]}"
@@ -226,12 +228,11 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
     )
     build_dns_instructions(
         domain,
+        ownership_token="claim-proof",
         verification_token="ownership-proof",
         dkim_tokens=[],
     )
-    domain.dns_records.filter(is_required=True).update(
-        status=DomainDNSRecord.Status.VALID
-    )
+    domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
     reconciler = Mock()
     test, address = create_domain_test(domain, receipt_rule_reconciler=reconciler)
     assert address.startswith("test-") and address.endswith(f"@{domain.hostname}")
@@ -251,9 +252,7 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
         Domain.Status.DISABLED,
     ],
 )
-def test_delivery_test_rejects_premature_domain_states(
-    organization, project, status
-):
+def test_delivery_test_rejects_premature_domain_states(organization, project, status):
     domain = Domain.objects.create(
         organization=organization,
         project=project,

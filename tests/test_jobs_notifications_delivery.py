@@ -9,7 +9,12 @@ from django.utils import timezone
 
 from inbox.models import AuditEvent, Classification, Domain, DurableJob, Notification
 from inbox.services.ingestion import process_sqs_body
-from inbox.services.jobs import enqueue_job, run_due_jobs
+from inbox.services.jobs import (
+    enqueue_job,
+    retry_domain_provisioning,
+    run_due_jobs,
+    schedule_work,
+)
 from inbox.services.notifications import (
     create_classification_notifications,
     send_pending_email_notification,
@@ -78,6 +83,74 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
     assert domain.error_code == "domain_provision_failed"
     assert "secret AWS detail" not in domain.error_message
     assert AuditEvent.objects.filter(event_type="domain.provision_failed").exists()
+
+
+@pytest.mark.django_db
+def test_recoverable_domain_retry_creates_one_new_active_job(organization, project):
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname="retry-existing.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.ERROR,
+        error_code="ses_identity_collision",
+        error_message="Legacy collision",
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    completed = enqueue_job(
+        kind="provision_domain",
+        idempotency_key=f"provision-domain:{domain.id}",
+        payload={"domain_id": str(domain.id)},
+        organization=organization,
+    )
+    completed.status = DurableJob.Status.COMPLETE
+    completed.save(update_fields=("status", "updated_at"))
+
+    retried_domain, retry_job, started = retry_domain_provisioning(domain)
+    same_domain, same_job, repeated_started = retry_domain_provisioning(retried_domain)
+
+    assert started is True
+    assert repeated_started is False
+    assert same_domain.status == Domain.Status.PROVISIONING
+    assert same_job.id == retry_job.id
+    assert retry_job.id != completed.id
+    assert retry_job.status == DurableJob.Status.PENDING
+    assert (
+        DurableJob.objects.filter(
+            kind="provision_domain",
+            payload__domain_id=str(domain.id),
+            status__in=[
+                DurableJob.Status.PENDING,
+                DurableJob.Status.LEASED,
+                DurableJob.Status.RETRY,
+            ],
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+def test_scheduler_repairs_provisioning_domain_without_an_active_job(organization, project):
+    domain = Domain.objects.create(
+        organization=organization,
+        project=project,
+        hostname="stranded-provisioning.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+
+    schedule_work()
+    first_job = DurableJob.objects.get(kind="provision_domain", payload__domain_id=str(domain.id))
+    schedule_work()
+
+    assert first_job.status == DurableJob.Status.PENDING
+    assert (
+        DurableJob.objects.filter(
+            kind="provision_domain", payload__domain_id=str(domain.id)
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db

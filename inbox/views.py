@@ -70,14 +70,24 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.domains import create_domain, create_domain_test, inspect_mx, normalize_hostname
+from inbox.services.domains import (
+    DomainClaimConflict,
+    create_domain,
+    create_domain_test,
+    inspect_mx,
+    normalize_hostname,
+)
 from inbox.services.drafts import (
     approve_exact_revision,
     create_draft,
     resend_outbound,
     revise_draft,
 )
-from inbox.services.jobs import enqueue_job
+from inbox.services.jobs import (
+    can_retry_domain_provisioning,
+    enqueue_job,
+    retry_domain_provisioning,
+)
 from inbox.services.tenancy import current_organization, get_owned_organization, tenant_get_or_404
 
 logger = logging.getLogger(__name__)
@@ -995,8 +1005,7 @@ def domain_mx_inspect(request: HttpRequest) -> JsonResponse:
                 status=503,
             )
         serialized_records = [
-            {"preference": record.preference, "exchange": record.exchange}
-            for record in mx_records
+            {"preference": record.preference, "exchange": record.exchange} for record in mx_records
         ]
         cache.set(cache_key, serialized_records, timeout=60)
 
@@ -1032,6 +1041,38 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
                 project=project,
                 hostname=form.cleaned_data["hostname"],
                 setup_mode=form.cleaned_data["setup_mode"],
+            )
+        except DomainClaimConflict as exc:
+            if exc.existing_domain is not None:
+                same_configuration = (
+                    exc.existing_domain.project_id == project.id
+                    and exc.existing_domain.setup_mode == form.cleaned_data["setup_mode"]
+                )
+                if same_configuration:
+                    if exc.existing_domain.status == Domain.Status.PROVISIONING:
+                        existing, job, started = retry_domain_provisioning(exc.existing_domain)
+                        if started:
+                            _audit(
+                                organization,
+                                request,
+                                "domain.provision_job_repaired",
+                                existing,
+                                {"job_id": str(job.id)},
+                            )
+                    messages.info(
+                        request,
+                        f"{exc.existing_domain.hostname} is already connected or being prepared.",
+                    )
+                else:
+                    messages.warning(
+                        request,
+                        "This domain already has a different active setup. The existing "
+                        "project and routing mode were kept unchanged.",
+                    )
+                return redirect("domain_detail", domain_id=exc.existing_domain.id)
+            form.add_error(
+                "hostname",
+                "This domain is not available for a new ownership claim.",
             )
         except ValidationError as exc:
             form.add_error(None, "; ".join(exc.messages))
@@ -1070,9 +1111,38 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         {
             "active_nav": "domains",
             "domain": domain,
+            "can_retry_provisioning": can_retry_domain_provisioning(domain),
             "new_test_address": _active_domain_test_address(request, domain),
         },
     )
+
+
+@verified_required
+@require_POST
+def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    organization = current_organization(request)
+    domain = tenant_get_or_404(Domain.objects, organization=organization, id=domain_id)
+    try:
+        domain, job, started = retry_domain_provisioning(domain)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        if started:
+            _audit(
+                organization,
+                request,
+                "domain.provision_retry_requested",
+                domain,
+                {"job_id": str(job.id)},
+            )
+            messages.success(
+                request,
+                "Setup retry started. Existing SES settings will be inspected without "
+                "overwriting them.",
+            )
+        else:
+            messages.info(request, "A setup retry is already in progress.")
+    return redirect("domain_detail", domain_id=domain.id)
 
 
 @verified_required

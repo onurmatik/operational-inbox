@@ -9,7 +9,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from inbox.models import Domain, DomainDNSRecord
-from inbox.services.domains import apply_domain_readiness
+from inbox.services.domains import apply_domain_readiness, reconcile_ses_identity_adoption
 from inbox.services.notifications import create_domain_drift_notifications
 from inbox.services.receipt_rules import reconcile_receipt_rule
 
@@ -23,12 +23,23 @@ def observed_values(record: DomainDNSRecord) -> list[str]:
         raise
     values = []
     for answer in answers:
-        value = str(answer).strip().strip('"').rstrip(".")
+        value = str(answer).strip().strip('"')
         if record.record_type == "MX":
             parts = value.split(maxsplit=1)
             value = parts[-1].rstrip(".")
+        elif record.record_type != "TXT":
+            value = value.rstrip(".")
         values.append(value)
     return sorted(values)
+
+
+def values_match(record: DomainDNSRecord, observed: list[str]) -> bool:
+    if record.record_type == "TXT":
+        # Ownership nonces and SES verification tokens are case-sensitive.
+        return record.value in observed
+    expected = record.value.rstrip(".").casefold()
+    normalized = {item.rstrip(".").casefold() for item in observed}
+    return expected in normalized
 
 
 class Command(BaseCommand):
@@ -55,11 +66,9 @@ class Command(BaseCommand):
                 record.last_checked_at = now
                 record.save(update_fields=("error_message", "last_checked_at", "updated_at"))
                 continue
-            expected = record.value.rstrip(".").casefold()
-            normalized = {item.rstrip(".").casefold() for item in observed}
             record.observed_values = observed
             record.last_checked_at = now
-            if expected in normalized:
+            if values_match(record, observed):
                 record.status = DomainDNSRecord.Status.VALID
                 record.error_message = ""
             else:
@@ -112,6 +121,15 @@ class Command(BaseCommand):
                             .items()
                         }
                     )
+                for domain in domains:
+                    adoption_statuses = reconcile_ses_identity_adoption(
+                        domain,
+                        ses_verification_status=verification.get(domain.hostname, ""),
+                        dkim_verification_status=dkim.get(domain.hostname, ""),
+                        ses_client=ses,
+                    )
+                    if adoption_statuses is not None:
+                        verification[domain.hostname], dkim[domain.hostname] = adoption_statuses
             except (BotoCoreError, ClientError):
                 # DNS checks still provide useful, durable observations. Preserve
                 # the previous outbound readiness until SES can be queried again.

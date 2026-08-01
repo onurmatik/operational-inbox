@@ -18,6 +18,7 @@ from inbox.models import (
     Domain,
     DomainDNSRecord,
     DomainTest,
+    DurableJob,
     InboundRoute,
     Notification,
     Organization,
@@ -98,9 +99,7 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
 
 
 @pytest.mark.django_db
-def test_domain_mx_inspection_recommends_and_caches_public_dns_result(
-    client, owner, monkeypatch
-):
+def test_domain_mx_inspection_recommends_and_caches_public_dns_result(client, owner, monkeypatch):
     client.force_login(owner)
     cache.clear()
     calls = []
@@ -141,9 +140,7 @@ def test_domain_mx_inspection_preserves_existing_mail_and_surfaces_dns_failures(
 
     assert existing.status_code == 200
     assert existing.json()["recommended_setup_mode"] == Domain.SetupMode.PROVIDER_FORWARD
-    assert existing.json()["mx_records"] == [
-        {"preference": 10, "exchange": "mx1.example.net"}
-    ]
+    assert existing.json()["mx_records"] == [{"preference": 10, "exchange": "mx1.example.net"}]
     assert client.get(url, {"hostname": "mail.example.org"}).status_code == 405
 
     def unavailable(hostname):
@@ -206,7 +203,8 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     )
     build_dns_instructions(
         domain,
-        verification_token="ownership-proof",
+        ownership_token="ownership-proof",
+        verification_token="ses-proof",
         dkim_tokens=["dkim-one"],
     )
 
@@ -217,8 +215,10 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     assert b"cannot change them for you" in response.content
     assert b"incoming email for every address" in response.content
     assert b"I've updated DNS" in response.content
-    assert b"_amazonses.dns.example.org" in response.content
+    assert b"_operational-inbox-claim.dns.example.org" in response.content
     assert b"ownership-proof" in response.content
+    assert b"_amazonses.dns.example.org" in response.content
+    assert b"ses-proof" in response.content
     assert b"inbound-smtp.us-east-1.amazonaws.com" in response.content
     assert b"dkim-one._domainkey.dns.example.org" in response.content
     assert b"dkim-one.dkim.amazonses.com" in response.content
@@ -227,9 +227,7 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
 
 
 @pytest.mark.django_db
-def test_domain_detail_pending_test_enables_delivery_test(
-    client, owner, organization, project
-):
+def test_domain_detail_pending_test_enables_delivery_test(client, owner, organization, project):
     client.force_login(owner)
     session = client.session
     session["organization_id"] = str(organization.id)
@@ -244,12 +242,11 @@ def test_domain_detail_pending_test_enables_delivery_test(
     domain.save(update_fields=("ownership_verified", "updated_at"))
     build_dns_instructions(
         domain,
+        ownership_token="ownership-proof",
         verification_token="ownership-proof",
         dkim_tokens=["dkim-one"],
     )
-    domain.dns_records.filter(is_required=True).update(
-        status=DomainDNSRecord.Status.VALID
-    )
+    domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
 
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
@@ -272,9 +269,7 @@ def test_domain_detail_pending_test_enables_delivery_test(
 
 
 @pytest.mark.django_db
-def test_web_rejects_premature_domain_test_creation(
-    client, owner, organization, project
-):
+def test_web_rejects_premature_domain_test_creation(client, owner, organization, project):
     client.force_login(owner)
     session = client.session
     session["organization_id"] = str(organization.id)
@@ -318,6 +313,7 @@ def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
     )
     build_dns_instructions(
         domain,
+        ownership_token="ownership-proof",
         verification_token="ownership-proof",
         dkim_tokens=["dkim-one"],
     )
@@ -330,10 +326,65 @@ def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
 
     assert response.status_code == 200
     assert b"Setup could not be completed." in response.content
+    assert b"email service could not finish" in response.content
+    assert b"We found an existing SES identity" not in response.content
     assert b"Provider catch-all forwarding" not in response.content
     assert route.address.encode() not in response.content
     assert b"DNS records to add" not in response.content
     assert b"ownership-proof" not in response.content
+
+
+@pytest.mark.django_db
+def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    session = client.session
+    session["organization_id"] = str(organization.id)
+    session.save()
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="existing-identity.example.org",
+        status=Domain.Status.ERROR,
+    )
+    domain.error_code = "ses_identity_collision"
+    domain.error_message = "This SES identity already exists."
+    domain.save(update_fields=("error_code", "error_message", "updated_at"))
+
+    detail = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert detail.status_code == 200
+    assert b"Your DNS and mail routing were not changed" in detail.content
+    assert b"new, unique DNS ownership record" in detail.content
+    assert b"Retry setup safely" in detail.content
+    assert b"Support details" in detail.content
+
+    retry_url = reverse("domain_retry_provisioning", args=[domain.id])
+    first = client.post(retry_url, follow=True)
+    second = client.post(retry_url, follow=True)
+    domain.refresh_from_db()
+
+    assert first.status_code == 200
+    assert b"Preparing your DNS instructions" in first.content
+    assert b"A setup retry is already in progress." in second.content
+    assert domain.status == Domain.Status.PROVISIONING
+    assert (
+        DurableJob.objects.filter(
+            kind="provision_domain",
+            payload__domain_id=str(domain.id),
+            status=DurableJob.Status.PENDING,
+        ).count()
+        == 1
+    )
+    assert (
+        AuditEvent.objects.filter(
+            organization=organization,
+            event_type="domain.provision_retry_requested",
+            object_id=domain.id,
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db

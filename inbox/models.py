@@ -224,6 +224,11 @@ class Domain(ProjectScopedModel):
         DEGRADED = "DEGRADED", "Degraded"
         DISABLED = "DISABLED", "Disabled"
 
+    class SESIdentityOrigin(models.TextChoices):
+        MANAGED = "MANAGED", "Created by Operational Inbox"
+        ADOPTION_PENDING = "ADOPTION_PENDING", "Existing identity; ownership pending"
+        ADOPTED = "ADOPTED", "Existing identity; ownership verified"
+
     hostname = models.CharField(max_length=253)
     setup_mode = models.CharField(max_length=24, choices=SetupMode.choices)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PROVISIONING)
@@ -231,6 +236,9 @@ class Domain(ProjectScopedModel):
     inbound_ready = models.BooleanField(default=False)
     outbound_ready = models.BooleanField(default=False)
     ses_identity_status = models.CharField(max_length=32, blank=True)
+    ses_identity_origin = models.CharField(
+        max_length=24, choices=SESIdentityOrigin.choices, blank=True
+    )
     existing_mx = models.JSONField(default=list, blank=True)
     claim_expires_at = models.DateTimeField()
     verified_at = models.DateTimeField(null=True, blank=True)
@@ -260,6 +268,7 @@ class Domain(ProjectScopedModel):
 class DomainDNSRecord(OrganizationScopedModel):
     class Purpose(models.TextChoices):
         OWNERSHIP = "OWNERSHIP", "Ownership"
+        SES_VERIFICATION = "SES_VERIFICATION", "SES verification"
         MX = "MX", "Mail exchange"
         DKIM = "DKIM", "DKIM"
         SPF = "SPF", "SPF"
@@ -287,8 +296,8 @@ class DomainDNSRecord(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("domain", "purpose", "record_type", "name", "value"),
-                name="uniq_domain_dns_instruction",
+                fields=("domain", "purpose", "record_type", "name"),
+                name="uniq_domain_dns_instruction_target",
             )
         ]
 

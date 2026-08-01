@@ -42,14 +42,14 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.domains import create_domain, create_domain_test
+from inbox.services.domains import DomainClaimConflict, create_domain, create_domain_test
 from inbox.services.drafts import (
     approve_exact_revision,
     create_draft,
     resend_outbound,
     revise_draft,
 )
-from inbox.services.jobs import enqueue_job
+from inbox.services.jobs import enqueue_job, retry_domain_provisioning
 
 logger = logging.getLogger(__name__)
 
@@ -563,7 +563,7 @@ def domains_list(request: HttpRequest, organization_id: uuid.UUID):
 @api.post(
     "/organizations/{organization_id}/domains",
     auth=authenticated,
-    response={202: dict},
+    response={200: dict, 202: dict},
     tags=["Domains"],
 )
 def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: DomainInput):
@@ -582,6 +582,33 @@ def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: Do
             hostname=payload.hostname,
             setup_mode=payload.setup_mode,
         )
+    except DomainClaimConflict as exc:
+        if exc.existing_domain is not None:
+            if (
+                exc.existing_domain.project_id != payload.project_id
+                or exc.existing_domain.setup_mode != payload.setup_mode
+            ):
+                raise APIError(
+                    "domain_claim_conflict",
+                    "The domain already has an active claim with different settings.",
+                    status=409,
+                ) from exc
+            if exc.existing_domain.status == Domain.Status.PROVISIONING:
+                existing, job, started = retry_domain_provisioning(exc.existing_domain)
+                if started:
+                    record_api_audit(
+                        request,
+                        organization,
+                        "domain.provision_job_repaired",
+                        existing,
+                        {"job_id": str(job.id)},
+                    )
+            return Status(200, _domain_dict(exc.existing_domain))
+        raise APIError(
+            "domain_claim_conflict",
+            "The domain is not available for a new ownership claim.",
+            status=409,
+        ) from exc
     except DjangoValidationError as exc:
         raise APIError(
             "validation_error",
@@ -615,6 +642,44 @@ def domains_detail(request: HttpRequest, organization_id: uuid.UUID, domain_id: 
 
 
 @api.post(
+    "/organizations/{organization_id}/domains/{domain_id}/retry",
+    auth=authenticated,
+    response={202: dict},
+    tags=["Domains"],
+)
+def domains_retry_provisioning(
+    request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID
+):
+    require_scope(request, APIToken.Scope.WRITE)
+    organization = api_organization(request, organization_id)
+    domain = scoped_object(Domain, organization, domain_id)
+    try:
+        domain, job, started = retry_domain_provisioning(domain)
+    except DjangoValidationError as exc:
+        raise APIError(
+            "domain_retry_not_allowed",
+            "; ".join(exc.messages),
+            status=409,
+        ) from exc
+    if started:
+        record_api_audit(
+            request,
+            organization,
+            "domain.provision_retry_requested",
+            domain,
+            {"job_id": str(job.id)},
+        )
+    return Status(
+        202,
+        {
+            "status": domain.status,
+            "job_id": str(job.id),
+            "started": started,
+        },
+    )
+
+
+@api.post(
     "/organizations/{organization_id}/domains/{domain_id}/check",
     auth=authenticated,
     response={202: dict},
@@ -624,12 +689,16 @@ def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: u
     require_scope(request, APIToken.Scope.WRITE)
     organization = api_organization(request, organization_id)
     domain = scoped_object(Domain, organization, domain_id)
-    if domain.status not in {
-        Domain.Status.PENDING_DNS,
-        Domain.Status.PENDING_TEST,
-        Domain.Status.READY,
-        Domain.Status.DEGRADED,
-    } or not domain.dns_records.exists():
+    if (
+        domain.status
+        not in {
+            Domain.Status.PENDING_DNS,
+            Domain.Status.PENDING_TEST,
+            Domain.Status.READY,
+            Domain.Status.DEGRADED,
+        }
+        or not domain.dns_records.exists()
+    ):
         raise APIError(
             "dns_instructions_not_ready",
             "DNS instructions must be ready before requesting a check.",
@@ -654,9 +723,7 @@ def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: u
     if job.status in {DurableJob.Status.COMPLETE, DurableJob.Status.FAILED}:
         job = enqueue_job(
             kind="dns_check",
-            idempotency_key=(
-                f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M%S%f}"
-            ),
+            idempotency_key=(f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M%S%f}"),
             payload={"domain_id": str(domain.id)},
             organization=organization,
         )

@@ -47,6 +47,11 @@ urlpatterns = [
     ),
     path("app/domains/<uuid:domain_id>/", views.domain_detail, name="domain_detail"),
     path(
+        "app/domains/<uuid:domain_id>/retry/",
+        views.domain_retry_provisioning,
+        name="domain_retry_provisioning",
+    ),
+    path(
         "app/domains/<uuid:domain_id>/test/",
         views.domain_create_test,
         name="domain_create_test",
