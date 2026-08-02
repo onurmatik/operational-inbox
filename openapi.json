@@ -139,6 +139,23 @@
         "title": "RevisionInput",
         "type": "object"
       },
+      "RoutingTransitionInput": {
+        "properties": {
+          "target_mode": {
+            "enum": [
+              "DIRECT_MX",
+              "PROVIDER_FORWARD"
+            ],
+            "title": "Target Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_mode"
+        ],
+        "title": "RoutingTransitionInput",
+        "type": "object"
+      },
       "TokenInput": {
         "properties": {
           "name": {
@@ -1325,6 +1342,102 @@
         ]
       }
     },
+    "/api/v1/domains/{domain_id}/routing/transition": {
+      "post": {
+        "operationId": "inbox_api_domains_start_routing_transition",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutingTransitionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Start Routing Transition",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/routing/transition/cancel": {
+      "post": {
+        "operationId": "inbox_api_domains_cancel_routing_transition",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Cancel Routing Transition",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
     "/api/v1/domains/{domain_id}/test": {
       "post": {
         "operationId": "inbox_api_domains_test",
@@ -1341,6 +1454,18 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
           "201": {
             "content": {
               "application/json": {

@@ -27,12 +27,6 @@
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >I've updated target DNS — Check records</button>
       {% elif active_transition.status == 'WAITING_TEST' %}
-        {% if not new_test_address %}
-          <form method="post" action="{% url 'domain_create_test' domain.id %}" data-domain-test-form aria-busy="false">
-            {% csrf_token %}
-            <button class="oi-button-primary">Generate target-path test</button>
-          </form>
-        {% endif %}
         <button
           id="dns-check-button"
           type="button"
@@ -51,12 +45,6 @@
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >I've updated DNS — Check records</button>
       {% elif domain.status == 'PENDING_TEST' %}
-        {% if not new_test_address %}
-          <form method="post" action="{% url 'domain_create_test' domain.id %}" data-domain-test-form aria-busy="false">
-            {% csrf_token %}
-            <button class="oi-button-primary">Generate test address</button>
-          </form>
-        {% endif %}
         <button
           id="dns-check-button"
           type="button"
@@ -114,10 +102,37 @@
       {% endif %}
     </section>
   {% elif domain.status == 'PENDING_TEST' %}
-    <section class="mt-6 border border-mint-strong/40 bg-mint-soft p-5 text-mint-strong">
+    <section
+      class="mt-6 border border-mint-strong/40 bg-mint-soft p-5 text-mint-strong"
+      {% if new_test_address and not active_transition %}
+        data-inbound-test-poll
+        data-detail-url="/api/v1/domains/{{ domain.id }}"
+        aria-live="polite"
+        aria-busy="true"
+      {% endif %}
+    >
       <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">DNS verified · Final check</p>
       <h2 class="mt-2 font-heading text-lg font-semibold">Confirm delivery with a real email</h2>
-      <p class="mt-2 max-w-2xl text-sm leading-6">The required DNS records are verified. Generate a private test address, then send one real email to confirm that the complete receiving path works.</p>
+      {% if new_test_address %}
+        <p class="mt-2 max-w-3xl text-sm leading-6">From any external email account, send a new message to the address below. You do not need to create a new mailbox. This page updates automatically when the message arrives.</p>
+        <div class="mt-4 border border-mint-strong/30 bg-white/70 p-3">
+          <code id="test-address" class="block min-w-0 break-all bg-white px-3 py-2 font-mono text-sm text-ink">{{ new_test_address }}</code>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <a class="oi-button-primary" href="mailto:{{ new_test_address }}?subject=Operational%20Inbox%20receiving%20test">Open email app</a>
+            <button type="button" class="oi-button-secondary" data-copy="#test-address" data-copy-label="Copy address" aria-label="Copy test email address" aria-live="polite">Copy address</button>
+          </div>
+        </div>
+        <p class="mt-3 text-xs" data-inbound-test-status>Waiting for the test email. You can leave this page open.</p>
+      {% elif test_address_unavailable %}
+        <div class="mt-4 border border-gold-strong/40 bg-gold-soft p-4 text-gold-strong" role="status">
+          <p class="font-semibold">We couldn't prepare the test address.</p>
+          <p class="mt-1 text-sm">Your DNS is verified. Try preparing the address again; no new mailbox is required.</p>
+          <form method="post" action="{% url 'domain_create_test' domain.id %}" class="mt-3" data-domain-retry-form data-busy-label="Trying again…" aria-busy="false">
+            {% csrf_token %}
+            <button class="oi-button-secondary">Try again</button>
+          </form>
+        </div>
+      {% endif %}
     </section>
   {% elif domain.status == 'READY' %}
     <section class="mt-6 border border-mint-strong/40 bg-mint-soft p-5 text-mint-strong">
@@ -268,6 +283,30 @@
             </li>
           </ol>
 
+          {% if active_transition.status == 'WAITING_TEST' %}
+            {% if new_test_address %}
+              <div class="mt-4 border border-blue-strong/30 bg-white/70 p-4">
+                <p class="font-semibold">Confirm the target route with a real email</p>
+                <p class="mt-1 max-w-3xl text-sm leading-6">From any external email account, send a fresh real email through the target route to the address below. You do not need to create a new mailbox. This page updates automatically when the message arrives.</p>
+                <code id="transition-test-address" class="mt-3 block min-w-0 break-all bg-white px-3 py-2 font-mono text-sm text-ink">{{ new_test_address }}</code>
+                <div class="mt-3 flex flex-wrap gap-2">
+                  <a class="oi-button-primary" href="mailto:{{ new_test_address }}?subject=Operational%20Inbox%20target%20route%20test">Open email app</a>
+                  <button type="button" class="oi-button-secondary" data-copy="#transition-test-address" data-copy-label="Copy address" aria-label="Copy target-route test email address" aria-live="polite">Copy address</button>
+                </div>
+                <p class="mt-3 text-xs">Waiting for the test email through the target receiving path.</p>
+              </div>
+            {% elif test_address_unavailable %}
+              <div class="mt-4 border border-gold-strong/40 bg-gold-soft p-4 text-gold-strong" role="status">
+                <p class="font-semibold">We couldn't prepare the target-route test address.</p>
+                <p class="mt-1 text-sm">Try preparing the address again. Your current receiving route remains active.</p>
+                <form method="post" action="{% url 'domain_create_test' domain.id %}" class="mt-3" data-domain-retry-form data-busy-label="Trying again…" aria-busy="false">
+                  {% csrf_token %}
+                  <button class="oi-button-secondary">Try again</button>
+                </form>
+              </div>
+            {% endif %}
+          {% endif %}
+
           {% if active_transition.status == 'FAILED' %}
             <p class="mt-4 border-l-2 border-coral-strong pl-3 text-sm text-coral-strong">The target route could not be prepared. Your current receiving route is still active; cancel this change before trying again.</p>
           {% elif active_transition.status == 'GRACE' %}
@@ -280,7 +319,7 @@
               <p class="mt-1 text-xs">Configure the provider catch-all to forward unmatched mail to this private address before running the target-path test.</p>
               <div class="mt-2 flex items-center gap-2">
                 <code id="transition-forwarding-route" class="min-w-0 break-all bg-white px-3 py-2 font-mono text-xs">{{ target_route.address }}</code>
-                <button type="button" class="oi-button-secondary" data-copy="#transition-forwarding-route">Copy</button>
+                <button type="button" class="oi-button-secondary" data-copy="#transition-forwarding-route" data-copy-label="Copy" aria-label="Copy target provider forwarding alias" aria-live="polite">Copy</button>
               </div>
             </div>
           {% endif %}
@@ -330,19 +369,6 @@
     </details>
   {% endif %}
 
-  {% if new_test_address and domain.status == 'PENDING_TEST' or new_test_address and active_transition.status == 'WAITING_TEST' %}
-    <div class="mt-5 border border-blue-strong/40 bg-blue-soft p-4">
-      <p class="font-semibold text-blue-strong">
-        {% if active_transition.status == 'WAITING_TEST' %}Send a fresh real email through the target route to this address within 24 hours:{% else %}Send a real email to this address within 24 hours:{% endif %}
-      </p>
-      <div class="mt-2 flex items-center gap-2">
-        <code id="test-address" class="break-all bg-white px-3 py-2 font-mono text-sm">{{ new_test_address }}</code>
-        <button type="button" class="oi-button-secondary" data-copy="#test-address">Copy</button>
-      </div>
-      <p class="mt-2 text-xs text-blue-strong">This address uses the customer domain, so the test exercises {% if active_transition.status == 'WAITING_TEST' %}the target receiving path before cutover{% else %}the selected MX or provider-forwarding path{% endif %}.</p>
-    </div>
-  {% endif %}
-
   {% if existing_mx_layout == 'OPERATIONAL_INBOX' %}
     <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5 text-blue-strong">
       <h2 class="font-heading text-lg font-semibold">Direct receiving route found during setup</h2>
@@ -369,7 +395,7 @@
             <p class="mt-2 text-sm text-blue-strong">Keep the current MX records. Configure your mail provider's catch-all to forward to this private, high-entropy route:</p>
             <div class="mt-3 flex items-center gap-2">
               <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ active_route.address }}</code>
-              <button type="button" class="oi-button-secondary" data-copy="#forwarding-route">Copy</button>
+              <button type="button" class="oi-button-secondary" data-copy="#forwarding-route" data-copy-label="Copy" aria-label="Copy provider forwarding route" aria-live="polite">Copy</button>
             </div>
           </section>
         {% endif %}
@@ -459,7 +485,7 @@
 
   <script>
     document.addEventListener("submit", (event) => {
-      const form = event.target.closest("[data-domain-test-form], [data-domain-retry-form], [data-outbound-enable-form]");
+      const form = event.target.closest("[data-domain-retry-form], [data-outbound-enable-form]");
       if (!form) return;
       if (form.getAttribute("aria-busy") === "true") {
         event.preventDefault();
@@ -468,7 +494,7 @@
       form.setAttribute("aria-busy", "true");
       const button = form.querySelector("button");
       button.disabled = true;
-      button.textContent = form.dataset.busyLabel || "Generating test address…";
+      button.textContent = form.dataset.busyLabel || "Preparing test address…";
     });
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -559,13 +585,87 @@
       poll();
     });
 
+    document.addEventListener("DOMContentLoaded", () => {
+      const testPanel = document.querySelector("[data-inbound-test-poll]");
+      if (!testPanel) return;
+      const statusText = testPanel.querySelector("[data-inbound-test-status]");
+      const poll = async () => {
+        let consecutiveErrors = 0;
+        for (let attempt = 0; attempt < 72; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2000 : 5000));
+          try {
+            const domain = await window.OperationalInbox.request(testPanel.dataset.detailUrl);
+            consecutiveErrors = 0;
+            if (domain.inbound_ready || domain.status !== "PENDING_TEST") {
+              window.location.reload();
+              return;
+            }
+          } catch (error) {
+            consecutiveErrors += 1;
+            if (consecutiveErrors >= 3) {
+              testPanel.setAttribute("aria-busy", "false");
+              statusText.textContent = "We couldn't refresh this status automatically. Reload the page to check again.";
+              return;
+            }
+          }
+        }
+        testPanel.setAttribute("aria-busy", "false");
+        statusText.textContent = "We're still waiting for the test email. You can reload this page or return later.";
+      };
+      poll();
+    });
+
     document.addEventListener("click", async (event) => {
       const copyButton = event.target.closest("[data-copy]");
       if (copyButton) {
         const element = document.querySelector(copyButton.dataset.copy);
-        await navigator.clipboard.writeText(element.textContent.trim());
-        copyButton.textContent = "Copied";
-        setTimeout(() => { copyButton.textContent = "Copy"; }, 1500);
+        const originalLabel = copyButton.dataset.copyLabel || copyButton.textContent.trim();
+        const originalAriaLabel = copyButton.getAttribute("aria-label");
+        try {
+          if (!element) {
+            throw new Error("Copy source is unavailable.");
+          }
+          const value = element.textContent.trim();
+          let copied = false;
+          if (navigator.clipboard?.writeText) {
+            try {
+              await navigator.clipboard.writeText(value);
+              copied = true;
+            } catch (error) {
+              copied = false;
+            }
+          }
+          if (!copied) {
+            const textarea = document.createElement("textarea");
+            textarea.value = value;
+            textarea.setAttribute("readonly", "");
+            textarea.style.position = "fixed";
+            textarea.style.opacity = "0";
+            document.body.appendChild(textarea);
+            try {
+              textarea.select();
+              copied = document.execCommand("copy");
+            } finally {
+              textarea.remove();
+            }
+          }
+          if (!copied) {
+            throw new Error("Clipboard access is unavailable.");
+          }
+          copyButton.textContent = "Copied";
+          copyButton.setAttribute("aria-label", "Copied");
+        } catch (error) {
+          copyButton.textContent = "Copy failed";
+          copyButton.setAttribute("aria-label", "Copy failed");
+        }
+        setTimeout(() => {
+          copyButton.textContent = originalLabel;
+          if (originalAriaLabel) {
+            copyButton.setAttribute("aria-label", originalAriaLabel);
+          } else {
+            copyButton.removeAttribute("aria-label");
+          }
+        }, 1500);
         return;
       }
 

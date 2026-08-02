@@ -30,6 +30,7 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     complete_expired_routing_transition,
     create_routing_transition_test,
+    ensure_routing_transition_test,
     finalize_routing_transition_test,
     provision_routing_transition,
     refresh_routing_transition,
@@ -501,7 +502,7 @@ def test_transition_test_is_bound_to_candidate_generation_and_path(
     transition, _ = _begin_waiting_test(domain, target_mode)
     reconciler = Mock()
 
-    test, address = create_routing_transition_test(
+    test, address, created = ensure_routing_transition_test(
         transition,
         receipt_rule_reconciler=reconciler,
     )
@@ -511,8 +512,25 @@ def test_transition_test_is_bound_to_candidate_generation_and_path(
     assert test.setup_generation == transition.generation
     assert test.expected_setup_mode == target_mode
     assert test.expected_route_kind == expected_kind
+    assert test.address == address
+    assert created is True
     assert address.startswith("test-")
     assert address.endswith(f"@{domain.hostname}")
+
+    reused, reused_address, reused_created = ensure_routing_transition_test(
+        transition,
+        receipt_rule_reconciler=reconciler,
+    )
+    wrapped, wrapped_address = create_routing_transition_test(
+        transition,
+        receipt_rule_reconciler=reconciler,
+    )
+
+    assert reused.id == wrapped.id == test.id
+    assert reused_address == wrapped_address == address
+    assert reused_created is False
+    assert transition.tests.filter(status=DomainTest.Status.PENDING).count() == 1
+    assert reconciler.call_count == (1 if target_mode == Domain.SetupMode.DIRECT_MX else 0)
 
 
 @pytest.mark.django_db

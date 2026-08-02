@@ -160,7 +160,9 @@ That action provisions SES identity verification and DKIM records without changi
 state. Direct-MX domains reuse their receiving identity; provider-forward domains touch a
 customer-domain SES identity for the first time at this step.
 
-For both modes, the delivery test targets `test-<token>@<customer-domain>`. Direct mode therefore
+For both modes, the application automatically prepares a persisted
+`test-<token>@<customer-domain>` address as soon as DNS is ready; the owner can send a new message
+to it from any external email account without creating another mailbox. Direct mode therefore
 tests the customer's SES MX path, while forwarding mode tests the existing provider and its
 catch-all rule before the message reaches the high-entropy service route.
 

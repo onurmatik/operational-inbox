@@ -415,12 +415,33 @@ class DomainTest(DomainScopedModel):
         choices=InboundRoute.Kind.choices,
         default=InboundRoute.Kind.DIRECT_DOMAIN,
     )
+    address = models.CharField(max_length=320, null=True, blank=True, unique=True)
     token_hash = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
     expires_at = models.DateTimeField()
     received_message = models.ForeignKey(
         "Message", on_delete=models.SET_NULL, null=True, blank=True, related_name="domain_tests"
     )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=(
+                    "domain",
+                    "setup_generation",
+                    "expected_setup_mode",
+                    "expected_route_kind",
+                ),
+                condition=Q(status="PENDING"),
+                name="uniq_pending_domain_test_scope",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("domain", "status", "setup_generation", "expires_at"),
+                name="domain_test_scope_lookup",
+            )
+        ]
 
 
 class IngressEvent(UUIDTimeStampedModel):

@@ -39,6 +39,7 @@ from inbox.services.domains import (
     build_dns_instructions,
     create_domain,
     create_domain_test,
+    ensure_domain_test,
     expire_unverified_claims,
 )
 from inbox.services.drafts import approve_exact_revision, resend_outbound, revise_draft
@@ -281,11 +282,28 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
     )
     domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
     reconciler = Mock()
-    test, address = create_domain_test(domain, receipt_rule_reconciler=reconciler)
+    test, address, created = ensure_domain_test(
+        domain,
+        receipt_rule_reconciler=reconciler,
+    )
     assert address.startswith("test-") and address.endswith(f"@{domain.hostname}")
+    assert created is True
+    assert test.address == address
     assert len(test.token_hash) == 64
-    with pytest.raises(ValidationError, match="generated recently"):
-        create_domain_test(domain, receipt_rule_reconciler=reconciler)
+
+    reused, reused_address, reused_created = ensure_domain_test(
+        domain,
+        receipt_rule_reconciler=reconciler,
+    )
+    wrapped, wrapped_address = create_domain_test(
+        domain,
+        receipt_rule_reconciler=reconciler,
+    )
+
+    assert reused.id == wrapped.id == test.id
+    assert reused_address == wrapped_address == address
+    assert reused_created is False
+    assert DomainTest.objects.filter(domain=domain, status=DomainTest.Status.PENDING).count() == 1
     assert reconciler.call_count == (1 if setup_mode == Domain.SetupMode.DIRECT_MX else 0)
 
 

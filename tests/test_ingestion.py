@@ -1,14 +1,26 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from datetime import timedelta
+from email.message import EmailMessage
 
 import pytest
 from django.test import override_settings
 from django.utils import timezone
 
-from inbox.models import Domain, InboundRoute, IngressEvent, Message, User
+from inbox.models import (
+    AuditEvent,
+    Domain,
+    DomainDNSRecord,
+    DomainTest,
+    InboundRoute,
+    IngressEvent,
+    Message,
+    User,
+)
+from inbox.services.domains import build_inbound_dns_instructions, ensure_domain_test
 from inbox.services.ingestion import process_sqs_body
 from tests.test_mime_threading import raw_email
 
@@ -82,6 +94,32 @@ def create_route(organization, project, address: str) -> Domain:
         address=address,
     )
     return domain
+
+
+def raw_email_to(
+    address: str,
+    *,
+    from_address: str = "arbitrary-sender@elsewhere.example",
+) -> bytes:
+    message = EmailMessage()
+    message["From"] = from_address
+    message["To"] = address
+    message["Subject"] = "Receiving verification"
+    message["Message-ID"] = "<receiving-verification@example.net>"
+    message.set_content("Verify the configured inbound path.")
+    return message.as_bytes()
+
+
+def provider_forward_challenge(project, *, alias: str) -> tuple[Domain, InboundRoute, DomainTest]:
+    domain = create_route(project, project, alias)
+    domain.inbound_ready = False
+    domain.save(update_fields=("inbound_ready", "updated_at"))
+    build_inbound_dns_instructions(domain, ownership_token="provider-forward-proof")
+    domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
+    test, address, created = ensure_domain_test(domain)
+    assert created is True
+    assert test.address == address
+    return domain, domain.inbound_routes.get(address=alias), test
 
 
 @pytest.mark.django_db
@@ -198,3 +236,86 @@ def test_forwarding_alias_is_not_accepted_after_domain_switches_to_direct(organi
 
     assert not Message.objects.exists()
     assert IngressEvent.objects.get().error_code == "unroutable_recipient"
+
+
+@pytest.mark.django_db
+@override_settings(
+    AWS_INGRESS_BUCKET=BUCKET,
+    AWS_INBOUND_TOPIC_ARN=INBOUND_TOPIC,
+    AWS_DELIVERY_TOPIC_ARN=DELIVERY_TOPIC,
+)
+def test_provider_forward_challenge_marks_receiving_ready_through_real_sqs_and_mime(project):
+    domain, forwarding_route, test = provider_forward_challenge(
+        project,
+        alias="route-verification@inbound.example",
+    )
+    sender = "someone-unrelated@outside.example"
+    s3 = FakeS3(raw_email_to(str(test.address), from_address=sender))
+
+    assert process_sqs_body(sns_body([forwarding_route.address]), s3_client=s3)
+
+    domain.refresh_from_db()
+    test.refresh_from_db()
+    event = IngressEvent.objects.get()
+    message = Message.objects.get(domain=domain)
+    assert event.status == IngressEvent.Status.PROCESSED
+    assert message.from_address == sender
+    assert test.status == DomainTest.Status.RECEIVED
+    assert test.received_message_id == message.id
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert (
+        AuditEvent.objects.filter(
+            domain=domain,
+            event_type="domain.test_received",
+            object_id=test.id,
+        ).count()
+        == 1
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "scenario",
+    ["normal_address", "token_hash_only", "expired", "wrong_generation"],
+)
+@override_settings(
+    AWS_INGRESS_BUCKET=BUCKET,
+    AWS_INBOUND_TOPIC_ARN=INBOUND_TOPIC,
+    AWS_DELIVERY_TOPIC_ARN=DELIVERY_TOPIC,
+)
+def test_provider_forward_challenge_requires_the_exact_current_address(project, scenario):
+    domain, forwarding_route, test = provider_forward_challenge(
+        project,
+        alias="route-exact-address@inbound.example",
+    )
+    mime_recipient = str(test.address)
+    if scenario == "normal_address":
+        mime_recipient = f"ordinary@{domain.hostname}"
+    elif scenario == "token_hash_only":
+        similar_raw = "looks-like-the-current-token"
+        mime_recipient = f"test-{similar_raw}@{domain.hostname}"
+        test.token_hash = hashlib.sha256(similar_raw.encode()).hexdigest()
+        test.save(update_fields=("token_hash", "updated_at"))
+    elif scenario == "expired":
+        test.expires_at = timezone.now() - timedelta(seconds=1)
+        test.save(update_fields=("expires_at", "updated_at"))
+    elif scenario == "wrong_generation":
+        test.setup_generation = domain.inbound_setup_generation + 1
+        test.save(update_fields=("setup_generation", "updated_at"))
+
+    s3 = FakeS3(raw_email_to(mime_recipient))
+    assert process_sqs_body(sns_body([forwarding_route.address]), s3_client=s3)
+
+    domain.refresh_from_db()
+    test.refresh_from_db()
+    assert IngressEvent.objects.get().status == IngressEvent.Status.PROCESSED
+    assert Message.objects.filter(domain=domain).count() == 1
+    assert test.status == DomainTest.Status.PENDING
+    assert test.received_message_id is None
+    assert domain.status == Domain.Status.PENDING_TEST
+    assert not domain.inbound_ready
+    assert not AuditEvent.objects.filter(
+        domain=domain,
+        event_type="domain.test_received",
+    ).exists()

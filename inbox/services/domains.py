@@ -920,44 +920,96 @@ def _assert_domain_test_ready(domain: Domain) -> None:
             kind=expected_route_kind,
             setup_generation=domain.inbound_setup_generation,
         ).exists()
+        or domain.routing_transitions.filter(
+            status__in=(
+                InboundRoutingTransition.Status.PREPARING,
+                InboundRoutingTransition.Status.WAITING_DNS,
+                InboundRoutingTransition.Status.WAITING_TEST,
+                InboundRoutingTransition.Status.GRACE,
+                InboundRoutingTransition.Status.FAILED,
+            )
+        ).exists()
     ):
-        raise ValidationError("Verify the required DNS records before generating a test address.")
+        raise ValidationError("Verify the required DNS records before preparing the test address.")
 
 
-def _assert_domain_test_cooldown(domain: Domain, *, now=None) -> None:
-    now = now or timezone.now()
-    cooldown_started_at = now - timedelta(seconds=settings.DOMAIN_TEST_COOLDOWN_SECONDS)
-    if domain.tests.filter(
-        created_at__gte=cooldown_started_at,
-        setup_generation=domain.inbound_setup_generation,
-        expected_setup_mode=domain.setup_mode,
-    ).exists():
-        raise ValidationError(
-            "A test address was generated recently. Use that address or wait a minute "
-            "before generating another one."
+def _test_address_matches(test: DomainTest, hostname: str) -> bool:
+    if not test.address or "@" not in test.address:
+        return False
+    local_part, address_domain = test.address.rsplit("@", 1)
+    if address_domain.casefold() != hostname.casefold() or not local_part.startswith("test-"):
+        return False
+    raw = local_part.removeprefix("test-")
+    return bool(raw) and secrets.compare_digest(
+        hashlib.sha256(raw.encode()).hexdigest(),
+        test.token_hash,
+    )
+
+
+def _current_locked_domain_test(domain: Domain, *, now) -> DomainTest | None:
+    expected_route_kind = (
+        InboundRoute.Kind.DIRECT_DOMAIN
+        if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        else InboundRoute.Kind.FORWARDING_ALIAS
+    )
+    current = None
+    expire_ids = []
+    pending_tests = domain.tests.select_for_update().filter(status=DomainTest.Status.PENDING)
+    for test in pending_tests.order_by("-created_at", "-id"):
+        exact_current_scope = (
+            test.routing_transition_id is None
+            and test.setup_generation == domain.inbound_setup_generation
+            and test.expected_setup_mode == domain.setup_mode
+            and test.expected_route_kind == expected_route_kind
+            and test.expires_at > now
+            and test.received_message_id is None
+            and _test_address_matches(test, domain.hostname)
         )
+        if exact_current_scope and current is None:
+            current = test
+        else:
+            expire_ids.append(test.id)
+    if expire_ids:
+        DomainTest.objects.filter(id__in=expire_ids).update(
+            status=DomainTest.Status.EXPIRED,
+            updated_at=now,
+        )
+    return current
 
 
-def create_domain_test(
+def ensure_domain_test(
     domain: Domain, *, receipt_rule_reconciler: Callable[[], object] | None = None
-) -> tuple[DomainTest, str]:
-    _assert_domain_test_ready(domain)
-    _assert_domain_test_cooldown(domain)
-    if domain.setup_mode == Domain.SetupMode.DIRECT_MX:
+) -> tuple[DomainTest, str, bool]:
+    """Return the one current setup test, creating it only when none remains usable."""
+
+    now = timezone.now()
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        _assert_domain_test_ready(locked_domain)
+        current = _current_locked_domain_test(locked_domain, now=now)
+        if current is not None:
+            return current, str(current.address), False
+        direct_mx = locked_domain.setup_mode == Domain.SetupMode.DIRECT_MX
+
+    if direct_mx:
         if receipt_rule_reconciler is None:
             from inbox.services.receipt_rules import reconcile_receipt_rule
 
             receipt_rule_reconciler = reconcile_receipt_rule
-        # Direct-MX tests need a current customer-domain recipient rule.
-        # Provider-forward tests use the deployment-managed service-domain rule.
+        # Do not reveal a direct-MX test target before SES accepts this domain.
+        # The AWS call stays outside the row-locking transaction.
         receipt_rule_reconciler()
 
-    raw = secrets.token_urlsafe(24).lower()
-    local_part = f"test-{raw}"
+    now = timezone.now()
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
         _assert_domain_test_ready(locked_domain)
-        _assert_domain_test_cooldown(locked_domain)
+        current = _current_locked_domain_test(locked_domain, now=now)
+        if current is not None:
+            return current, str(current.address), False
+
+        raw = secrets.token_urlsafe(24).lower()
+        address = f"test-{raw}@{locked_domain.hostname}"
         test = DomainTest.objects.create(
             domain=locked_domain,
             setup_generation=locked_domain.inbound_setup_generation,
@@ -967,13 +1019,21 @@ def create_domain_test(
                 if locked_domain.setup_mode == Domain.SetupMode.DIRECT_MX
                 else InboundRoute.Kind.FORWARDING_ALIAS
             ),
+            address=address,
             token_hash=hashlib.sha256(raw.encode()).hexdigest(),
-            expires_at=timezone.now() + timedelta(hours=24),
+            expires_at=now + timedelta(hours=24),
         )
-    # The customer sends to its own domain. Direct mode therefore exercises the
-    # customer MX; forwarding mode exercises the provider catch-all before the
-    # envelope reaches the tenant's high-entropy service route.
-    return test, f"{local_part}@{locked_domain.hostname}"
+        return test, address, True
+
+
+def create_domain_test(
+    domain: Domain, *, receipt_rule_reconciler: Callable[[], object] | None = None
+) -> tuple[DomainTest, str]:
+    test, address, _ = ensure_domain_test(
+        domain,
+        receipt_rule_reconciler=receipt_rule_reconciler,
+    )
+    return test, address
 
 
 def apply_domain_readiness(
@@ -1171,6 +1231,12 @@ def apply_domain_readiness(
         # Preserve that newer state instead of writing this stale observation.
         domain.refresh_from_db()
         return False
+    if observed_status == Domain.Status.PENDING_TEST and domain.status == Domain.Status.PENDING_DNS:
+        DomainTest.objects.filter(
+            domain=domain,
+            routing_transition__isnull=True,
+            status=DomainTest.Status.PENDING,
+        ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
     if adoption_completed:
         AuditEvent.objects.get_or_create(
             domain=domain,

@@ -17,6 +17,7 @@ from inbox.models import (
     DomainDNSRecord,
     DomainTest,
     InboundRoute,
+    InboundRoutingTransition,
 )
 from inbox.services.domains import (
     DomainClaimLookupError,
@@ -550,6 +551,12 @@ def test_provider_forward_dns_check_does_not_query_customer_ses(project):
         name=application_ownership_record_name(domain),
         value="fresh-proof",
     )
+    InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        local_part="route-forward-dns",
+        address="route-forward-dns@inbound.example.net",
+    )
 
     with (
         patch(
@@ -562,11 +569,114 @@ def test_provider_forward_dns_check_does_not_query_customer_ses(project):
         ),
     ):
         call_command("check_domain_drift")
+        call_command("check_domain_drift")
 
     domain.refresh_from_db()
     assert domain.ownership_verified
     assert domain.status == Domain.Status.PENDING_TEST
     assert domain.outbound_status == Domain.OutboundStatus.DISABLED
+    test = DomainTest.objects.get(domain=domain, status=DomainTest.Status.PENDING)
+    assert test.address
+    assert test.address.startswith("test-")
+    assert test.address.endswith(f"@{domain.hostname}")
+    audit = AuditEvent.objects.get(
+        domain=domain,
+        event_type="domain.test_created",
+        object_id=test.id,
+    )
+    assert audit.actor_type == AuditEvent.ActorType.SYSTEM
+    assert audit.object_type == "DomainTest"
+    assert audit.request_id == f"dns:{domain.id}:test:{test.id}"
+
+
+@pytest.mark.django_db
+@override_settings(
+    AWS_INGRESS_BUCKET="bucket",
+    AWS_INBOUND_TOPIC_ARN="arn:aws:sns:us-east-1:1:inbound",
+)
+def test_dns_check_auto_creates_and_reuses_the_transition_challenge(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="transition-challenge.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        ownership_verified=True,
+        inbound_ready=True,
+        ses_identity_status="SUCCESS",
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="transition-proof",
+    )
+    InboundRoute.objects.create(
+        domain=domain,
+        setup_generation=1,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part="transition-source",
+        address="transition-source@inbound.example.net",
+    )
+    transition = InboundRoutingTransition.objects.create(
+        domain=domain,
+        generation=2,
+        from_mode=Domain.SetupMode.DIRECT_MX,
+        to_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        from_domain_status=Domain.Status.READY,
+        status=InboundRoutingTransition.Status.WAITING_DNS,
+    )
+    InboundRoute.objects.create(
+        domain=domain,
+        routing_transition=transition,
+        setup_generation=transition.generation,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        local_part="transition-target",
+        address="transition-target@inbound.example.net",
+    )
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {
+        "VerificationAttributes": {
+            domain.hostname: {"VerificationStatus": "Success"},
+        }
+    }
+
+    with (
+        patch(
+            "inbox.management.commands.check_domain_drift.observed_values",
+            return_value=["transition-proof"],
+        ),
+        patch(
+            "inbox.services.routing_transitions.inspect_mx",
+            return_value=[MXObservation(10, "mx.provider.example")],
+        ),
+        patch("inbox.management.commands.check_domain_drift.boto3.client", return_value=ses),
+        patch("inbox.management.commands.check_domain_drift.reconcile_receipt_rule"),
+    ):
+        call_command("check_domain_drift")
+        call_command("check_domain_drift")
+
+    transition.refresh_from_db()
+    assert transition.status == InboundRoutingTransition.Status.WAITING_TEST
+    test = DomainTest.objects.get(
+        domain=domain,
+        routing_transition=transition,
+        status=DomainTest.Status.PENDING,
+    )
+    assert test.address and test.address.endswith(f"@{domain.hostname}")
+    audit = AuditEvent.objects.get(
+        domain=domain,
+        event_type="domain.routing_transition_test_created",
+        object_id=test.id,
+    )
+    assert audit.actor_type == AuditEvent.ActorType.SYSTEM
+    assert audit.object_type == "DomainTest"
+    assert audit.request_id == f"dns:{domain.id}:test:{test.id}"
+    assert audit.metadata == {
+        "routing_transition_id": str(transition.id),
+        "setup_generation": transition.generation,
+    }
 
 
 @pytest.mark.django_db

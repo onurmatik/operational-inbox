@@ -75,7 +75,7 @@ from inbox.services.domains import (
     DomainClaimLookupError,
     classify_stored_mx,
     create_domain,
-    create_domain_test,
+    ensure_domain_test,
     inspect_domain_routing,
     normalize_hostname,
 )
@@ -94,7 +94,7 @@ from inbox.services.jobs import (
 from inbox.services.routing_transitions import (
     begin_routing_transition,
     cancel_routing_transition,
-    create_routing_transition_test,
+    ensure_routing_transition_test,
 )
 from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
 
@@ -104,11 +104,6 @@ PENDING_DOMAIN_SESSION_KEY = "pending_domain"
 MAGIC_LINK_SCOPE = "operational-inbox-login"
 MAGIC_LINK_MAX_AGE_SECONDS = 10 * 60
 ONBOARDING_STATE_SALT = "operational-inbox-onboarding-v1"
-DOMAIN_TEST_SESSION_PREFIX = "domain_test_address:"
-
-
-def _domain_test_session_key(domain_id: uuid.UUID) -> str:
-    return f"{DOMAIN_TEST_SESSION_PREFIX}{domain_id}"
 
 
 ACTIVE_ROUTING_TRANSITION_STATUSES = (
@@ -133,73 +128,52 @@ def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | Non
     return transitions[0] if transitions else None
 
 
-def _active_domain_test_address(
-    request: HttpRequest,
+def _active_domain_test(
     domain: Domain,
     *,
     active_transition: InboundRoutingTransition | None = None,
-) -> str | None:
-    key = _domain_test_session_key(domain.id)
-    transition_test_pending = (
-        active_transition is not None
-        and active_transition.status == InboundRoutingTransition.Status.WAITING_TEST
-    )
-    if active_transition is not None and not transition_test_pending:
-        request.session.pop(key, None)
-        return None
-    if domain.status == Domain.Status.DISABLED or (
-        domain.status in {Domain.Status.READY, Domain.Status.ERROR} and not transition_test_pending
-    ):
-        request.session.pop(key, None)
-        return None
-    payload = request.session.get(key)
-    if not isinstance(payload, dict):
-        request.session.pop(key, None)
-        return None
-    payload_transition_id = payload.get("routing_transition_id", "")
-    address = payload.get("address")
-    expires_at = payload.get("expires_at")
-    test_id = payload.get("test_id")
-    if (
-        not isinstance(address, str)
-        or not address
-        or not isinstance(expires_at, (int, float))
-        or expires_at <= timezone.now().timestamp()
-        or not isinstance(test_id, str)
-    ):
-        request.session.pop(key, None)
-        return None
-    try:
-        test_uuid = uuid.UUID(test_id)
-    except ValueError:
-        request.session.pop(key, None)
-        return None
-    test = domain.tests.filter(
-        id=test_uuid,
+) -> DomainTest | None:
+    tests = domain.tests.filter(
         status=DomainTest.Status.PENDING,
         expires_at__gt=timezone.now(),
-    ).first()
-    if test is None:
-        request.session.pop(key, None)
-        return None
+        address__isnull=False,
+        received_message__isnull=True,
+    ).exclude(address="")
     if active_transition is not None:
-        valid_test = (
-            payload_transition_id == str(active_transition.id)
-            and test.routing_transition_id == active_transition.id
-            and test.setup_generation == active_transition.generation
-            and test.expected_setup_mode == active_transition.to_mode
+        if active_transition.status != InboundRoutingTransition.Status.WAITING_TEST:
+            return None
+        expected_route_kind = (
+            InboundRoute.Kind.DIRECT_DOMAIN
+            if active_transition.to_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS
         )
-    else:
-        valid_test = (
-            not payload_transition_id
-            and test.routing_transition_id is None
-            and test.setup_generation == domain.inbound_setup_generation
-            and test.expected_setup_mode == domain.setup_mode
+        return (
+            tests.filter(
+                routing_transition=active_transition,
+                setup_generation=active_transition.generation,
+                expected_setup_mode=active_transition.to_mode,
+                expected_route_kind=expected_route_kind,
+            )
+            .order_by("-created_at", "-id")
+            .first()
         )
-    if not valid_test:
-        request.session.pop(key, None)
+    if domain.status != Domain.Status.PENDING_TEST:
         return None
-    return address
+    expected_route_kind = (
+        InboundRoute.Kind.DIRECT_DOMAIN
+        if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        else InboundRoute.Kind.FORWARDING_ALIAS
+    )
+    return (
+        tests.filter(
+            routing_transition__isnull=True,
+            setup_generation=domain.inbound_setup_generation,
+            expected_setup_mode=domain.setup_mode,
+            expected_route_kind=expected_route_kind,
+        )
+        .order_by("-created_at", "-id")
+        .first()
+    )
 
 
 def _safe_next(request: HttpRequest, value: str | None) -> str:
@@ -1175,6 +1149,11 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         display_dns_records = [
             record for record in dns_records if record.purpose in visible_purposes
         ]
+    active_domain_test = _active_domain_test(domain, active_transition=active_transition)
+    test_scope_waiting = (
+        active_transition is not None
+        and active_transition.status == InboundRoutingTransition.Status.WAITING_TEST
+    ) or (active_transition is None and domain.status == Domain.Status.PENDING_TEST)
     return render(
         request,
         "inbox/domain_detail.html",
@@ -1191,11 +1170,8 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
                 active_transition is not None
                 and active_transition.status != InboundRoutingTransition.Status.GRACE
             ),
-            "new_test_address": _active_domain_test_address(
-                request,
-                domain,
-                active_transition=active_transition,
-            ),
+            "new_test_address": active_domain_test.address if active_domain_test else None,
+            "test_address_unavailable": test_scope_waiting and active_domain_test is None,
         },
     )
 
@@ -1345,11 +1321,11 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
         if active_transition is not None:
             if active_transition.status != InboundRoutingTransition.Status.WAITING_TEST:
                 raise ValidationError(
-                    "Verify the target receiving route before generating its test address."
+                    "Verify the target receiving route before preparing its test address."
                 )
-            test, address = create_routing_transition_test(active_transition)
+            test, address, created = ensure_routing_transition_test(active_transition)
         else:
-            test, address = create_domain_test(domain)
+            test, address, created = ensure_domain_test(domain)
     except ValidationError as exc:
         messages.error(request, "; ".join(exc.messages))
     except Exception:
@@ -1357,27 +1333,22 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
         messages.error(
             request,
             "The receiving route is still being activated. "
-            "Try generating the test address again shortly.",
+            "Try preparing the test address again shortly.",
         )
     else:
-        request.session[_domain_test_session_key(domain.id)] = {
-            "test_id": str(test.id),
-            "address": address,
-            "expires_at": test.expires_at.timestamp(),
-            "routing_transition_id": (
-                str(active_transition.id) if test.routing_transition_id is not None else ""
-            ),
-        }
-        if test.routing_transition_id is not None:
-            _audit(domain, request, "domain.routing_transition_test_created", test)
+        if created:
+            if test.routing_transition_id is not None:
+                _audit(domain, request, "domain.routing_transition_test_created", test)
+            else:
+                _audit(domain, request, "domain.test_created", domain)
+            messages.success(
+                request,
+                "Target-path test address is ready. Send a new email to it within 24 hours."
+                if test.routing_transition_id is not None
+                else "Test address is ready. Send a new email to it within 24 hours.",
+            )
         else:
-            _audit(domain, request, "domain.test_created", domain)
-        messages.success(
-            request,
-            "Target-path test address generated. Send a real email to it within 24 hours."
-            if test.routing_transition_id is not None
-            else "Test address generated. Send a real email to it within 24 hours.",
-        )
+            messages.info(request, f"The active test address is ready: {address}")
     return redirect("domain_detail", domain_id=domain.id)
 
 
@@ -1437,7 +1408,6 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     )
     domain.tests.filter(
         status=DomainTest.Status.PENDING,
-        routing_transition__isnull=False,
     ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
     enqueue_job(
         kind="reconcile_receipt_rule",

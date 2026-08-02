@@ -25,6 +25,7 @@ from inbox.models import (
 )
 from inbox.services.domains import (
     MXLayout,
+    _test_address_matches,
     _upsert_dns_instruction,
     application_ownership_record_name,
     classify_mx_layout,
@@ -496,50 +497,122 @@ def refresh_routing_transition(
         return locked
 
 
-def create_routing_transition_test(
+def _assert_routing_transition_test_ready(
+    transition: InboundRoutingTransition,
+    domain: Domain,
+) -> None:
+    expected_route_kind = route_kind_for_mode(transition.to_mode)
+    if (
+        transition.status != InboundRoutingTransition.Status.WAITING_TEST
+        or domain.status == Domain.Status.DISABLED
+        or not transition.routes.filter(
+            is_active=True,
+            setup_generation=transition.generation,
+            kind=expected_route_kind,
+        ).exists()
+    ):
+        raise ValidationError(
+            "Verify the target receiving route before preparing its test address."
+        )
+
+
+def _current_locked_routing_transition_test(
+    transition: InboundRoutingTransition,
+    domain: Domain,
+    *,
+    now,
+) -> DomainTest | None:
+    expected_route_kind = route_kind_for_mode(transition.to_mode)
+    current = None
+    expire_ids = []
+    pending_tests = domain.tests.select_for_update().filter(status=DomainTest.Status.PENDING)
+    for test in pending_tests.order_by("-created_at", "-id"):
+        exact_current_scope = (
+            test.domain_id == domain.id
+            and test.routing_transition_id == transition.id
+            and test.setup_generation == transition.generation
+            and test.expected_setup_mode == transition.to_mode
+            and test.expected_route_kind == expected_route_kind
+            and test.expires_at > now
+            and test.received_message_id is None
+            and _test_address_matches(test, domain.hostname)
+        )
+        if exact_current_scope and current is None:
+            current = test
+        else:
+            expire_ids.append(test.id)
+    if expire_ids:
+        DomainTest.objects.filter(id__in=expire_ids).update(
+            status=DomainTest.Status.EXPIRED,
+            updated_at=now,
+        )
+    return current
+
+
+def ensure_routing_transition_test(
     transition: InboundRoutingTransition,
     *,
     receipt_rule_reconciler: Callable[[], object] | None = None,
-) -> tuple[DomainTest, str]:
-    transition = InboundRoutingTransition.objects.select_related("domain").get(id=transition.id)
-    if transition.status != InboundRoutingTransition.Status.WAITING_TEST:
-        raise ValidationError(
-            "Verify the target receiving route before generating its test address."
+) -> tuple[DomainTest, str, bool]:
+    """Return the one current target-path test, creating it only when needed."""
+
+    now = timezone.now()
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=transition.domain_id)
+        locked = InboundRoutingTransition.objects.select_for_update().get(
+            id=transition.id,
+            domain=locked_domain,
         )
-    if transition.to_mode == Domain.SetupMode.DIRECT_MX:
+        _assert_routing_transition_test_ready(locked, locked_domain)
+        current = _current_locked_routing_transition_test(locked, locked_domain, now=now)
+        if current is not None:
+            return current, str(current.address), False
+        direct_mx = locked.to_mode == Domain.SetupMode.DIRECT_MX
+
+    if direct_mx:
         if receipt_rule_reconciler is None:
             from inbox.services.receipt_rules import reconcile_receipt_rule
 
             receipt_rule_reconciler = reconcile_receipt_rule
         receipt_rule_reconciler()
 
-    raw = secrets.token_urlsafe(24).lower()
     now = timezone.now()
     with transaction.atomic():
-        locked = (
-            InboundRoutingTransition.objects.select_for_update()
-            .select_related("domain")
-            .get(id=transition.id)
+        locked_domain = Domain.objects.select_for_update().get(id=transition.domain_id)
+        locked = InboundRoutingTransition.objects.select_for_update().get(
+            id=transition.id,
+            domain=locked_domain,
         )
-        if locked.status != InboundRoutingTransition.Status.WAITING_TEST:
-            raise ValidationError(
-                "Verify the target receiving route before generating its test address."
-            )
-        cooldown_started_at = now - timedelta(seconds=settings.DOMAIN_TEST_COOLDOWN_SECONDS)
-        if locked.tests.filter(created_at__gte=cooldown_started_at).exists():
-            raise ValidationError(
-                "A target-route test address was generated recently. Use it or wait a minute."
-            )
+        _assert_routing_transition_test_ready(locked, locked_domain)
+        current = _current_locked_routing_transition_test(locked, locked_domain, now=now)
+        if current is not None:
+            return current, str(current.address), False
+
+        raw = secrets.token_urlsafe(24).lower()
+        address = f"test-{raw}@{locked_domain.hostname}"
         test = DomainTest.objects.create(
-            domain=locked.domain,
+            domain=locked_domain,
             routing_transition=locked,
             setup_generation=locked.generation,
             expected_setup_mode=locked.to_mode,
             expected_route_kind=route_kind_for_mode(locked.to_mode),
+            address=address,
             token_hash=hashlib.sha256(raw.encode()).hexdigest(),
             expires_at=now + timedelta(hours=24),
         )
-    return test, f"test-{raw}@{locked.domain.hostname}"
+        return test, address, True
+
+
+def create_routing_transition_test(
+    transition: InboundRoutingTransition,
+    *,
+    receipt_rule_reconciler: Callable[[], object] | None = None,
+) -> tuple[DomainTest, str]:
+    test, address, _ = ensure_routing_transition_test(
+        transition,
+        receipt_rule_reconciler=receipt_rule_reconciler,
+    )
+    return test, address
 
 
 def finalize_routing_transition_test(

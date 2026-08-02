@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
@@ -32,6 +33,7 @@ from inbox.services.domains import (
     build_dns_instructions,
     build_inbound_dns_instructions,
     classify_domain_routing,
+    ensure_domain_test,
 )
 from inbox.services.drafts import revise_draft
 
@@ -500,7 +502,7 @@ def test_grace_progress_shows_cutover_and_no_longer_offers_cancel(
 
 @pytest.mark.django_db
 def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
-    client, owner, organization, project, monkeypatch
+    client, owner, organization, project
 ):
     client.force_login(owner)
     domain = _setup_domain(
@@ -529,35 +531,23 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
         setup_generation=transition.generation,
         expected_setup_mode=transition.to_mode,
         expected_route_kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        address=f"test-target@{domain.hostname}",
         token_hash="e" * 64,
         expires_at=timezone.now() + timedelta(hours=24),
     )
-    address = f"test-target@{domain.hostname}"
-
-    def fake_transition_test(candidate):
-        assert candidate.id == transition.id
-        return target_test, address
-
-    monkeypatch.setattr("inbox.views.create_routing_transition_test", fake_transition_test)
-    monkeypatch.setattr(
-        "inbox.views.create_domain_test",
-        lambda candidate: pytest.fail("active transition must use the target-path test"),
-    )
-    generated = client.post(reverse("domain_create_test", args=[domain.id]), follow=True)
+    address = str(target_test.address)
     revealed_again = client.get(reverse("domain_detail", args=[domain.id]))
+    second_client = Client()
+    second_client.force_login(owner)
+    revealed_in_another_session = second_client.get(reverse("domain_detail", args=[domain.id]))
 
-    assert generated.status_code == 200
-    assert b"Target-path test address generated" in generated.content
-    assert b"Check target DNS again" in generated.content
-    assert b"Generate target-path test" not in generated.content
-    assert address.encode() in generated.content
-    assert b"fresh real email through the target route" in generated.content
+    assert revealed_again.status_code == 200
+    assert b"Check target DNS again" in revealed_again.content
+    assert b"Generate target-path test" not in revealed_again.content
     assert address.encode() in revealed_again.content
-    assert AuditEvent.objects.filter(
-        domain=domain,
-        event_type="domain.routing_transition_test_created",
-        object_id=target_test.id,
-    ).exists()
+    assert b"fresh real email through the target route" in revealed_again.content
+    assert address.encode() in revealed_in_another_session.content
+    assert b"data-routing-transition-poll" in revealed_again.content
 
     transition.status = InboundRoutingTransition.Status.WAITING_DNS
     transition.save(update_fields=("status", "updated_at"))
@@ -567,8 +557,8 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
     ready_again = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert address.encode() not in regressed.content
-    assert address.encode() not in ready_again.content
-    assert b"Generate target-path test" in ready_again.content
+    assert address.encode() in ready_again.content
+    assert b"Generate target-path test" not in ready_again.content
 
 
 @pytest.mark.django_db
@@ -686,7 +676,8 @@ def test_domain_detail_pending_test_enables_delivery_test(client, owner, organiz
         status=Domain.Status.PENDING_TEST,
     )
     domain.ownership_verified = True
-    domain.save(update_fields=("ownership_verified", "updated_at"))
+    domain.ses_identity_status = "SUCCESS"
+    domain.save(update_fields=("ownership_verified", "ses_identity_status", "updated_at"))
     build_dns_instructions(
         domain,
         ownership_token="ownership-proof",
@@ -694,31 +685,34 @@ def test_domain_detail_pending_test_enables_delivery_test(client, owner, organiz
         dkim_tokens=["dkim-one"],
     )
     domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
+    pending_test, address, created = ensure_domain_test(
+        domain,
+        receipt_rule_reconciler=lambda: None,
+    )
 
     response = client.get(reverse("domain_detail", args=[domain.id]))
+    second_client = Client()
+    second_client.force_login(owner)
+    second_response = second_client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
+    assert created is True
+    assert pending_test.address == address
     assert b"Confirm delivery with a real email" in response.content
-    assert b"Generate test address" in response.content
+    assert b"Generate test address" not in response.content
+    assert b"data-domain-test-form" not in response.content
     assert b"Check DNS again" in response.content
-
-    pending_test = DomainTest.objects.create(
-        domain=domain,
-        token_hash="b" * 64,
-        expires_at=timezone.now() + timedelta(hours=1),
-    )
-    session = client.session
-    session[f"domain_test_address:{domain.id}"] = {
-        "test_id": str(pending_test.id),
-        "address": "test-private@test-ready.example.org",
-        "expires_at": (timezone.now() + timedelta(hours=1)).timestamp(),
-    }
-    session.save()
-    first_reveal = client.get(reverse("domain_detail", args=[domain.id]))
-    second_reveal = client.get(reverse("domain_detail", args=[domain.id]))
-    assert b"test-private@test-ready.example.org" in first_reveal.content
-    assert b"test-private@test-ready.example.org" in second_reveal.content
-    assert b"Generate test address" not in second_reveal.content
+    assert b"data-inbound-test-poll" in response.content
+    assert b"data-inbound-test-status" in response.content
+    assert b'domain.inbound_ready || domain.status !== "PENDING_TEST"' in response.content
+    assert b"From any external email account" in response.content
+    assert b"You do not need to create a new mailbox" in response.content
+    assert b"This page updates automatically" in response.content
+    assert b"Open email app" in response.content
+    assert b"Copy address" in response.content
+    assert address.encode() in response.content
+    assert address.encode() in second_response.content
+    assert DomainTest.objects.filter(domain=domain, status=DomainTest.Status.PENDING).count() == 1
 
 
 @pytest.mark.django_db
@@ -747,6 +741,60 @@ def test_web_rejects_premature_domain_test_creation(client, owner, organization,
         event_type="domain.test_created",
         object_id=domain.id,
     ).exists()
+
+
+@pytest.mark.django_db
+def test_domain_disable_web_expires_every_pending_delivery_test(
+    client,
+    owner,
+    organization,
+    project,
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="disable-tests-web.example.org",
+        status=Domain.Status.PENDING_TEST,
+    )
+    transition = InboundRoutingTransition.objects.create(
+        domain=domain,
+        generation=2,
+        from_mode=Domain.SetupMode.DIRECT_MX,
+        to_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        from_domain_status=Domain.Status.PENDING_TEST,
+        status=InboundRoutingTransition.Status.WAITING_TEST,
+    )
+    initial_test = DomainTest.objects.create(
+        domain=domain,
+        setup_generation=1,
+        expected_setup_mode=Domain.SetupMode.DIRECT_MX,
+        expected_route_kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        address="test-initial-disable-web@disable-tests-web.example.org",
+        token_hash="3" * 64,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    transition_test = DomainTest.objects.create(
+        domain=domain,
+        routing_transition=transition,
+        setup_generation=2,
+        expected_setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        expected_route_kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        address="test-transition-disable-web@disable-tests-web.example.org",
+        token_hash="4" * 64,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+
+    response = client.post(reverse("domain_disable", args=[domain.id]), follow=True)
+
+    assert response.status_code == 200
+    initial_test.refresh_from_db()
+    transition_test.refresh_from_db()
+    transition.refresh_from_db()
+    assert initial_test.status == DomainTest.Status.EXPIRED
+    assert transition_test.status == DomainTest.Status.EXPIRED
+    assert transition.status == InboundRoutingTransition.Status.CANCELLED
+    assert not domain.inbound_routes.filter(is_active=True).exists()
 
 
 @pytest.mark.django_db

@@ -73,21 +73,33 @@ def test_routing_transition_api_is_idempotent_and_target_test_is_state_fenced(
         data={},
         content_type="application/json",
     )
+    reused_target_test = client.post(
+        f"/api/v1/domains/{domain.id}/test",
+        data={},
+        content_type="application/json",
+    )
     detail = client.get(f"/api/v1/domains/{domain.id}")
 
     assert target_test.status_code == 201
+    assert reused_target_test.status_code == 200
+    assert reused_target_test.json()["id"] == target_test.json()["id"]
+    assert reused_target_test.json()["address"] == target_test.json()["address"]
     created_test = DomainTest.objects.get(id=target_test.json()["id"])
     assert created_test.routing_transition_id == transition.id
+    assert created_test.address == target_test.json()["address"]
     assert detail.json()["setup_mode"] == Domain.SetupMode.DIRECT_MX
     assert detail.json()["pending_setup_mode"] == Domain.SetupMode.PROVIDER_FORWARD
     assert detail.json()["routing_transition"]["status"] == (
         InboundRoutingTransition.Status.WAITING_TEST
     )
-    assert AuditEvent.objects.filter(
-        domain=domain,
-        event_type="domain.routing_transition_test_created",
-        object_id=created_test.id,
-    ).exists()
+    assert (
+        AuditEvent.objects.filter(
+            domain=domain,
+            event_type="domain.routing_transition_test_created",
+            object_id=created_test.id,
+        ).count()
+        == 1
+    )
 
     cancelled = client.post(
         f"{url}/cancel",
@@ -96,6 +108,68 @@ def test_routing_transition_api_is_idempotent_and_target_test_is_state_fenced(
     )
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == InboundRoutingTransition.Status.CANCELLED
+
+
+@pytest.mark.django_db
+def test_domain_disable_api_expires_initial_and_transition_tests(client, owner, project):
+    client.force_login(owner)
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="disable-tests-api.example.org",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PENDING_TEST,
+        ownership_verified=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    route = InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part="disable-tests-api",
+        address="disable-tests-api@inbound.example.net",
+    )
+    transition = InboundRoutingTransition.objects.create(
+        domain=domain,
+        generation=2,
+        from_mode=Domain.SetupMode.DIRECT_MX,
+        to_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        from_domain_status=Domain.Status.PENDING_TEST,
+        status=InboundRoutingTransition.Status.WAITING_TEST,
+    )
+    initial_test = DomainTest.objects.create(
+        domain=domain,
+        setup_generation=1,
+        expected_setup_mode=Domain.SetupMode.DIRECT_MX,
+        expected_route_kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        address="test-initial-disable-api@disable-tests-api.example.org",
+        token_hash="1" * 64,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    transition_test = DomainTest.objects.create(
+        domain=domain,
+        routing_transition=transition,
+        setup_generation=2,
+        expected_setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        expected_route_kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        address="test-transition-disable-api@disable-tests-api.example.org",
+        token_hash="2" * 64,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+
+    response = client.post(
+        f"/api/v1/domains/{domain.id}/disable",
+        data={},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 202
+    initial_test.refresh_from_db()
+    transition_test.refresh_from_db()
+    transition.refresh_from_db()
+    route.refresh_from_db()
+    assert initial_test.status == DomainTest.Status.EXPIRED
+    assert transition_test.status == DomainTest.Status.EXPIRED
+    assert transition.status == InboundRoutingTransition.Status.CANCELLED
+    assert not route.is_active
 
 
 @pytest.mark.django_db

@@ -10,11 +10,19 @@ from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
-from inbox.models import Domain, DomainDNSRecord, InboundRoutingTransition
-from inbox.services.domains import apply_domain_readiness, reconcile_ses_identity_adoption
+from inbox.models import AuditEvent, Domain, DomainDNSRecord, InboundRoutingTransition
+from inbox.services.domains import (
+    apply_domain_readiness,
+    ensure_domain_test,
+    reconcile_ses_identity_adoption,
+)
 from inbox.services.notifications import create_domain_drift_notifications
 from inbox.services.receipt_rules import reconcile_receipt_rule
-from inbox.services.routing_transitions import refresh_routing_transition
+from inbox.services.routing_transitions import (
+    ACTIVE_TRANSITION_STATUSES,
+    ensure_routing_transition_test,
+    refresh_routing_transition,
+)
 
 
 def observed_values(record: DomainDNSRecord) -> list[str]:
@@ -43,6 +51,10 @@ def values_match(record: DomainDNSRecord, observed: list[str]) -> bool:
     expected = record.value.rstrip(".").casefold()
     normalized = {item.rstrip(".").casefold() for item in observed}
     return expected in normalized
+
+
+def _noop_receipt_rule_reconciler() -> object:
+    return None
 
 
 class Command(BaseCommand):
@@ -203,6 +215,7 @@ class Command(BaseCommand):
                 and domain.status == Domain.Status.DEGRADED
             ):
                 create_domain_drift_notifications(domain)
+        receipt_rule_reconciled = False
         if (
             settings.AWS_INGRESS_BUCKET
             and settings.AWS_INBOUND_TOPIC_ARN
@@ -223,6 +236,68 @@ class Command(BaseCommand):
             # failure must not strand an already-committed ownership transition,
             # and a fresh CDK rule set must receive the service-domain allowlist.
             reconcile_receipt_rule()
+            receipt_rule_reconciled = True
+
+        waiting_transitions = InboundRoutingTransition.objects.filter(
+            domain_id__in=touched_domains,
+            status=InboundRoutingTransition.Status.WAITING_TEST,
+        ).select_related("domain")
+        for transition in waiting_transitions:
+            if transition.to_mode == Domain.SetupMode.DIRECT_MX and not receipt_rule_reconciled:
+                continue
+            try:
+                test, _, created = ensure_routing_transition_test(
+                    transition,
+                    receipt_rule_reconciler=_noop_receipt_rule_reconciler,
+                )
+            except ValidationError:
+                continue
+            if created:
+                AuditEvent.objects.create(
+                    domain=transition.domain,
+                    actor_type=AuditEvent.ActorType.SYSTEM,
+                    event_type="domain.routing_transition_test_created",
+                    object_type="DomainTest",
+                    object_id=test.id,
+                    request_id=f"dns:{transition.domain_id}:test:{test.id}",
+                    metadata={
+                        "routing_transition_id": str(transition.id),
+                        "setup_generation": test.setup_generation,
+                    },
+                )
+
+        transition_domain_ids = InboundRoutingTransition.objects.filter(
+            domain_id__in=touched_domains,
+            status__in=ACTIVE_TRANSITION_STATUSES,
+        ).values_list("domain_id", flat=True)
+        pending_test_domains = (
+            Domain.objects.filter(
+                id__in=touched_domains,
+                status=Domain.Status.PENDING_TEST,
+            )
+            .exclude(id__in=transition_domain_ids)
+            .order_by("hostname")
+        )
+        for domain in pending_test_domains:
+            if domain.setup_mode == Domain.SetupMode.DIRECT_MX and not receipt_rule_reconciled:
+                continue
+            try:
+                test, _, created = ensure_domain_test(
+                    domain,
+                    receipt_rule_reconciler=_noop_receipt_rule_reconciler,
+                )
+            except ValidationError:
+                continue
+            if created:
+                AuditEvent.objects.create(
+                    domain=domain,
+                    actor_type=AuditEvent.ActorType.SYSTEM,
+                    event_type="domain.test_created",
+                    object_type="DomainTest",
+                    object_id=test.id,
+                    request_id=f"dns:{domain.id}:test:{test.id}",
+                    metadata={"setup_generation": test.setup_generation},
+                )
         self.stdout.write(
             json.dumps({"checked": checked, "invalid_required": invalid}, sort_keys=True)
         )

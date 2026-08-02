@@ -472,11 +472,14 @@ def _store_domain_message(
         status=DomainTest.Status.PENDING,
         expires_at__gt=timezone.now(),
     ).select_related("domain"):
+        expected_address = (test.address or "").casefold()
         matching = next(
             (
                 address
                 for address in candidate_addresses
-                if address.endswith(f"@{test.domain.hostname}")
+                if expected_address
+                and secrets.compare_digest(address, expected_address)
+                and address.endswith(f"@{test.domain.hostname}")
                 and address.rsplit("@", 1)[0].startswith("test-")
                 and secrets.compare_digest(
                     hashlib.sha256(
@@ -493,16 +496,8 @@ def _store_domain_message(
                     continue
                 event_type = "domain.routing_transition_test_received"
             else:
-                if (
-                    test.setup_generation != domain.inbound_setup_generation
-                    or test.expected_setup_mode != domain.setup_mode
-                    or test.expected_route_kind != arrival_kind
-                ):
+                if not _finalize_domain_test(test, message, arrival_kind):
                     continue
-                test.status = DomainTest.Status.RECEIVED
-                test.received_message = message
-                test.save(update_fields=("status", "received_message", "updated_at"))
-                apply_domain_readiness(test.domain)
                 event_type = "domain.test_received"
             AuditEvent.objects.create(
                 domain=domain,
@@ -532,6 +527,46 @@ def _store_domain_message(
     )
     create_security_notifications(message)
     return message
+
+
+def _finalize_domain_test(
+    test: DomainTest,
+    message: Message,
+    arrival_kind: str,
+) -> bool:
+    """Consume an initial delivery challenge once, only for its current route."""
+
+    now = timezone.now()
+    with transaction.atomic():
+        locked_test = DomainTest.objects.select_for_update().get(id=test.id)
+        if (
+            locked_test.routing_transition_id is not None
+            or locked_test.status != DomainTest.Status.PENDING
+            or locked_test.expires_at <= now
+            or locked_test.expected_route_kind != arrival_kind
+            or locked_test.received_message_id is not None
+            or message.domain_id != locked_test.domain_id
+        ):
+            return False
+
+        locked_domain = Domain.objects.select_for_update().get(id=locked_test.domain_id)
+        if (
+            locked_domain.status != Domain.Status.PENDING_TEST
+            or locked_test.setup_generation != locked_domain.inbound_setup_generation
+            or locked_test.expected_setup_mode != locked_domain.setup_mode
+            or not locked_domain.inbound_routes.filter(
+                is_active=True,
+                setup_generation=locked_test.setup_generation,
+                kind=locked_test.expected_route_kind,
+            ).exists()
+        ):
+            return False
+
+        locked_test.status = DomainTest.Status.RECEIVED
+        locked_test.received_message = message
+        locked_test.save(update_fields=("status", "received_message", "updated_at"))
+        apply_domain_readiness(locked_domain, now=now)
+    return True
 
 
 def _parse_timestamp(value: Any) -> datetime | None:

@@ -38,7 +38,7 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.domains import DomainClaimConflict, create_domain, create_domain_test
+from inbox.services.domains import DomainClaimConflict, create_domain, ensure_domain_test
 from inbox.services.drafts import (
     approve_exact_revision,
     create_draft,
@@ -54,7 +54,7 @@ from inbox.services.routing_transitions import (
     ACTIVE_TRANSITION_STATUSES,
     begin_routing_transition,
     cancel_routing_transition,
-    create_routing_transition_test,
+    ensure_routing_transition_test,
 )
 
 logger = logging.getLogger(__name__)
@@ -803,7 +803,7 @@ def domains_check(request: HttpRequest, domain_id: uuid.UUID):
 @api.post(
     "/domains/{domain_id}/test",
     auth=authenticated,
-    response={201: dict},
+    response={200: dict, 201: dict},
     tags=["Domains"],
 )
 def domains_test(request: HttpRequest, domain_id: uuid.UUID):
@@ -818,11 +818,11 @@ def domains_test(request: HttpRequest, domain_id: uuid.UUID):
         if transition is not None:
             if transition.status != InboundRoutingTransition.Status.WAITING_TEST:
                 raise DjangoValidationError(
-                    "Verify the target receiving route before generating its test address."
+                    "Verify the target receiving route before preparing its test address."
                 )
-            test, address = create_routing_transition_test(transition)
+            test, address, created = ensure_routing_transition_test(transition)
         else:
-            test, address = create_domain_test(domain)
+            test, address, created = ensure_domain_test(domain)
     except DjangoValidationError as exc:
         raise APIError(
             "domain_not_ready_for_test",
@@ -836,18 +836,19 @@ def domains_test(request: HttpRequest, domain_id: uuid.UUID):
             "The receiving route is still being activated. Try again shortly.",
             status=503,
         ) from exc
-    record_api_audit(
-        request,
-        domain,
-        (
-            "domain.routing_transition_test_created"
-            if test.routing_transition_id is not None
-            else "domain.test_created"
-        ),
-        test,
-    )
+    if created:
+        record_api_audit(
+            request,
+            domain,
+            (
+                "domain.routing_transition_test_created"
+                if test.routing_transition_id is not None
+                else "domain.test_created"
+            ),
+            test,
+        )
     return Status(
-        201,
+        201 if created else 200,
         {
             "id": str(test.id),
             "address": address,
@@ -892,7 +893,6 @@ def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
     )
     domain.tests.filter(
         status=DomainTest.Status.PENDING,
-        routing_transition__isnull=False,
     ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
     job = enqueue_job(
         kind="reconcile_receipt_rule",
