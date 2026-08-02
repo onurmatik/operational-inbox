@@ -100,11 +100,22 @@ def price_summary() -> dict[str, Any] | None:
     if not billing_configured():
         return None
     unit_amount = settings.STRIPE_PRO_UNIT_AMOUNT
+    compare_at_unit_amount = settings.STRIPE_PRO_COMPARE_AT_UNIT_AMOUNT
+    is_promotional = (
+        settings.STRIPE_PRO_CURRENCY == "usd"
+        and unit_amount == 499
+        and compare_at_unit_amount == 999
+    )
     return {
         "unit_amount": unit_amount,
         "amount": f"{unit_amount / 100:,.2f}",
+        "compare_at_unit_amount": compare_at_unit_amount if is_promotional else None,
+        "compare_at_amount": (
+            f"{compare_at_unit_amount / 100:,.2f}" if is_promotional else None
+        ),
         "currency": settings.STRIPE_PRO_CURRENCY.upper(),
         "interval": "month",
+        "is_promotional": is_promotional,
         "product_name": "Operational Inbox Pro",
     }
 

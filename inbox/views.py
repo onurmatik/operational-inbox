@@ -1614,6 +1614,7 @@ def billing(request: HttpRequest) -> HttpResponse:
             "billing_profile": profile,
             "billing_configured": billing_configured(),
             "price": price,
+            "pro_domain_limit": settings.MAX_DOMAINS_PER_USER,
         },
     )
 

@@ -105,6 +105,13 @@ def test_free_api_returns_upgrade_required(client, free_owner):
 
 
 @pytest.mark.django_db
+@override_settings(
+    STRIPE_SECRET_KEY="",
+    STRIPE_WEBHOOK_SECRET="",
+    STRIPE_PRO_UNIT_AMOUNT=499,
+    STRIPE_PRO_COMPARE_AT_UNIT_AMOUNT=999,
+    STRIPE_PRO_CURRENCY="usd",
+)
 def test_free_billing_page_renders_upgrade_state(client, free_owner):
     make_domain(free_owner, "billing-free.example")
     client.force_login(free_owner)
@@ -114,6 +121,131 @@ def test_free_billing_page_renders_upgrade_state(client, free_owner):
     assert response.status_code == 200
     assert b"Current plan" in response.content
     assert b"Free" in response.content
+    assert response.context["billing_configured"] is False
+    assert response.context["price"] is None
+    assert b"Online upgrades are temporarily unavailable" in response.content
+    assert b"Limited-time price" not in response.content
+    assert b"Regular price" not in response.content
+    assert b"USD 4.99" not in response.content
+    assert b"Upgrade to Pro" not in response.content
+    assert reverse("billing_checkout").encode() not in response.content
+    assert b"Billed monthly through Stripe" not in response.content
+
+
+@pytest.mark.django_db
+@override_settings(
+    STRIPE_SECRET_KEY="sk_test_example",
+    STRIPE_WEBHOOK_SECRET="whsec_example",
+    STRIPE_PRO_UNIT_AMOUNT=499,
+    STRIPE_PRO_COMPARE_AT_UNIT_AMOUNT=999,
+    STRIPE_PRO_CURRENCY="usd",
+    MAX_DOMAINS_PER_USER=20,
+)
+def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
+    make_domain(free_owner, "billing-offer.example")
+    client.force_login(free_owner)
+
+    response = client.get(reverse("billing"))
+
+    assert response.status_code == 200
+    assert response.context["billing_configured"] is True
+    assert response.context["pro_domain_limit"] == 20
+    assert response.context["price"] == {
+        "unit_amount": 499,
+        "amount": "4.99",
+        "compare_at_unit_amount": 999,
+        "compare_at_amount": "9.99",
+        "currency": "USD",
+        "interval": "month",
+        "is_promotional": True,
+        "product_name": "Operational Inbox Pro",
+    }
+    assert b"Limited-time price" in response.content
+    assert b"Regular price" in response.content
+    assert b"<del>USD 9.99</del>" in response.content
+    assert b"USD 4.99" in response.content
+    assert b"Up to 20 managed domains" in response.content
+    assert b"Receive at any address" in response.content
+    assert b"no per-address fee" in response.content
+    assert b"AI triage, drafts &amp; reports" in response.content
+    assert (
+        f'method="post" action="{reverse("billing_checkout")}"'.encode()
+        in response.content
+    )
+    assert "Upgrade to Pro · USD 4.99/month".encode() in response.content
+    assert b"Billed monthly through Stripe" in response.content
+
+
+@pytest.mark.django_db
+@override_settings(
+    STRIPE_SECRET_KEY="sk_test_example",
+    STRIPE_WEBHOOK_SECRET="whsec_example",
+    STRIPE_PRO_COMPARE_AT_UNIT_AMOUNT=999,
+)
+@pytest.mark.parametrize(
+    ("unit_amount", "currency", "display_amount"),
+    [
+        (599, "usd", b"USD 5.99"),
+        (499, "eur", b"EUR 4.99"),
+        (2900, "usd", b"USD 29.00"),
+    ],
+)
+def test_billing_page_does_not_claim_promotion_for_other_prices(
+    client, free_owner, settings, unit_amount, currency, display_amount
+):
+    settings.STRIPE_PRO_UNIT_AMOUNT = unit_amount
+    settings.STRIPE_PRO_CURRENCY = currency
+    make_domain(free_owner, "billing-standard-price.example")
+    client.force_login(free_owner)
+
+    response = client.get(reverse("billing"))
+
+    assert response.status_code == 200
+    assert response.context["price"]["is_promotional"] is False
+    assert response.context["price"]["compare_at_unit_amount"] is None
+    assert response.context["price"]["compare_at_amount"] is None
+    assert b"Limited-time price" not in response.content
+    assert b"Regular price" not in response.content
+    assert b"<del>" not in response.content
+    assert b"Pro price" in response.content
+    assert display_amount in response.content
+    assert b"Upgrade to Pro" in response.content
+    assert display_amount + b"/month" in response.content
+
+
+@pytest.mark.django_db
+@override_settings(
+    STRIPE_SECRET_KEY="sk_test_example",
+    STRIPE_WEBHOOK_SECRET="whsec_example",
+    STRIPE_PRO_UNIT_AMOUNT=499,
+    STRIPE_PRO_COMPARE_AT_UNIT_AMOUNT=999,
+    STRIPE_PRO_CURRENCY="usd",
+)
+def test_pro_billing_page_keeps_subscription_management_state(client, free_owner):
+    make_domain(free_owner, "billing-pro.example")
+    BillingProfile.objects.create(
+        user=free_owner,
+        subscription_status=BillingProfile.SubscriptionStatus.ACTIVE,
+        subscription_plan="pro",
+    )
+    client.force_login(free_owner)
+
+    response = client.get(reverse("billing"))
+
+    assert response.status_code == 200
+    assert response.context["plan_entitlements"].is_pro is True
+    assert b"Manage subscription" in response.content
+    assert (
+        f'method="post" action="{reverse("billing_portal")}"'.encode()
+        in response.content
+    )
+    assert reverse("billing_checkout").encode() not in response.content
+    assert b"Limited-time price" not in response.content
+    assert b"Regular price" not in response.content
+    assert b"<del>" not in response.content
+    assert b"USD 4.99" not in response.content
+    assert b"Upgrade to Pro" not in response.content
+    assert b"Billed monthly through Stripe" not in response.content
 
 
 @pytest.mark.django_db
@@ -148,7 +280,7 @@ def test_extra_free_domain_is_read_only_but_preserved(client, free_owner):
 @override_settings(
     STRIPE_SECRET_KEY="sk_test_example",
     STRIPE_WEBHOOK_SECRET="whsec_example",
-    STRIPE_PRO_UNIT_AMOUNT=2900,
+    STRIPE_PRO_UNIT_AMOUNT=499,
     STRIPE_PRO_CURRENCY="usd",
 )
 def test_checkout_reuses_saved_customer(monkeypatch, free_owner):
@@ -164,7 +296,7 @@ def test_checkout_reuses_saved_customer(monkeypatch, free_owner):
         {
             "price_data": {
                 "currency": "usd",
-                "unit_amount": 2900,
+                "unit_amount": 499,
                 "recurring": {"interval": "month"},
                 "product_data": {"name": "Operational Inbox Pro"},
             },

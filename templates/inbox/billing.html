@@ -26,8 +26,33 @@
       {% if plan_entitlements.is_pro %}
         <form method="post" action="{% url 'billing_portal' %}" class="mt-6">{% csrf_token %}<button class="oi-button-secondary">Manage subscription</button></form>
       {% else %}
+        <p class="mt-4 text-sm text-ink">Run every operational address from one secure inbox.</p>
+        {% if price %}
+          {% if price.is_promotional %}
+            <div class="mt-4"><span class="oi-status oi-status-pending">Limited-time price</span></div>
+            <div class="mt-4">
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Regular price</p>
+              <p class="mt-1 text-sm text-muted"><del>{{ price.currency }} {{ price.compare_at_amount }}</del></p>
+              <p class="mt-3 font-mono text-[10px] uppercase tracking-[0.1em] text-forest">Limited-time price</p>
+              <p class="mt-1 font-heading text-2xl font-semibold text-forest">{{ price.currency }} {{ price.amount }} <span class="font-sans text-sm font-normal text-muted">/ {{ price.interval }}</span></p>
+            </div>
+          {% else %}
+            <div class="mt-4">
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Pro price</p>
+              <p class="mt-1 font-heading text-2xl font-semibold text-forest">{{ price.currency }} {{ price.amount }} <span class="font-sans text-sm font-normal text-muted">/ {{ price.interval }}</span></p>
+            </div>
+          {% endif %}
+        {% endif %}
+
+        <ul class="mt-4 divide-y divide-line border-y border-line text-sm" aria-label="Pro plan highlights">
+          <li class="py-2.5"><span class="font-semibold">Up to {{ pro_domain_limit }} managed domains</span></li>
+          <li class="py-2.5"><span class="font-semibold">Receive at any address</span><span class="text-muted"> · no per-address fee</span></li>
+          <li class="py-2.5"><span class="font-semibold">AI triage, drafts &amp; reports</span></li>
+        </ul>
+
         {% if billing_configured %}
-          <form method="post" action="{% url 'billing_checkout' %}" class="mt-6">{% csrf_token %}<button class="oi-button-primary">Upgrade to Pro{% if price and price.amount %} · {{ price.currency }} {{ price.amount }}/{{ price.interval }}{% endif %}</button></form>
+          <form method="post" action="{% url 'billing_checkout' %}" class="mt-6">{% csrf_token %}<button class="oi-button-primary w-full">Upgrade to Pro{% if price and price.amount %} · {{ price.currency }} {{ price.amount }}/{{ price.interval }}{% endif %}</button></form>
+          <p class="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Billed monthly through Stripe.</p>
         {% else %}
           <p class="mt-6 border border-line bg-paper p-3 text-sm text-muted">Online upgrades are temporarily unavailable.</p>
         {% endif %}
