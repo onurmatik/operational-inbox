@@ -105,6 +105,37 @@ def test_free_api_returns_upgrade_required(client, free_owner):
 
 
 @pytest.mark.django_db
+def test_free_conversation_uses_draft_action_as_upgrade_prompt(client, free_owner):
+    domain = make_domain(free_owner, "draft-upgrade.example")
+    conversation = Conversation.objects.create(
+        domain=domain,
+        subject="Upgrade from draft action",
+        normalized_subject="upgrade from draft action",
+        first_message_at=timezone.now(),
+        last_message_at=timezone.now(),
+    )
+    client.force_login(free_owner)
+    session = client.session
+    session["domain_id"] = str(domain.id)
+    session.save()
+
+    response = client.get(reverse("conversation_detail", args=[conversation.id]))
+
+    assert response.status_code == 200
+    assert b"Free inbox mode" not in response.content
+    assert b"AI drafts and outbound sending require" not in response.content
+    assert (
+        f'action="{reverse("draft_generate", args=[conversation.id])}"'.encode()
+        in response.content
+    )
+
+    upgrade = client.post(reverse("draft_generate", args=[conversation.id]))
+
+    assert upgrade.status_code == 302
+    assert upgrade.url == reverse("billing")
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     ("domain_status", "inbound_ready", "outbound_status"),
     [

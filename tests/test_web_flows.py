@@ -1149,6 +1149,52 @@ def test_conversation_state_and_api_token_web_actions(
 
 
 @pytest.mark.django_db
+def test_conversation_status_autosaves_and_only_notifies_for_real_changes(
+    client, owner, organization, conversation
+):
+    client.force_login(owner)
+    session = client.session
+    session["domain_id"] = str(organization.id)
+    session.save()
+    detail_url = reverse("conversation_detail", args=[conversation.id])
+    status_url = reverse("conversation_status", args=[conversation.id])
+
+    detail = client.get(detail_url)
+
+    assert detail.status_code == 200
+    assert b'<label for="conversation-status"' in detail.content
+    assert b"Conversation state</label>" in detail.content
+    assert b'onchange="this.form.requestSubmit()"' in detail.content
+    assert b"Update state" not in detail.content
+
+    changed = client.post(status_url, {"status": "RESOLVED"}, follow=True)
+
+    assert changed.status_code == 200
+    assert changed.redirect_chain == [(detail_url, 302)]
+    assert b"Conversation status changed to Resolved." in changed.content
+    conversation.refresh_from_db()
+    assert conversation.status == Conversation.Status.RESOLVED
+    assert conversation.resolved_at is not None
+    changed_at = conversation.updated_at
+    resolved_at = conversation.resolved_at
+    audit_events = AuditEvent.objects.filter(
+        domain=organization,
+        event_type="conversation.status_changed",
+        object_id=conversation.id,
+    )
+    assert audit_events.count() == 1
+
+    unchanged = client.post(status_url, {"status": "RESOLVED"}, follow=True)
+
+    assert unchanged.status_code == 200
+    assert b"Conversation status changed" not in unchanged.content
+    conversation.refresh_from_db()
+    assert conversation.updated_at == changed_at
+    assert conversation.resolved_at == resolved_at
+    assert audit_events.count() == 1
+
+
+@pytest.mark.django_db
 def test_attachment_web_locked_and_expired_responses(client, owner, organization, inbound_message):
     client.force_login(owner)
     session = client.session
@@ -1239,6 +1285,7 @@ def test_quarantined_inbox_preview_never_leaks_body(
 
     detail = client.get(reverse("conversation_detail", args=[conversation.id]))
     assert b"This message did not pass the malware scan" in detail.content
+    assert b'<option value="QUARANTINED" selected disabled>Quarantined</option>' in detail.content
     assert b"SES virus verdict" not in detail.content
 
 

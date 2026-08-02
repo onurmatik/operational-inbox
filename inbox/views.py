@@ -847,14 +847,17 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     status = request.POST.get("status", "")
     if status not in Conversation.Status.values or status == Conversation.Status.QUARANTINED:
         messages.error(request, "Select a supported conversation state.")
-    else:
+    elif status != conversation.status:
         conversation.status = status
         conversation.resolved_at = (
             timezone.now() if status == Conversation.Status.RESOLVED else None
         )
         conversation.save(update_fields=("status", "resolved_at", "updated_at"))
         _audit(domain, request, "conversation.status_changed", conversation, {"status": status})
-        messages.success(request, "Conversation status updated.")
+        messages.success(
+            request,
+            f"Conversation status changed to {conversation.get_status_display()}.",
+        )
     return redirect("conversation_detail", conversation_id=conversation.id)
 
 
