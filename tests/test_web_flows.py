@@ -375,6 +375,7 @@ def test_receiving_route_panel_starts_staged_change_without_cutting_over(
     assert b"Receiving route" in detail.content
     assert b"Active" in detail.content
     assert b"Provider catch-all forwarding" in detail.content
+    assert b'id="forwarding-route"' in detail.content
     assert b"Change to direct MX routing" in detail.content
     assert b"current route stays active throughout preparation" in detail.content
     assert b"fresh real email through the target path" in detail.content
@@ -390,6 +391,11 @@ def test_receiving_route_panel_starts_staged_change_without_cutting_over(
     assert "3 · Test target".encode() in switched.content
     assert "4 · Cut over".encode() in switched.content
     assert b"Cancel route change" in switched.content
+    assert b"Current fallback alias" in switched.content
+    assert b'id="current-fallback-alias"' in switched.content
+    assert b'data-copy="#current-fallback-alias"' in switched.content
+    assert previous_route.address.encode() in switched.content
+    assert b'id="forwarding-route"' not in switched.content
     assert b"data-routing-transition-poll" in switched.content
     assert b'data-transition-status="PREPARING"' in switched.content
     assert b"already in progress" in duplicate.content
@@ -432,6 +438,8 @@ def test_provider_target_alias_is_visible_and_pre_cutover_change_can_be_cancelle
     client.post(start_url, {"target_mode": Domain.SetupMode.PROVIDER_FORWARD})
     transition = domain.routing_transitions.get()
     target_route = transition.routes.get()
+    transition.status = InboundRoutingTransition.Status.WAITING_DNS
+    transition.save(update_fields=("status", "updated_at"))
 
     detail = client.get(reverse("domain_detail", args=[domain.id]))
     cancel_url = reverse("domain_routing_transition_cancel", args=[domain.id])
@@ -448,10 +456,13 @@ def test_provider_target_alias_is_visible_and_pre_cutover_change_can_be_cancelle
     assert b"Target provider forwarding alias" in detail.content
     assert target_route.address.encode() in detail.content
     assert b'data-copy="#transition-forwarding-route"' in detail.content
+    assert b"does not update external DNS" in detail.content
+    assert b"restore the single Operational Inbox MX record" in detail.content
     assert b"Cancel route change" in detail.content
     assert get_cancel.status_code == 405
     assert cancelled.status_code == 200
     assert b"Receiving route change cancelled" in cancelled.content
+    assert b"restore the single Operational Inbox MX record in DNS" in cancelled.content
     assert b"Change to provider forwarding" in cancelled.content
     assert transition.status == InboundRoutingTransition.Status.CANCELLED
     assert not target_route.is_active
@@ -498,6 +509,8 @@ def test_grace_progress_shows_cutover_and_no_longer_offers_cancel(
     assert b"Cancel route change" not in detail.content
     assert b"Change to direct MX routing" not in detail.content
     assert b"Prepare change back to direct MX routing" in detail.content
+    assert b'id="transition-forwarding-route"' in detail.content
+    assert b'id="forwarding-route"' not in detail.content
 
 
 @pytest.mark.django_db
@@ -522,6 +535,10 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
 
     waiting_dns = client.get(reverse("domain_detail", args=[domain.id]))
     assert "I've updated target DNS — Check records".encode() in waiting_dns.content
+    assert b"Current fallback alias" in waiting_dns.content
+    assert b"does not update external DNS" in waiting_dns.content
+    assert b"restore your mail provider's MX records" in waiting_dns.content
+    assert b'id="forwarding-route"' not in waiting_dns.content
 
     transition.status = InboundRoutingTransition.Status.WAITING_TEST
     transition.save(update_fields=("status", "updated_at"))
@@ -545,7 +562,13 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
     assert b"Check target DNS again" in revealed_again.content
     assert b"Generate target-path test" not in revealed_again.content
     assert address.encode() in revealed_again.content
-    assert b"fresh real email through the target route" in revealed_again.content
+    assert b"fresh message through the target route" in revealed_again.content
+    assert revealed_again.content.count(b"Confirm delivery with a real email") == 1
+    assert b"data-target-route-test-action" in revealed_again.content
+    assert revealed_again.content.index(
+        b"data-target-route-test-action"
+    ) < revealed_again.content.index(b'id="receiving-route-title"')
+    assert revealed_again.content.count(b"Open email app") == 1
     assert address.encode() in revealed_in_another_session.content
     assert b"data-routing-transition-poll" in revealed_again.content
 
@@ -559,6 +582,96 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
     assert address.encode() not in regressed.content
     assert address.encode() in ready_again.content
     assert b"Generate target-path test" not in ready_again.content
+
+    cancelled = client.post(
+        reverse("domain_routing_transition_cancel", args=[domain.id]),
+        follow=True,
+    )
+    assert b"External DNS was not changed" in cancelled.content
+    assert b"restore your mail provider" in cancelled.content
+    assert b'id="forwarding-route"' in cancelled.content
+    assert b'id="current-fallback-alias"' not in cancelled.content
+
+
+@pytest.mark.django_db
+def test_transition_waiting_test_replaces_pending_domain_cta_with_one_top_action(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="pending-test-route-change.example.org",
+        status=Domain.Status.PENDING_TEST,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    client.post(
+        reverse("domain_routing_transition_start", args=[domain.id]),
+        {"target_mode": Domain.SetupMode.DIRECT_MX},
+    )
+    transition = domain.routing_transitions.get()
+    transition.status = InboundRoutingTransition.Status.WAITING_TEST
+    transition.save(update_fields=("status", "updated_at"))
+    target_test = DomainTest.objects.create(
+        domain=domain,
+        routing_transition=transition,
+        setup_generation=transition.generation,
+        expected_setup_mode=transition.to_mode,
+        expected_route_kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        address=f"test-target@{domain.hostname}",
+        token_hash="f" * 64,
+        expires_at=timezone.now() + timedelta(hours=24),
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert response.content.count(b"Confirm delivery with a real email") == 1
+    assert response.content.count(b"Open email app") == 1
+    assert response.content.count(b'id="transition-test-address"') == 1
+    assert target_test.address.encode() in response.content
+    assert b"data-target-route-test-action" in response.content
+    assert response.content.count(b"data-inbound-test-poll") == 1
+
+
+@pytest.mark.django_db
+def test_provider_fallback_alias_remains_visible_during_direct_mx_grace(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="provider-fallback-grace.example.org",
+        status=Domain.Status.READY,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    source_route = domain.inbound_routes.get()
+    client.post(
+        reverse("domain_routing_transition_start", args=[domain.id]),
+        {"target_mode": Domain.SetupMode.DIRECT_MX},
+    )
+    transition = domain.routing_transitions.get()
+    grace_until = timezone.now() + timedelta(hours=24)
+    transition.status = InboundRoutingTransition.Status.GRACE
+    transition.cutover_at = timezone.now()
+    transition.grace_until = grace_until
+    transition.save(update_fields=("status", "cutover_at", "grace_until", "updated_at"))
+    source_route.grace_until = grace_until
+    source_route.save(update_fields=("grace_until", "updated_at"))
+    Domain.objects.filter(id=domain.id).update(
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        inbound_setup_generation=transition.generation,
+    )
+
+    detail = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert detail.status_code == 200
+    assert b"Current fallback alias" in detail.content
+    assert b"This previous provider-forwarding route remains available until" in detail.content
+    assert source_route.address.encode() in detail.content
+    assert b'data-copy="#current-fallback-alias"' in detail.content
+    assert b'id="forwarding-route"' not in detail.content
 
 
 @pytest.mark.django_db

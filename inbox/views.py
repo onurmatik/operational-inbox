@@ -1133,8 +1133,41 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         ),
         None,
     )
+    source_route = None
     target_route = None
     if active_transition is not None:
+        source_route_kind = (
+            InboundRoute.Kind.DIRECT_DOMAIN
+            if active_transition.from_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS
+        )
+        source_routes = (
+            route
+            for route in routes
+            if route.is_active
+            and route.kind == source_route_kind
+            and route.routing_transition_id != active_transition.id
+            and (
+                (
+                    active_transition.status == InboundRoutingTransition.Status.GRACE
+                    and route.grace_until == active_transition.grace_until
+                )
+                or (
+                    active_transition.status != InboundRoutingTransition.Status.GRACE
+                    and route.setup_generation == domain.inbound_setup_generation
+                )
+            )
+        )
+        source_route = next(
+            iter(
+                sorted(
+                    source_routes,
+                    key=lambda route: (route.setup_generation, route.created_at, str(route.id)),
+                    reverse=True,
+                )
+            ),
+            None,
+        )
         target_route_kind = (
             InboundRoute.Kind.DIRECT_DOMAIN
             if active_transition.to_mode == Domain.SetupMode.DIRECT_MX
@@ -1199,6 +1232,7 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
             "existing_mx_layout": existing_mx_layout.value,
             "active_transition": active_transition,
             "active_route": active_route,
+            "source_route": source_route,
             "target_route": target_route,
             "display_dns_records": display_dns_records,
             "transition_can_cancel": (
@@ -1340,10 +1374,19 @@ def domain_routing_transition_cancel(request: HttpRequest, domain_id: uuid.UUID)
                     "generation": transition.generation,
                 },
             )
-            messages.success(
-                request,
-                "Receiving route change cancelled. The current route was left unchanged.",
-            )
+            if transition.from_mode == Domain.SetupMode.PROVIDER_FORWARD:
+                cancellation_message = (
+                    "Receiving route change cancelled. Operational Inbox kept provider "
+                    "forwarding as the configured route. External DNS was not changed. If you "
+                    "changed MX records, restore your mail provider's MX records in DNS now."
+                )
+            else:
+                cancellation_message = (
+                    "Receiving route change cancelled. Operational Inbox kept direct MX routing "
+                    "as the configured route. External DNS was not changed. If you changed MX "
+                    "records, restore the single Operational Inbox MX record in DNS now."
+                )
+            messages.success(request, cancellation_message)
         else:
             messages.info(request, "This receiving route change is no longer cancellable.")
     return redirect("domain_detail", domain_id=domain.id)
