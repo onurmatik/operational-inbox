@@ -11,13 +11,91 @@ from inbox.models import (
     AuditEvent,
     Domain,
     DomainDNSRecord,
+    DomainTest,
     DurableJob,
+    InboundRoute,
+    InboundRoutingTransition,
     Notification,
     OutboundMessage,
     ReplyDraft,
     Report,
 )
 from inbox.services.drafts import revise_draft
+
+
+@pytest.mark.django_db
+def test_routing_transition_api_is_idempotent_and_target_test_is_state_fenced(
+    client,
+    owner,
+    project,
+):
+    client.force_login(owner)
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="api-route-transition.example.org",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        ownership_verified=True,
+        inbound_ready=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part="api-current-direct",
+        address="api-current-direct@inbound.example.net",
+    )
+    url = f"/api/v1/domains/{domain.id}/routing/transition"
+    payload = {"target_mode": Domain.SetupMode.PROVIDER_FORWARD}
+
+    first = client.post(url, data=payload, content_type="application/json")
+    duplicate = client.post(url, data=payload, content_type="application/json")
+    premature_test = client.post(
+        f"/api/v1/domains/{domain.id}/test",
+        data={},
+        content_type="application/json",
+    )
+
+    assert first.status_code == 202
+    assert first.json()["started"] is True
+    assert duplicate.status_code == 202
+    assert duplicate.json()["started"] is False
+    assert duplicate.json()["id"] == first.json()["id"]
+    assert duplicate.json()["job_id"] == first.json()["job_id"]
+    assert premature_test.status_code == 409
+    assert premature_test.json()["code"] == "domain_not_ready_for_test"
+
+    transition = InboundRoutingTransition.objects.get(id=first.json()["id"])
+    transition.status = InboundRoutingTransition.Status.WAITING_TEST
+    transition.save(update_fields=("status", "updated_at"))
+    target_test = client.post(
+        f"/api/v1/domains/{domain.id}/test",
+        data={},
+        content_type="application/json",
+    )
+    detail = client.get(f"/api/v1/domains/{domain.id}")
+
+    assert target_test.status_code == 201
+    created_test = DomainTest.objects.get(id=target_test.json()["id"])
+    assert created_test.routing_transition_id == transition.id
+    assert detail.json()["setup_mode"] == Domain.SetupMode.DIRECT_MX
+    assert detail.json()["pending_setup_mode"] == Domain.SetupMode.PROVIDER_FORWARD
+    assert detail.json()["routing_transition"]["status"] == (
+        InboundRoutingTransition.Status.WAITING_TEST
+    )
+    assert AuditEvent.objects.filter(
+        domain=domain,
+        event_type="domain.routing_transition_test_created",
+        object_id=created_test.id,
+    ).exists()
+
+    cancelled = client.post(
+        f"{url}/cancel",
+        data={},
+        content_type="application/json",
+    )
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == InboundRoutingTransition.Status.CANCELLED
 
 
 @pytest.mark.django_db

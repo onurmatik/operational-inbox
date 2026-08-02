@@ -24,7 +24,9 @@ from inbox.models import (
     Classification,
     Conversation,
     Domain,
+    DomainTest,
     DurableJob,
+    InboundRoutingTransition,
     Message,
     Notification,
     OutboundMessage,
@@ -47,6 +49,12 @@ from inbox.services.jobs import (
     enqueue_job,
     request_outbound_provisioning,
     retry_domain_provisioning,
+)
+from inbox.services.routing_transitions import (
+    ACTIVE_TRANSITION_STATUSES,
+    begin_routing_transition,
+    cancel_routing_transition,
+    create_routing_transition_test,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +86,10 @@ class ErrorSchema(Schema):
 class DomainInput(Schema):
     hostname: str = Field(min_length=3, max_length=253)
     setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
+
+
+class RoutingTransitionInput(Schema):
+    target_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
 
 
 class ConversationStatusInput(Schema):
@@ -289,6 +301,11 @@ def scoped_object(model, domain: Domain, object_id: uuid.UUID):
 
 
 def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
+    transition = (
+        domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
+        .order_by("-generation")
+        .first()
+    )
     result: dict[str, Any] = {
         "id": str(domain.id),
         "hostname": domain.hostname,
@@ -297,6 +314,26 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
         "inbound_ready": domain.inbound_ready,
         "outbound_ready": domain.outbound_ready,
         "outbound_status": domain.outbound_status,
+        "pending_setup_mode": transition.to_mode if transition is not None else None,
+        "routing_transition": (
+            {
+                "id": str(transition.id),
+                "generation": transition.generation,
+                "from_mode": transition.from_mode,
+                "to_mode": transition.to_mode,
+                "status": transition.status,
+                "dns_verified_at": transition.dns_verified_at,
+                "cutover_at": transition.cutover_at,
+                "grace_until": transition.grace_until,
+                "error": (
+                    {"code": transition.error_code, "message": transition.error_message}
+                    if transition.error_code
+                    else None
+                ),
+            }
+            if transition is not None
+            else None
+        ),
         "last_checked_at": domain.last_checked_at,
         "error": (
             {"code": domain.error_code, "message": domain.public_error_message}
@@ -460,9 +497,7 @@ def domains_list(request: HttpRequest):
         domains = [request.auth.domain]
     else:
         domains = Domain.objects.filter(owner=request.user).exclude(status=Domain.Status.DISABLED)
-    return {
-        "items": [_domain_dict(item) for item in domains]
-    }
+    return {"items": [_domain_dict(item) for item in domains]}
 
 
 @api.post(
@@ -535,9 +570,7 @@ def domains_create(request: HttpRequest, payload: DomainInput):
     return Status(202, _domain_dict(domain))
 
 
-@api.get(
-    "/domains/{domain_id}", auth=authenticated, tags=["Domains"]
-)
+@api.get("/domains/{domain_id}", auth=authenticated, tags=["Domains"])
 def domains_detail(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
@@ -550,9 +583,7 @@ def domains_detail(request: HttpRequest, domain_id: uuid.UUID):
     response={202: dict},
     tags=["Domains"],
 )
-def domains_retry_provisioning(
-    request: HttpRequest, domain_id: uuid.UUID
-):
+def domains_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
     domain = api_domain(request, domain_id)
     try:
@@ -579,6 +610,102 @@ def domains_retry_provisioning(
             "started": started,
         },
     )
+
+
+@api.post(
+    "/domains/{domain_id}/routing/transition",
+    auth=authenticated,
+    response={202: dict},
+    tags=["Domains"],
+)
+def domains_start_routing_transition(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    payload: RoutingTransitionInput,
+):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    try:
+        transition, started = begin_routing_transition(domain, payload.target_mode)
+    except DjangoValidationError as exc:
+        raise APIError(
+            "routing_transition_not_allowed",
+            "; ".join(exc.messages),
+            status=409,
+        ) from exc
+    job = enqueue_job(
+        kind="provision_routing_transition",
+        idempotency_key=(f"provision-routing-transition:{transition.id}:{transition.generation}"),
+        payload={
+            "transition_id": str(transition.id),
+            "generation": transition.generation,
+        },
+        domain=domain,
+    )
+    if started:
+        record_api_audit(
+            request,
+            domain,
+            "domain.routing_transition_started",
+            transition,
+            {
+                "from": transition.from_mode,
+                "to": transition.to_mode,
+                "generation": transition.generation,
+                "job_id": str(job.id),
+            },
+        )
+    return Status(
+        202,
+        {
+            "id": str(transition.id),
+            "status": transition.status,
+            "from_mode": transition.from_mode,
+            "to_mode": transition.to_mode,
+            "generation": transition.generation,
+            "job_id": str(job.id),
+            "started": started,
+        },
+    )
+
+
+@api.post(
+    "/domains/{domain_id}/routing/transition/cancel",
+    auth=authenticated,
+    response={200: dict},
+    tags=["Domains"],
+)
+def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    transition = (
+        domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
+        .order_by("-generation")
+        .first()
+    )
+    if transition is None:
+        raise APIError(
+            "routing_transition_not_found",
+            "There is no active receiving-route transition.",
+            status=409,
+        )
+    try:
+        cancelled = cancel_routing_transition(transition)
+    except DjangoValidationError as exc:
+        raise APIError(
+            "routing_transition_not_cancellable",
+            "; ".join(exc.messages),
+            status=409,
+        ) from exc
+    if cancelled:
+        record_api_audit(
+            request,
+            domain,
+            "domain.routing_transition_cancelled",
+            transition,
+            {"generation": transition.generation},
+        )
+    return {"id": str(transition.id), "status": "CANCELLED", "cancelled": cancelled}
 
 
 @api.post(
@@ -625,6 +752,12 @@ def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
 def domains_check(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
     domain = api_domain(request, domain_id)
+    transition_needs_check = domain.routing_transitions.filter(
+        status__in=(
+            InboundRoutingTransition.Status.WAITING_DNS,
+            InboundRoutingTransition.Status.WAITING_TEST,
+        )
+    ).exists()
     if (
         domain.status
         not in {
@@ -633,8 +766,8 @@ def domains_check(request: HttpRequest, domain_id: uuid.UUID):
             Domain.Status.READY,
             Domain.Status.DEGRADED,
         }
-        or not domain.dns_records.exists()
-    ):
+        and not transition_needs_check
+    ) or not domain.dns_records.exists():
         raise APIError(
             "dns_instructions_not_ready",
             "DNS instructions must be ready before requesting a check.",
@@ -676,8 +809,20 @@ def domains_check(request: HttpRequest, domain_id: uuid.UUID):
 def domains_test(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
     domain = api_domain(request, domain_id)
+    transition = (
+        domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
+        .order_by("-generation")
+        .first()
+    )
     try:
-        test, address = create_domain_test(domain)
+        if transition is not None:
+            if transition.status != InboundRoutingTransition.Status.WAITING_TEST:
+                raise DjangoValidationError(
+                    "Verify the target receiving route before generating its test address."
+                )
+            test, address = create_routing_transition_test(transition)
+        else:
+            test, address = create_domain_test(domain)
     except DjangoValidationError as exc:
         raise APIError(
             "domain_not_ready_for_test",
@@ -691,7 +836,16 @@ def domains_test(request: HttpRequest, domain_id: uuid.UUID):
             "The receiving route is still being activated. Try again shortly.",
             status=503,
         ) from exc
-    record_api_audit(request, domain, "domain.test_created", test)
+    record_api_audit(
+        request,
+        domain,
+        (
+            "domain.routing_transition_test_created"
+            if test.routing_transition_id is not None
+            else "domain.test_created"
+        ),
+        test,
+    )
     return Status(
         201,
         {
@@ -730,6 +884,16 @@ def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
         )
     )
     domain.inbound_routes.update(is_active=False)
+    now = timezone.now()
+    domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES).update(
+        status=InboundRoutingTransition.Status.CANCELLED,
+        cancelled_at=now,
+        updated_at=now,
+    )
+    domain.tests.filter(
+        status=DomainTest.Status.PENDING,
+        routing_transition__isnull=False,
+    ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
     job = enqueue_job(
         kind="reconcile_receipt_rule",
         idempotency_key=f"receipt-rule:disable:{domain.id}",
@@ -740,9 +904,7 @@ def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
     return Status(202, {"status": domain.status, "job_id": str(job.id)})
 
 
-@api.get(
-    "/domains/{domain_id}/conversations", auth=authenticated, tags=["Conversations"]
-)
+@api.get("/domains/{domain_id}/conversations", auth=authenticated, tags=["Conversations"])
 def conversations_list(
     request: HttpRequest,
     domain_id: uuid.UUID,
@@ -786,9 +948,7 @@ def conversations_list(
     auth=authenticated,
     tags=["Conversations"],
 )
-def conversations_detail(
-    request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID
-):
+def conversations_detail(request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
@@ -1091,9 +1251,7 @@ def reports_list(
     }
 
 
-@api.get(
-    "/domains/{domain_id}/notifications", auth=authenticated, tags=["Notifications"]
-)
+@api.get("/domains/{domain_id}/notifications", auth=authenticated, tags=["Notifications"])
 def notifications_list(
     request: HttpRequest,
     domain_id: uuid.UUID,
@@ -1130,9 +1288,7 @@ def notifications_list(
     auth=authenticated,
     tags=["Notifications"],
 )
-def notifications_read(
-    request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID
-):
+def notifications_read(request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
     domain = api_domain(request, domain_id)
     notification = scoped_object(Notification, domain, notification_id)

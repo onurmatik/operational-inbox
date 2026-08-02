@@ -57,6 +57,16 @@ urlpatterns = [
         name="domain_switch_to_direct",
     ),
     path(
+        "app/domains/<uuid:domain_id>/routing/transition/",
+        views.domain_routing_transition_start,
+        name="domain_routing_transition_start",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/routing/transition/cancel/",
+        views.domain_routing_transition_cancel,
+        name="domain_routing_transition_cancel",
+    ),
+    path(
         "app/domains/<uuid:domain_id>/test/",
         views.domain_create_test,
         name="domain_create_test",

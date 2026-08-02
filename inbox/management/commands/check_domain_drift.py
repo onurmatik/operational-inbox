@@ -5,13 +5,16 @@ import dns.exception
 import dns.resolver
 from botocore.exceptions import BotoCoreError, ClientError
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand
+from django.db.models import Q
 from django.utils import timezone
 
-from inbox.models import Domain, DomainDNSRecord
+from inbox.models import Domain, DomainDNSRecord, InboundRoutingTransition
 from inbox.services.domains import apply_domain_readiness, reconcile_ses_identity_adoption
 from inbox.services.notifications import create_domain_drift_notifications
 from inbox.services.receipt_rules import reconcile_receipt_rule
+from inbox.services.routing_transitions import refresh_routing_transition
 
 
 def observed_values(record: DomainDNSRecord) -> list[str]:
@@ -49,14 +52,29 @@ class Command(BaseCommand):
         now = timezone.now()
         checked = invalid = 0
         touched_domains = set()
-        for record in DomainDNSRecord.objects.filter(
-            domain__status__in=[
-                Domain.Status.PENDING_DNS,
-                Domain.Status.PENDING_TEST,
-                Domain.Status.READY,
-                Domain.Status.DEGRADED,
-            ]
-        ).select_related("domain"):
+        active_transition_statuses = (
+            InboundRoutingTransition.Status.PREPARING,
+            InboundRoutingTransition.Status.WAITING_DNS,
+            InboundRoutingTransition.Status.WAITING_TEST,
+            InboundRoutingTransition.Status.FAILED,
+        )
+        records = (
+            DomainDNSRecord.objects.filter(
+                Q(
+                    domain__status__in=[
+                        Domain.Status.PENDING_DNS,
+                        Domain.Status.PENDING_TEST,
+                        Domain.Status.READY,
+                        Domain.Status.DEGRADED,
+                    ]
+                )
+                | Q(domain__routing_transitions__status__in=active_transition_statuses)
+            )
+            .exclude(domain__status=Domain.Status.DISABLED)
+            .select_related("domain")
+            .distinct()
+        )
+        for record in records:
             checked += 1
             touched_domains.add(record.domain_id)
             try:
@@ -91,8 +109,17 @@ class Command(BaseCommand):
             )
         domains = list(
             Domain.objects.filter(id__in=touched_domains)
-            .prefetch_related("dns_records", "tests")
+            .prefetch_related("dns_records", "tests", "routing_transitions__routes")
             .order_by("hostname")
+        )
+        transitions = list(
+            InboundRoutingTransition.objects.filter(
+                domain__in=domains,
+                status__in=(
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                ),
+            ).select_related("domain")
         )
         verification: dict[str, str] = {}
         dkim: dict[str, str] = {}
@@ -101,6 +128,11 @@ class Command(BaseCommand):
             for domain in domains
             if domain.setup_mode == Domain.SetupMode.DIRECT_MX
             or domain.outbound_status != Domain.OutboundStatus.DISABLED
+            or any(
+                transition.domain_id == domain.id
+                and transition.to_mode == Domain.SetupMode.DIRECT_MX
+                for transition in transitions
+            )
         ]
         dkim_domains = [
             domain for domain in domains if domain.outbound_status != Domain.OutboundStatus.DISABLED
@@ -148,6 +180,16 @@ class Command(BaseCommand):
                 # the previous outbound readiness until SES can be queried again.
                 verification = {}
                 dkim = {}
+        for transition in transitions:
+            try:
+                refresh_routing_transition(
+                    transition,
+                    ses_verification_status=verification.get(transition.domain.hostname),
+                    now=now,
+                )
+            except ValidationError:
+                # A transient MX lookup problem must not disturb the active route.
+                continue
         for domain in domains:
             previous_status = domain.status
             apply_domain_readiness(
@@ -164,7 +206,18 @@ class Command(BaseCommand):
         if (
             settings.AWS_INGRESS_BUCKET
             and settings.AWS_INBOUND_TOPIC_ARN
-            and any(domain.setup_mode == Domain.SetupMode.DIRECT_MX for domain in domains)
+            and (
+                any(domain.setup_mode == Domain.SetupMode.DIRECT_MX for domain in domains)
+                or any(
+                    transition.to_mode == Domain.SetupMode.DIRECT_MX for transition in transitions
+                )
+                or InboundRoutingTransition.objects.filter(
+                    domain__in=domains,
+                    from_mode=Domain.SetupMode.DIRECT_MX,
+                    status=InboundRoutingTransition.Status.GRACE,
+                    grace_until__gt=now,
+                ).exists()
+            )
         ):
             # This is intentionally unconditional and idempotent. A previous AWS
             # failure must not strand an already-committed ownership transition,

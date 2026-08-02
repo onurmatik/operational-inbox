@@ -16,6 +16,7 @@ from inbox.models import (
     Domain,
     DomainDNSRecord,
     DomainTest,
+    InboundRoute,
 )
 from inbox.services.domains import (
     DomainClaimLookupError,
@@ -649,9 +650,7 @@ def test_direct_outbound_reuses_inbound_identity_and_adds_dkim(project):
     assert domain.inbound_ready
     assert domain.outbound_status == Domain.OutboundStatus.PENDING_DNS
     assert domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).count() == 3
-    assert domain.dns_records.filter(
-        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
-    ).count() == 1
+    assert domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.SES_VERIFICATION).count() == 1
     ses.verify_domain_identity.assert_not_called()
     ses.verify_domain_dkim.assert_called_once_with(Domain=domain.hostname)
 
@@ -828,6 +827,12 @@ def _ready_direct_capability_domain(
         outbound_status=Domain.OutboundStatus.READY,
         ses_identity_status="SUCCESS",
         claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part=f"route-{hostname}",
+        address=f"route-{hostname}@inbound.example.net",
     )
     DomainDNSRecord.objects.create(
         domain=domain,

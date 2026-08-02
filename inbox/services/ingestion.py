@@ -15,6 +15,7 @@ import boto3
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from inbox.models import (
@@ -26,6 +27,7 @@ from inbox.models import (
     DomainTest,
     DraftApproval,
     InboundRoute,
+    InboundRoutingTransition,
     IngressEvent,
     Message,
     MessageRecipient,
@@ -37,6 +39,7 @@ from inbox.models import (
 from inbox.services.domains import apply_domain_readiness
 from inbox.services.mime import MAX_MIME_BYTES, ParsedMIME, parse_mime
 from inbox.services.notifications import create_security_notifications
+from inbox.services.routing_transitions import finalize_routing_transition_test
 from inbox.services.threading import (
     match_conversation,
     merge_suggestion,
@@ -134,33 +137,96 @@ def _route_domains(recipients: list[str]) -> list[RoutedDomain]:
     grouped_routes: dict[uuid.UUID, dict[uuid.UUID, InboundRoute]] = defaultdict(dict)
     domains: dict[uuid.UUID, Domain] = {}
 
-    for route in InboundRoute.objects.filter(
-        address__in=normalized,
-        is_active=True,
-        kind=InboundRoute.Kind.FORWARDING_ALIAS,
-        domain__setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
-        domain__status__in=[
-            Domain.Status.PENDING_TEST,
-            Domain.Status.READY,
-            Domain.Status.DEGRADED,
-        ],
-    ).select_related("domain"):
+    now = timezone.now()
+    forwarding_routes = (
+        InboundRoute.objects.filter(
+            address__in=normalized,
+            is_active=True,
+            kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        )
+        .exclude(domain__status=Domain.Status.DISABLED)
+        .filter(
+            Q(
+                domain__setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+                domain__status__in=(
+                    Domain.Status.PENDING_TEST,
+                    Domain.Status.READY,
+                    Domain.Status.DEGRADED,
+                ),
+            )
+            | Q(
+                domain__setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+                domain__routing_transitions__from_mode=Domain.SetupMode.PROVIDER_FORWARD,
+                domain__routing_transitions__status__in=(
+                    InboundRoutingTransition.Status.PREPARING,
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.FAILED,
+                ),
+            )
+            | Q(
+                routing_transition__to_mode=Domain.SetupMode.PROVIDER_FORWARD,
+                routing_transition__status__in=(
+                    InboundRoutingTransition.Status.PREPARING,
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.GRACE,
+                ),
+            )
+            | Q(grace_until__gt=now)
+        )
+        .select_related("domain", "routing_transition")
+        .distinct()
+    )
+    for route in forwarding_routes:
         domain = route.domain
         domains[domain.id] = domain
         grouped_recipients[domain.id].add(route.address.casefold())
         grouped_routes[domain.id][route.id] = route
 
     recipient_domains = {address.rsplit("@", 1)[1] for address in normalized}
-    direct_domains = Domain.objects.filter(
-        hostname__in=recipient_domains,
-        setup_mode=Domain.SetupMode.DIRECT_MX,
-        ownership_verified=True,
-        status__in=[
-            Domain.Status.PENDING_TEST,
-            Domain.Status.READY,
-            Domain.Status.DEGRADED,
-        ],
-    ).select_related("owner")
+    direct_domains = (
+        Domain.objects.filter(
+            hostname__in=recipient_domains,
+            ownership_verified=True,
+        )
+        .exclude(status=Domain.Status.DISABLED)
+        .filter(
+            Q(
+                setup_mode=Domain.SetupMode.DIRECT_MX,
+                status__in=(
+                    Domain.Status.PENDING_TEST,
+                    Domain.Status.READY,
+                    Domain.Status.DEGRADED,
+                ),
+            )
+            | Q(
+                setup_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__from_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status__in=(
+                    InboundRoutingTransition.Status.PREPARING,
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.FAILED,
+                ),
+            )
+            | Q(
+                routing_transitions__to_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status__in=(
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.GRACE,
+                ),
+            )
+            | Q(
+                routing_transitions__from_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status=InboundRoutingTransition.Status.GRACE,
+                routing_transitions__grace_until__gt=now,
+            )
+        )
+        .select_related("owner")
+        .distinct()
+    )
     for domain in direct_domains:
         domains[domain.id] = domain
         grouped_recipients[domain.id].update(
@@ -396,6 +462,11 @@ def _store_domain_message(
     candidate_addresses = {
         address.casefold() for address in (*parsed.to_addresses, *parsed.cc_addresses)
     }
+    arrival_kind = (
+        InboundRoute.Kind.FORWARDING_ALIAS
+        if any(route.kind == InboundRoute.Kind.FORWARDING_ALIAS for route in routed.routes)
+        else InboundRoute.Kind.DIRECT_DOMAIN
+    )
     for test in DomainTest.objects.filter(
         domain=domain,
         status=DomainTest.Status.PENDING,
@@ -417,18 +488,33 @@ def _store_domain_message(
             None,
         )
         if matching:
-            test.status = DomainTest.Status.RECEIVED
-            test.received_message = message
-            test.save(update_fields=("status", "received_message", "updated_at"))
-            apply_domain_readiness(test.domain)
+            if test.routing_transition_id:
+                if not finalize_routing_transition_test(test, message, arrival_kind):
+                    continue
+                event_type = "domain.routing_transition_test_received"
+            else:
+                if (
+                    test.setup_generation != domain.inbound_setup_generation
+                    or test.expected_setup_mode != domain.setup_mode
+                    or test.expected_route_kind != arrival_kind
+                ):
+                    continue
+                test.status = DomainTest.Status.RECEIVED
+                test.received_message = message
+                test.save(update_fields=("status", "received_message", "updated_at"))
+                apply_domain_readiness(test.domain)
+                event_type = "domain.test_received"
             AuditEvent.objects.create(
                 domain=domain,
                 actor_type=AuditEvent.ActorType.SYSTEM,
-                event_type="domain.test_received",
+                event_type=event_type,
                 object_type="DomainTest",
                 object_id=test.id,
                 request_id=f"ingress:{message.id}",
-                metadata={},
+                metadata={
+                    "arrival_kind": arrival_kind,
+                    "setup_generation": test.setup_generation,
+                },
             )
     AuditEvent.objects.create(
         domain=domain,

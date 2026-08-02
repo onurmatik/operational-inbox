@@ -49,7 +49,11 @@ from inbox.models import (
     Classification,
     Conversation,
     Domain,
+    DomainDNSRecord,
+    DomainTest,
     EmailVerificationToken,
+    InboundRoute,
+    InboundRoutingTransition,
     Message,
     Notification,
     OutboundMessage,
@@ -69,7 +73,6 @@ from inbox.services.attachments import (
 from inbox.services.domains import (
     DomainClaimConflict,
     DomainClaimLookupError,
-    MXLayout,
     classify_stored_mx,
     create_domain,
     create_domain_test,
@@ -84,11 +87,14 @@ from inbox.services.drafts import (
 )
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
-    can_switch_domain_to_direct,
     enqueue_job,
     request_outbound_provisioning,
     retry_domain_provisioning,
-    switch_domain_to_direct,
+)
+from inbox.services.routing_transitions import (
+    begin_routing_transition,
+    cancel_routing_transition,
+    create_routing_transition_test,
 )
 from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
 
@@ -105,23 +111,92 @@ def _domain_test_session_key(domain_id: uuid.UUID) -> str:
     return f"{DOMAIN_TEST_SESSION_PREFIX}{domain_id}"
 
 
-def _active_domain_test_address(request: HttpRequest, domain: Domain) -> str | None:
+ACTIVE_ROUTING_TRANSITION_STATUSES = (
+    InboundRoutingTransition.Status.PREPARING,
+    InboundRoutingTransition.Status.WAITING_DNS,
+    InboundRoutingTransition.Status.WAITING_TEST,
+    InboundRoutingTransition.Status.GRACE,
+    InboundRoutingTransition.Status.FAILED,
+)
+
+
+def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | None:
+    transitions = sorted(
+        (
+            transition
+            for transition in domain.routing_transitions.all()
+            if transition.status in ACTIVE_ROUTING_TRANSITION_STATUSES
+        ),
+        key=lambda transition: (transition.created_at, str(transition.id)),
+        reverse=True,
+    )
+    return transitions[0] if transitions else None
+
+
+def _active_domain_test_address(
+    request: HttpRequest,
+    domain: Domain,
+    *,
+    active_transition: InboundRoutingTransition | None = None,
+) -> str | None:
     key = _domain_test_session_key(domain.id)
-    if domain.status in {Domain.Status.READY, Domain.Status.ERROR, Domain.Status.DISABLED}:
+    transition_test_pending = (
+        active_transition is not None
+        and active_transition.status == InboundRoutingTransition.Status.WAITING_TEST
+    )
+    if active_transition is not None and not transition_test_pending:
+        request.session.pop(key, None)
+        return None
+    if domain.status == Domain.Status.DISABLED or (
+        domain.status in {Domain.Status.READY, Domain.Status.ERROR} and not transition_test_pending
+    ):
         request.session.pop(key, None)
         return None
     payload = request.session.get(key)
     if not isinstance(payload, dict):
         request.session.pop(key, None)
         return None
+    payload_transition_id = payload.get("routing_transition_id", "")
     address = payload.get("address")
     expires_at = payload.get("expires_at")
+    test_id = payload.get("test_id")
     if (
         not isinstance(address, str)
         or not address
         or not isinstance(expires_at, (int, float))
         or expires_at <= timezone.now().timestamp()
+        or not isinstance(test_id, str)
     ):
+        request.session.pop(key, None)
+        return None
+    try:
+        test_uuid = uuid.UUID(test_id)
+    except ValueError:
+        request.session.pop(key, None)
+        return None
+    test = domain.tests.filter(
+        id=test_uuid,
+        status=DomainTest.Status.PENDING,
+        expires_at__gt=timezone.now(),
+    ).first()
+    if test is None:
+        request.session.pop(key, None)
+        return None
+    if active_transition is not None:
+        valid_test = (
+            payload_transition_id == str(active_transition.id)
+            and test.routing_transition_id == active_transition.id
+            and test.setup_generation == active_transition.generation
+            and test.expected_setup_mode == active_transition.to_mode
+        )
+    else:
+        valid_test = (
+            not payload_transition_id
+            and test.routing_transition_id is None
+            and test.setup_generation == domain.inbound_setup_generation
+            and test.expected_setup_mode == domain.setup_mode
+        )
+    if not valid_test:
         request.session.pop(key, None)
         return None
     return address
@@ -543,9 +618,7 @@ class OperationalInboxSesameLoginView(SesameLoginView):
                 user.save(update_fields=("email_verified_at",))
         self.request.user = user
         selected = (
-            user.domains.exclude(status=Domain.Status.DISABLED)
-            .order_by("created_at")
-            .first()
+            user.domains.exclude(status=Domain.Status.DISABLED).order_by("created_at").first()
         )
         if selected:
             self.request.session["domain_id"] = str(selected.id)
@@ -773,9 +846,7 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @require_POST
 def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
-    conversation = domain_get_or_404(
-        Conversation.objects, domain=domain, id=conversation_id
-    )
+    conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
     status = request.POST.get("status", "")
     if status not in Conversation.Status.values or status == Conversation.Status.QUARANTINED:
         messages.error(request, "Select a supported conversation state.")
@@ -785,9 +856,7 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
             timezone.now() if status == Conversation.Status.RESOLVED else None
         )
         conversation.save(update_fields=("status", "resolved_at", "updated_at"))
-        _audit(
-            domain, request, "conversation.status_changed", conversation, {"status": status}
-        )
+        _audit(domain, request, "conversation.status_changed", conversation, {"status": status})
         messages.success(request, "Conversation status updated.")
     return redirect("conversation_detail", conversation_id=conversation.id)
 
@@ -796,9 +865,7 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @require_POST
 def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
-    conversation = domain_get_or_404(
-        Conversation.objects, domain=domain, id=conversation_id
-    )
+    conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
     if message is None:
         messages.error(request, "No inbound message is available for drafting.")
@@ -1035,8 +1102,79 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
 def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
     request.session["domain_id"] = str(domain.id)
-    domain = Domain.objects.prefetch_related("dns_records", "inbound_routes").get(id=domain.id)
+    domain = Domain.objects.prefetch_related(
+        "dns_records",
+        "inbound_routes",
+        "routing_transitions__routes",
+    ).get(id=domain.id)
+    active_transition = _active_routing_transition(domain)
+    routes = list(domain.inbound_routes.all())
+    active_route_kind = (
+        InboundRoute.Kind.DIRECT_DOMAIN
+        if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        else InboundRoute.Kind.FORWARDING_ALIAS
+    )
+    active_route = next(
+        iter(
+            sorted(
+                (route for route in routes if route.is_active and route.kind == active_route_kind),
+                key=lambda route: (route.setup_generation, route.created_at, str(route.id)),
+                reverse=True,
+            )
+        ),
+        None,
+    )
+    target_route = None
+    if active_transition is not None:
+        target_route_kind = (
+            InboundRoute.Kind.DIRECT_DOMAIN
+            if active_transition.to_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS
+        )
+        target_route = next(
+            iter(
+                sorted(
+                    (
+                        route
+                        for route in routes
+                        if route.routing_transition_id == active_transition.id
+                        and route.kind == target_route_kind
+                    ),
+                    key=lambda route: (route.setup_generation, route.created_at, str(route.id)),
+                    reverse=True,
+                )
+            ),
+            None,
+        )
     existing_mx_layout = classify_stored_mx(domain.existing_mx)
+    dns_records = list(domain.dns_records.all())
+    display_dns_records = dns_records
+    if active_transition is not None:
+        target_purposes = {DomainDNSRecord.Purpose.OWNERSHIP}
+        if active_transition.to_mode == Domain.SetupMode.DIRECT_MX:
+            target_purposes.update(
+                {
+                    DomainDNSRecord.Purpose.SES_VERIFICATION,
+                    DomainDNSRecord.Purpose.MX,
+                }
+            )
+        display_dns_records = [
+            record for record in dns_records if record.purpose in target_purposes
+        ]
+    elif domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+        visible_purposes = {DomainDNSRecord.Purpose.OWNERSHIP}
+        if domain.outbound_status != Domain.OutboundStatus.DISABLED:
+            visible_purposes.update(
+                {
+                    DomainDNSRecord.Purpose.SES_VERIFICATION,
+                    DomainDNSRecord.Purpose.DKIM,
+                    DomainDNSRecord.Purpose.SPF,
+                    DomainDNSRecord.Purpose.DMARC,
+                }
+            )
+        display_dns_records = [
+            record for record in dns_records if record.purpose in visible_purposes
+        ]
     return render(
         request,
         "inbox/domain_detail.html",
@@ -1045,11 +1183,19 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
             "domain": domain,
             "can_retry_provisioning": can_retry_domain_provisioning(domain),
             "existing_mx_layout": existing_mx_layout.value,
-            "can_switch_to_direct": (
-                existing_mx_layout == MXLayout.OPERATIONAL_INBOX
-                and can_switch_domain_to_direct(domain)
+            "active_transition": active_transition,
+            "active_route": active_route,
+            "target_route": target_route,
+            "display_dns_records": display_dns_records,
+            "transition_can_cancel": (
+                active_transition is not None
+                and active_transition.status != InboundRoutingTransition.Status.GRACE
             ),
-            "new_test_address": _active_domain_test_address(request, domain),
+            "new_test_address": _active_domain_test_address(
+                request,
+                domain,
+                active_transition=active_transition,
+            ),
         },
     )
 
@@ -1081,35 +1227,108 @@ def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> Htt
     return redirect("domain_detail", domain_id=domain.id)
 
 
-@verified_required
-@require_POST
-def domain_switch_to_direct(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+def _start_domain_routing_transition(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    target_mode: str,
+) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
     try:
-        domain, job, started = switch_domain_to_direct(domain)
+        transition, started = begin_routing_transition(domain, target_mode)
     except ValidationError as exc:
         messages.error(request, "; ".join(exc.messages))
     else:
         if started:
+            job = enqueue_job(
+                kind="provision_routing_transition",
+                idempotency_key=(
+                    f"provision-routing-transition:{transition.id}:{transition.generation}"
+                ),
+                payload={
+                    "transition_id": str(transition.id),
+                    "generation": transition.generation,
+                },
+                domain=domain,
+            )
             _audit(
                 domain,
                 request,
-                "domain.inbound_setup_mode_changed",
-                domain,
+                "domain.routing_transition_started",
+                transition,
                 {
-                    "from": Domain.SetupMode.PROVIDER_FORWARD,
-                    "to": Domain.SetupMode.DIRECT_MX,
-                    "setup_generation": domain.inbound_setup_generation,
+                    "from": transition.from_mode,
+                    "to": transition.to_mode,
+                    "generation": transition.generation,
                     "job_id": str(job.id),
                 },
             )
             messages.success(
                 request,
-                "Direct routing setup started. Existing DNS remains unchanged while fresh "
-                "ownership instructions are prepared.",
+                "Receiving route change started. Your current route remains active while the "
+                "target route is prepared and tested.",
             )
         else:
-            messages.info(request, "Direct routing setup is already in progress.")
+            messages.info(request, "This receiving route change is already in progress.")
+    return redirect("domain_detail", domain_id=domain.id)
+
+
+@verified_required
+@require_POST
+def domain_routing_transition_start(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    return _start_domain_routing_transition(
+        request,
+        domain_id,
+        request.POST.get("target_mode", ""),
+    )
+
+
+@verified_required
+@require_POST
+def domain_switch_to_direct(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    """Backward-compatible entry point for the former direct-only route switch."""
+
+    return _start_domain_routing_transition(
+        request,
+        domain_id,
+        Domain.SetupMode.DIRECT_MX,
+    )
+
+
+@verified_required
+@require_POST
+def domain_routing_transition_cancel(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    domain = get_owned_domain(request.user, domain_id)
+    transition = (
+        domain.routing_transitions.filter(status__in=ACTIVE_ROUTING_TRANSITION_STATUSES)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if transition is None:
+        messages.info(request, "There is no active receiving route change to cancel.")
+        return redirect("domain_detail", domain_id=domain.id)
+    try:
+        cancelled = cancel_routing_transition(transition)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        if cancelled:
+            _audit(
+                domain,
+                request,
+                "domain.routing_transition_cancelled",
+                transition,
+                {
+                    "from": transition.from_mode,
+                    "to": transition.to_mode,
+                    "generation": transition.generation,
+                },
+            )
+            messages.success(
+                request,
+                "Receiving route change cancelled. The current route was left unchanged.",
+            )
+        else:
+            messages.info(request, "This receiving route change is no longer cancellable.")
     return redirect("domain_detail", domain_id=domain.id)
 
 
@@ -1117,8 +1336,20 @@ def domain_switch_to_direct(request: HttpRequest, domain_id: uuid.UUID) -> HttpR
 @require_POST
 def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    active_transition = (
+        domain.routing_transitions.filter(status__in=ACTIVE_ROUTING_TRANSITION_STATUSES)
+        .order_by("-created_at", "-id")
+        .first()
+    )
     try:
-        test, address = create_domain_test(domain)
+        if active_transition is not None:
+            if active_transition.status != InboundRoutingTransition.Status.WAITING_TEST:
+                raise ValidationError(
+                    "Verify the target receiving route before generating its test address."
+                )
+            test, address = create_routing_transition_test(active_transition)
+        else:
+            test, address = create_domain_test(domain)
     except ValidationError as exc:
         messages.error(request, "; ".join(exc.messages))
     except Exception:
@@ -1130,13 +1361,22 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
         )
     else:
         request.session[_domain_test_session_key(domain.id)] = {
+            "test_id": str(test.id),
             "address": address,
             "expires_at": test.expires_at.timestamp(),
+            "routing_transition_id": (
+                str(active_transition.id) if test.routing_transition_id is not None else ""
+            ),
         }
-        _audit(domain, request, "domain.test_created", domain)
+        if test.routing_transition_id is not None:
+            _audit(domain, request, "domain.routing_transition_test_created", test)
+        else:
+            _audit(domain, request, "domain.test_created", domain)
         messages.success(
             request,
-            "Test address generated. Send a real email to it within 24 hours.",
+            "Target-path test address generated. Send a real email to it within 24 hours."
+            if test.routing_transition_id is not None
+            else "Test address generated. Send a real email to it within 24 hours.",
         )
     return redirect("domain_detail", domain_id=domain.id)
 
@@ -1189,6 +1429,16 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         )
     )
     domain.inbound_routes.update(is_active=False)
+    now = timezone.now()
+    domain.routing_transitions.filter(status__in=ACTIVE_ROUTING_TRANSITION_STATUSES).update(
+        status=InboundRoutingTransition.Status.CANCELLED,
+        cancelled_at=now,
+        updated_at=now,
+    )
+    domain.tests.filter(
+        status=DomainTest.Status.PENDING,
+        routing_transition__isnull=False,
+    ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
     enqueue_job(
         kind="reconcile_receipt_rule",
         idempotency_key=f"receipt-rule:disable:{domain.id}",

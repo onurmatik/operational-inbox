@@ -21,7 +21,9 @@ from inbox.models import (
     Domain,
     DomainDNSRecord,
     DomainTest,
+    DurableJob,
     InboundRoute,
+    InboundRoutingTransition,
     ReportSchedule,
     RetentionPolicy,
     User,
@@ -235,14 +237,11 @@ def classify_stored_mx(records: list[dict[str, object]]) -> MXLayout:
 
 def _assert_limits(owner: User) -> None:
     if (
-        Domain.objects.filter(owner=owner)
-        .exclude(status=Domain.Status.DISABLED)
-        .count()
+        Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED).count()
         >= settings.MAX_DOMAINS_PER_USER
     ):
         raise DomainLimitError(
-            "A user can provision at most "
-            f"{settings.MAX_DOMAINS_PER_USER} domains."
+            f"A user can provision at most {settings.MAX_DOMAINS_PER_USER} domains."
         )
     since = timezone.now() - timedelta(seconds=settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS)
     recent = Domain.objects.filter(owner=owner, created_at__gte=since).count()
@@ -484,6 +483,32 @@ def expire_unverified_claims() -> int:
                 )
             )
             domain.inbound_routes.update(is_active=False)
+            domain.routing_transitions.filter(
+                status__in=(
+                    InboundRoutingTransition.Status.PREPARING,
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.GRACE,
+                    InboundRoutingTransition.Status.FAILED,
+                )
+            ).update(
+                status=InboundRoutingTransition.Status.CANCELLED,
+                cancelled_at=now,
+                updated_at=now,
+            )
+            domain.tests.filter(
+                status=DomainTest.Status.PENDING,
+                routing_transition__isnull=False,
+            ).update(status=DomainTest.Status.EXPIRED, updated_at=now)
+            DurableJob.objects.get_or_create(
+                idempotency_key=f"receipt-rule:claim-expired:{domain.id}",
+                defaults={
+                    "domain": domain,
+                    "kind": "reconcile_receipt_rule",
+                    "payload": {},
+                    "due_at": now,
+                },
+            )
     return len(expired)
 
 
@@ -497,6 +522,15 @@ def _matches_inbound_provisioning_attempt(
         domain.status == Domain.Status.PROVISIONING
         and domain.inbound_setup_generation == expected_generation
         and domain.setup_mode == expected_setup_mode
+        and not domain.routing_transitions.filter(
+            status__in=(
+                InboundRoutingTransition.Status.PREPARING,
+                InboundRoutingTransition.Status.WAITING_DNS,
+                InboundRoutingTransition.Status.WAITING_TEST,
+                InboundRoutingTransition.Status.GRACE,
+                InboundRoutingTransition.Status.FAILED,
+            )
+        ).exists()
     )
 
 
@@ -788,7 +822,17 @@ def reconcile_ses_identity_adoption(
     verification_status = str(ses_verification_status).upper()
     dkim_status = str(dkim_verification_status).upper()
     outbound_enabled = domain.outbound_status != Domain.OutboundStatus.DISABLED
-    needs_ses_verification = domain.setup_mode == Domain.SetupMode.DIRECT_MX or outbound_enabled
+    has_direct_transition = domain.routing_transitions.filter(
+        to_mode=Domain.SetupMode.DIRECT_MX,
+        status__in=(
+            InboundRoutingTransition.Status.PREPARING,
+            InboundRoutingTransition.Status.WAITING_DNS,
+            InboundRoutingTransition.Status.WAITING_TEST,
+        ),
+    ).exists()
+    needs_ses_verification = (
+        domain.setup_mode == Domain.SetupMode.DIRECT_MX or outbound_enabled or has_direct_transition
+    )
     has_verification_instruction = domain.dns_records.filter(
         purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
     ).exists()
@@ -874,6 +918,7 @@ def _assert_domain_test_ready(domain: Domain) -> None:
         or not domain.inbound_routes.filter(
             is_active=True,
             kind=expected_route_kind,
+            setup_generation=domain.inbound_setup_generation,
         ).exists()
     ):
         raise ValidationError("Verify the required DNS records before generating a test address.")
@@ -882,7 +927,11 @@ def _assert_domain_test_ready(domain: Domain) -> None:
 def _assert_domain_test_cooldown(domain: Domain, *, now=None) -> None:
     now = now or timezone.now()
     cooldown_started_at = now - timedelta(seconds=settings.DOMAIN_TEST_COOLDOWN_SECONDS)
-    if domain.tests.filter(created_at__gte=cooldown_started_at).exists():
+    if domain.tests.filter(
+        created_at__gte=cooldown_started_at,
+        setup_generation=domain.inbound_setup_generation,
+        expected_setup_mode=domain.setup_mode,
+    ).exists():
         raise ValidationError(
             "A test address was generated recently. Use that address or wait a minute "
             "before generating another one."
@@ -911,6 +960,13 @@ def create_domain_test(
         _assert_domain_test_cooldown(locked_domain)
         test = DomainTest.objects.create(
             domain=locked_domain,
+            setup_generation=locked_domain.inbound_setup_generation,
+            expected_setup_mode=locked_domain.setup_mode,
+            expected_route_kind=(
+                InboundRoute.Kind.DIRECT_DOMAIN
+                if locked_domain.setup_mode == Domain.SetupMode.DIRECT_MX
+                else InboundRoute.Kind.FORWARDING_ALIAS
+            ),
             token_hash=hashlib.sha256(raw.encode()).hexdigest(),
             expires_at=timezone.now() + timedelta(hours=24),
         )
@@ -953,8 +1009,16 @@ def apply_domain_readiness(
         )
         for item in records
     )
+    transitioning_to_provider = domain.routing_transitions.filter(
+        from_mode=Domain.SetupMode.DIRECT_MX,
+        to_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=InboundRoutingTransition.Status.WAITING_TEST,
+    ).exists()
     required_valid = bool(records) and all(
-        not item.is_required or item.status == DomainDNSRecord.Status.VALID for item in records
+        not item.is_required
+        or item.status == DomainDNSRecord.Status.VALID
+        or (transitioning_to_provider and item.purpose == DomainDNSRecord.Purpose.MX)
+        for item in records
     )
     observed_ses_status = str(
         ses_verification_status
@@ -965,7 +1029,22 @@ def apply_domain_readiness(
     ses_receiving_ready = (
         domain.setup_mode != Domain.SetupMode.DIRECT_MX or observed_ses_status == "SUCCESS"
     )
-    test_received = domain.tests.filter(status=DomainTest.Status.RECEIVED).exists()
+    expected_route_kind = (
+        InboundRoute.Kind.DIRECT_DOMAIN
+        if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        else InboundRoute.Kind.FORWARDING_ALIAS
+    )
+    test_received = domain.tests.filter(
+        status=DomainTest.Status.RECEIVED,
+        setup_generation=domain.inbound_setup_generation,
+        expected_setup_mode=domain.setup_mode,
+        expected_route_kind=expected_route_kind,
+    ).exists()
+    active_route_ready = domain.inbound_routes.filter(
+        is_active=True,
+        setup_generation=domain.inbound_setup_generation,
+        kind=expected_route_kind,
+    ).exists()
 
     domain.ownership_verified = ownership_dns
     if ownership_dns and domain.verified_at is None:
@@ -1035,7 +1114,11 @@ def apply_domain_readiness(
         domain.outbound_ready = False
 
     domain.inbound_ready = (
-        ownership_dns and required_valid and ses_receiving_ready and test_received
+        ownership_dns
+        and required_valid
+        and ses_receiving_ready
+        and active_route_ready
+        and test_received
     )
     if not ownership_dns or not required_valid:
         if domain.status in {Domain.Status.READY, Domain.Status.DEGRADED}:

@@ -257,9 +257,7 @@ class ReportSchedule(DomainScopedModel):
         HOURLY = "HOURLY", "Hourly"
         DAILY = "DAILY", "Daily"
 
-    domain = models.OneToOneField(
-        Domain, on_delete=models.CASCADE, related_name="report_schedule"
-    )
+    domain = models.OneToOneField(Domain, on_delete=models.CASCADE, related_name="report_schedule")
     review_frequency = models.CharField(
         max_length=10, choices=Frequency.choices, default=Frequency.HOURLY
     )
@@ -271,9 +269,7 @@ class ReportSchedule(DomainScopedModel):
 
 
 class RetentionPolicy(DomainScopedModel):
-    domain = models.OneToOneField(
-        Domain, on_delete=models.CASCADE, related_name="retention_policy"
-    )
+    domain = models.OneToOneField(Domain, on_delete=models.CASCADE, related_name="retention_policy")
     raw_message_days = models.PositiveSmallIntegerField(default=90)
     attachment_days = models.PositiveSmallIntegerField(default=90)
     normalized_content_days = models.PositiveSmallIntegerField(default=365)
@@ -318,6 +314,57 @@ class DomainDNSRecord(DomainScopedModel):
         ]
 
 
+class InboundRoutingTransition(DomainScopedModel):
+    class Status(models.TextChoices):
+        PREPARING = "PREPARING", "Preparing"
+        WAITING_DNS = "WAITING_DNS", "Waiting for DNS"
+        WAITING_TEST = "WAITING_TEST", "Waiting for test delivery"
+        GRACE = "GRACE", "Grace period"
+        COMPLETE = "COMPLETE", "Complete"
+        FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+
+    domain = models.ForeignKey(
+        Domain,
+        on_delete=models.CASCADE,
+        related_name="routing_transitions",
+    )
+    generation = models.PositiveBigIntegerField()
+    from_mode = models.CharField(max_length=24, choices=Domain.SetupMode.choices)
+    to_mode = models.CharField(max_length=24, choices=Domain.SetupMode.choices)
+    from_domain_status = models.CharField(max_length=24, choices=Domain.Status.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PREPARING)
+    dns_verified_at = models.DateTimeField(null=True, blank=True)
+    test_received_at = models.DateTimeField(null=True, blank=True)
+    cutover_at = models.DateTimeField(null=True, blank=True)
+    grace_until = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+    error_message = models.CharField(max_length=240, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("domain", "generation"),
+                name="uniq_domain_routing_transition_generation",
+            ),
+            models.UniqueConstraint(
+                fields=("domain",),
+                condition=Q(
+                    status__in=(
+                        "PREPARING",
+                        "WAITING_DNS",
+                        "WAITING_TEST",
+                        "GRACE",
+                        "FAILED",
+                    )
+                ),
+                name="uniq_active_domain_routing_transition",
+            ),
+        ]
+
+
 class InboundRoute(DomainScopedModel):
     class Kind(models.TextChoices):
         DIRECT_DOMAIN = "DIRECT_DOMAIN", "Direct domain"
@@ -325,10 +372,19 @@ class InboundRoute(DomainScopedModel):
         TEST = "TEST", "Test delivery"
 
     domain = models.ForeignKey(Domain, on_delete=models.CASCADE, related_name="inbound_routes")
+    routing_transition = models.ForeignKey(
+        InboundRoutingTransition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="routes",
+    )
+    setup_generation = models.PositiveBigIntegerField(default=1)
     kind = models.CharField(max_length=24, choices=Kind.choices)
     local_part = models.CharField(max_length=96)
     address = models.EmailField(unique=True)
     is_active = models.BooleanField(default=True)
+    grace_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [models.Index(fields=("address", "is_active"))]
@@ -341,12 +397,31 @@ class DomainTest(DomainScopedModel):
         EXPIRED = "EXPIRED", "Expired"
 
     domain = models.ForeignKey(Domain, on_delete=models.CASCADE, related_name="tests")
+    routing_transition = models.ForeignKey(
+        InboundRoutingTransition,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tests",
+    )
+    setup_generation = models.PositiveBigIntegerField(default=1)
+    expected_setup_mode = models.CharField(
+        max_length=24,
+        choices=Domain.SetupMode.choices,
+        default=Domain.SetupMode.DIRECT_MX,
+    )
+    expected_route_kind = models.CharField(
+        max_length=24,
+        choices=InboundRoute.Kind.choices,
+        default=InboundRoute.Kind.DIRECT_DOMAIN,
+    )
     token_hash = models.CharField(max_length=64, unique=True)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
     expires_at = models.DateTimeField()
     received_message = models.ForeignKey(
         "Message", on_delete=models.SET_NULL, null=True, blank=True, related_name="domain_tests"
     )
+
 
 class IngressEvent(UUIDTimeStampedModel):
     class Status(models.TextChoices):
@@ -452,9 +527,7 @@ class Message(DomainScopedModel):
 
     def clean(self) -> None:
         super().clean()
-        if self.conversation_id and (
-            self.conversation.domain_id != self.domain_id
-        ):
+        if self.conversation_id and (self.conversation.domain_id != self.domain_id):
             raise ValidationError("Conversation and message must belong to the same domain.")
         reject_header_injection(self.subject, "subject")
 

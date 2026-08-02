@@ -6,8 +6,10 @@ from typing import Any
 import boto3
 from botocore.exceptions import ClientError
 from django.conf import settings
+from django.db.models import Q
+from django.utils import timezone
 
-from inbox.models import Domain
+from inbox.models import Domain, InboundRoutingTransition
 
 
 class ReceiptRuleLimitError(RuntimeError):
@@ -21,15 +23,46 @@ class ReconciliationResult:
 
 
 def receipt_allowlist() -> tuple[str, ...]:
-    direct_domains = Domain.objects.filter(
-        setup_mode=Domain.SetupMode.DIRECT_MX,
-        ownership_verified=True,
-        status__in=[
-            Domain.Status.PENDING_TEST,
-            Domain.Status.READY,
-            Domain.Status.DEGRADED,
-        ],
-    ).values_list("hostname", flat=True)
+    now = timezone.now()
+    direct_domains = (
+        Domain.objects.filter(ownership_verified=True)
+        .exclude(status=Domain.Status.DISABLED)
+        .filter(
+            Q(
+                setup_mode=Domain.SetupMode.DIRECT_MX,
+                status__in=(
+                    Domain.Status.PENDING_TEST,
+                    Domain.Status.READY,
+                    Domain.Status.DEGRADED,
+                ),
+            )
+            | Q(
+                setup_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__from_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status__in=(
+                    InboundRoutingTransition.Status.PREPARING,
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.FAILED,
+                ),
+            )
+            | Q(
+                routing_transitions__to_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status__in=(
+                    InboundRoutingTransition.Status.WAITING_DNS,
+                    InboundRoutingTransition.Status.WAITING_TEST,
+                    InboundRoutingTransition.Status.GRACE,
+                ),
+            )
+            | Q(
+                routing_transitions__from_mode=Domain.SetupMode.DIRECT_MX,
+                routing_transitions__status=InboundRoutingTransition.Status.GRACE,
+                routing_transitions__grace_until__gt=now,
+            )
+        )
+        .values_list("hostname", flat=True)
+        .distinct()
+    )
     recipients = sorted({settings.INBOUND_SERVICE_DOMAIN, *direct_domains})
     if len(recipients) > 500:
         raise ReceiptRuleLimitError(

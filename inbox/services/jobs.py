@@ -15,6 +15,7 @@ from inbox.models import (
     Domain,
     DurableJob,
     InboundRoute,
+    InboundRoutingTransition,
     Message,
     Notification,
     OutboundMessage,
@@ -38,6 +39,10 @@ from inbox.services.reports import (
     domain_zone,
     generate_report,
     schedule_key,
+)
+from inbox.services.routing_transitions import (
+    complete_expired_routing_transition,
+    provision_routing_transition,
 )
 
 RETRYABLE_DOMAIN_PROVISION_ERROR_CODES = frozenset(
@@ -211,6 +216,7 @@ def switch_domain_to_direct(domain: Domain) -> tuple[Domain, DurableJob, bool]:
         local_part = f"route-{secrets.token_urlsafe(24).lower()}"
         InboundRoute.objects.create(
             domain=locked_domain,
+            setup_generation=locked_domain.inbound_setup_generation,
             kind=InboundRoute.Kind.DIRECT_DOMAIN,
             local_part=local_part,
             address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
@@ -361,9 +367,7 @@ def schedule_work(now=None) -> int:
                     domain=domain,
                 )
                 count += 1
-        if schedule.review_frequency == schedule.Frequency.DAILY and daily_report_due(
-            domain, now
-        ):
+        if schedule.review_frequency == schedule.Frequency.DAILY and daily_report_due(domain, now):
             key = schedule_key(domain, Report.Kind.DAILY, now)
             enqueue_job(
                 kind="generate_report",
@@ -437,6 +441,15 @@ def _handle(job: DurableJob) -> None:
         )
     elif job.kind == "provision_outbound":
         provision_outbound_identity(Domain.objects.get(id=job.payload["domain_id"]))
+    elif job.kind == "provision_routing_transition":
+        transition = InboundRoutingTransition.objects.get(id=job.payload["transition_id"])
+        if transition.generation == int(job.payload["generation"]):
+            provision_routing_transition(transition)
+    elif job.kind == "complete_routing_transition":
+        transition = InboundRoutingTransition.objects.get(id=job.payload["transition_id"])
+        if transition.generation == int(job.payload["generation"]):
+            complete_expired_routing_transition(transition)
+            reconcile_receipt_rule()
     elif job.kind == "dns_check":
         from django.core.management import call_command
 
@@ -448,7 +461,40 @@ def _handle(job: DurableJob) -> None:
 
 
 def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
-    if job.kind not in {"provision_domain", "provision_outbound"}:
+    if job.kind not in {
+        "provision_domain",
+        "provision_outbound",
+        "provision_routing_transition",
+    }:
+        return
+    if job.kind == "provision_routing_transition":
+        next_status = (
+            InboundRoutingTransition.Status.FAILED
+            if terminal
+            else InboundRoutingTransition.Status.PREPARING
+        )
+        InboundRoutingTransition.objects.filter(
+            id=job.payload.get("transition_id"),
+            generation=int(job.payload.get("generation", 0)),
+            status__in={
+                InboundRoutingTransition.Status.PREPARING,
+                InboundRoutingTransition.Status.WAITING_DNS,
+                InboundRoutingTransition.Status.FAILED,
+            },
+        ).update(
+            status=next_status,
+            error_code=(
+                "routing_transition_provision_failed"
+                if terminal
+                else "routing_transition_provision_retry"
+            ),
+            error_message=(
+                "The target receiving route could not be prepared after repeated attempts."
+                if terminal
+                else "The target receiving route is temporarily unavailable and will retry."
+            ),
+            updated_at=timezone.now(),
+        )
         return
     domain = (
         Domain.objects.filter(id=job.payload.get("domain_id"))

@@ -212,6 +212,12 @@ def test_domain_readiness_is_derived_separately(organization, project):
         priority=10,
         status=DomainDNSRecord.Status.VALID,
     )
+    InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part="route-ready",
+        address="route-ready@inbound.example.net",
+    )
     DomainTest.objects.create(
         domain=domain,
         token_hash="a" * 64,

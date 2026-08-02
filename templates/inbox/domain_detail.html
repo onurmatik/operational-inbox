@@ -17,7 +17,31 @@
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
-      {% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}
+      {% if active_transition.status == 'WAITING_DNS' %}
+        <button
+          id="dns-check-button"
+          type="button"
+          class="oi-button-primary"
+          data-check-url="/api/v1/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-last-checked="{{ domain.last_checked_at|date:'c' }}"
+        >I've updated target DNS — Check records</button>
+      {% elif active_transition.status == 'WAITING_TEST' %}
+        {% if not new_test_address %}
+          <form method="post" action="{% url 'domain_create_test' domain.id %}" data-domain-test-form aria-busy="false">
+            {% csrf_token %}
+            <button class="oi-button-primary">Generate target-path test</button>
+          </form>
+        {% endif %}
+        <button
+          id="dns-check-button"
+          type="button"
+          class="oi-button-secondary"
+          data-check-url="/api/v1/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-last-checked="{{ domain.last_checked_at|date:'c' }}"
+        >Check target DNS again</button>
+      {% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}
         <button
           id="dns-check-button"
           type="button"
@@ -162,6 +186,143 @@
     </section>
   {% endif %}
 
+  {% if domain.status != 'DISABLED' %}
+    <section class="mt-6 oi-panel p-5" aria-labelledby="receiving-route-title">
+      <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 id="receiving-route-title" class="font-heading text-lg font-semibold">Receiving route</h2>
+            <span class="{% if domain.inbound_ready %}oi-status oi-status-ready{% else %}oi-status oi-status-pending{% endif %}">
+              {% if domain.inbound_ready %}Active{% else %}Current setup{% endif %}
+            </span>
+          </div>
+          <p class="mt-2 font-semibold">
+            {% if domain.setup_mode == 'DIRECT_MX' %}Direct MX routing{% else %}Provider catch-all forwarding{% endif %}
+          </p>
+          <p class="mt-1 text-xs leading-5 text-muted">
+            This is the route currently serving inbound mail for {{ domain.hostname }}.
+          </p>
+        </div>
+        {% if active_transition %}
+          <span class="{% if active_transition.status == 'FAILED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
+            {{ active_transition.get_status_display }}
+          </span>
+        {% endif %}
+      </div>
+
+      {% if active_transition %}
+        <div
+          class="mt-5 border border-blue-strong/40 bg-blue-soft p-4 text-blue-strong"
+          aria-live="polite"
+          {% if active_transition.status != 'GRACE' and active_transition.status != 'FAILED' %}
+            aria-busy="true"
+            data-routing-transition-poll
+            data-detail-url="/api/v1/domains/{{ domain.id }}"
+            data-transition-status="{{ active_transition.status }}"
+          {% endif %}
+        >
+          <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">Route change in progress</p>
+          <h3 class="mt-2 font-heading text-base font-semibold">
+            Target: {% if active_transition.to_mode == 'DIRECT_MX' %}Direct MX routing{% else %}Provider catch-all forwarding{% endif %}
+          </h3>
+          <p class="mt-2 max-w-3xl text-sm leading-6">
+            Your current receiving route stays active while Operational Inbox prepares the target, verifies its DNS, and confirms it with a fresh real email through the target path. Cutover happens only after that test succeeds; the previous route then remains available for a 24-hour grace period. Sending settings are unaffected.
+          </p>
+
+          {% if active_transition.to_mode == 'DIRECT_MX' %}
+            <p class="mt-4 border-l-2 border-gold-strong pl-3 text-sm text-gold-strong">
+              When the target records below are ready, replace the provider MX records with the single Operational Inbox MX route shown here. This changes receiving for the whole domain; the provider-forwarding route remains accepted during DNS propagation and the 24-hour grace period.
+            </p>
+          {% else %}
+            <div class="mt-4 border-l-2 border-gold-strong pl-3 text-sm text-gold-strong">
+              <p><strong>At your mail provider, complete both steps before testing:</strong></p>
+              <ol class="mt-1 list-decimal space-y-1 pl-5">
+                <li>Restore or publish that provider's MX records for {{ domain.hostname }}. Use the exact MX values supplied by the provider.</li>
+                <li>Configure its catch-all to forward unmatched mail to the private alias below.</li>
+              </ol>
+            </div>
+          {% endif %}
+
+          <ol class="mt-4 grid gap-2 text-xs sm:grid-cols-4" aria-label="Receiving route change progress">
+            <li class="border border-blue-strong/30 bg-white/60 p-3">
+              <span class="font-mono text-[10px] uppercase tracking-[0.08em]">1 · Prepare</span>
+              <strong class="mt-1 block">
+                {% if active_transition.status == 'PREPARING' %}In progress{% elif active_transition.status == 'FAILED' %}Needs attention{% else %}Complete{% endif %}
+              </strong>
+            </li>
+            <li class="border border-blue-strong/30 bg-white/60 p-3">
+              <span class="font-mono text-[10px] uppercase tracking-[0.08em]">2 · Verify DNS</span>
+              <strong class="mt-1 block">
+                {% if active_transition.status == 'WAITING_DNS' %}In progress{% elif active_transition.status == 'WAITING_TEST' or active_transition.status == 'GRACE' %}Complete{% else %}Pending{% endif %}
+              </strong>
+            </li>
+            <li class="border border-blue-strong/30 bg-white/60 p-3">
+              <span class="font-mono text-[10px] uppercase tracking-[0.08em]">3 · Test target</span>
+              <strong class="mt-1 block">
+                {% if active_transition.status == 'WAITING_TEST' %}In progress{% elif active_transition.status == 'GRACE' %}Complete{% else %}Pending{% endif %}
+              </strong>
+            </li>
+            <li class="border border-blue-strong/30 bg-white/60 p-3">
+              <span class="font-mono text-[10px] uppercase tracking-[0.08em]">4 · Cut over</span>
+              <strong class="mt-1 block">{% if active_transition.status == 'GRACE' %}Complete · grace active{% else %}Pending{% endif %}</strong>
+            </li>
+          </ol>
+
+          {% if active_transition.status == 'FAILED' %}
+            <p class="mt-4 border-l-2 border-coral-strong pl-3 text-sm text-coral-strong">The target route could not be prepared. Your current receiving route is still active; cancel this change before trying again.</p>
+          {% elif active_transition.status == 'GRACE' %}
+            <p class="mt-4 border-l-2 border-mint-strong pl-3 text-sm text-mint-strong">Cutover is complete. The previous route remains available until {{ active_transition.grace_until|date:"M j, Y H:i T" }}.</p>
+          {% endif %}
+
+          {% if active_transition.to_mode == 'PROVIDER_FORWARD' and target_route %}
+            <div class="mt-4 border border-blue-strong/30 bg-white/70 p-3">
+              <p class="text-xs font-semibold">Target provider forwarding alias</p>
+              <p class="mt-1 text-xs">Configure the provider catch-all to forward unmatched mail to this private address before running the target-path test.</p>
+              <div class="mt-2 flex items-center gap-2">
+                <code id="transition-forwarding-route" class="min-w-0 break-all bg-white px-3 py-2 font-mono text-xs">{{ target_route.address }}</code>
+                <button type="button" class="oi-button-secondary" data-copy="#transition-forwarding-route">Copy</button>
+              </div>
+            </div>
+          {% endif %}
+
+          {% if transition_can_cancel %}
+            <form method="post" action="{% url 'domain_routing_transition_cancel' domain.id %}" class="mt-4" data-domain-retry-form data-busy-label="Cancelling route change…" aria-busy="false">
+              {% csrf_token %}
+              <button class="oi-button-secondary text-coral-strong">Cancel route change</button>
+            </form>
+          {% elif active_transition.status == 'GRACE' %}
+            <form method="post" action="{% url 'domain_routing_transition_start' domain.id %}" class="mt-4" data-domain-retry-form data-busy-label="Preparing reverse route change…" aria-busy="false">
+              {% csrf_token %}
+              <input type="hidden" name="target_mode" value="{{ active_transition.from_mode }}">
+              <p class="mb-2 text-xs">Changed your mind? This safely ends the current grace window and prepares a fresh, tested transition back; it does not switch DNS automatically.</p>
+              <button class="oi-button-secondary">
+                Prepare change back to {% if active_transition.from_mode == 'DIRECT_MX' %}direct MX routing{% else %}provider forwarding{% endif %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      {% else %}
+        <details class="mt-5 border border-line bg-paper/60 p-4">
+          <summary class="cursor-pointer text-sm font-semibold text-forest">
+            {% if domain.setup_mode == 'DIRECT_MX' %}Change to provider forwarding{% else %}Change to direct MX routing{% endif %}
+          </summary>
+          <div class="mt-3 max-w-3xl text-sm leading-6 text-muted">
+            <p>
+              Your current route stays active throughout preparation. Operational Inbox will prepare the target DNS instructions, require a fresh real email through the target path, and cut over only after that test succeeds. The previous route remains available for a 24-hour grace period after cutover. Outbound sending is unaffected.
+            </p>
+            <form method="post" action="{% url 'domain_routing_transition_start' domain.id %}" class="mt-4" data-domain-retry-form data-busy-label="Preparing route change…" aria-busy="false">
+              {% csrf_token %}
+              <input type="hidden" name="target_mode" value="{% if domain.setup_mode == 'DIRECT_MX' %}PROVIDER_FORWARD{% else %}DIRECT_MX{% endif %}">
+              <button class="oi-button-primary">
+                Confirm and prepare {% if domain.setup_mode == 'DIRECT_MX' %}provider forwarding{% else %}direct MX routing{% endif %}
+              </button>
+            </form>
+          </div>
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+
   {% if domain.error_code or domain.outbound_error_code %}
     <details class="mt-5 border border-line bg-paper/60 p-4 text-sm text-muted">
       <summary class="cursor-pointer font-semibold text-ink">Support reference</summary>
@@ -169,14 +330,16 @@
     </details>
   {% endif %}
 
-  {% if new_test_address and domain.status == 'PENDING_TEST' %}
+  {% if new_test_address and domain.status == 'PENDING_TEST' or new_test_address and active_transition.status == 'WAITING_TEST' %}
     <div class="mt-5 border border-blue-strong/40 bg-blue-soft p-4">
-      <p class="font-semibold text-blue-strong">Send a real email to this address within 24 hours:</p>
+      <p class="font-semibold text-blue-strong">
+        {% if active_transition.status == 'WAITING_TEST' %}Send a fresh real email through the target route to this address within 24 hours:{% else %}Send a real email to this address within 24 hours:{% endif %}
+      </p>
       <div class="mt-2 flex items-center gap-2">
         <code id="test-address" class="break-all bg-white px-3 py-2 font-mono text-sm">{{ new_test_address }}</code>
         <button type="button" class="oi-button-secondary" data-copy="#test-address">Copy</button>
       </div>
-      <p class="mt-2 text-xs text-blue-strong">This address uses the customer domain, so the test exercises the selected MX or provider-forwarding path.</p>
+      <p class="mt-2 text-xs text-blue-strong">This address uses the customer domain, so the test exercises {% if active_transition.status == 'WAITING_TEST' %}the target receiving path before cutover{% else %}the selected MX or provider-forwarding path{% endif %}.</p>
     </div>
   {% endif %}
 
@@ -191,21 +354,6 @@
         {% endif %}
       {% else %}
         <p class="mt-2 text-sm">The setup-time MX check found the configured Operational Inbox receiving region. Provider forwarding is only needed when another mail provider remains in front of this domain.</p>
-        {% if can_switch_to_direct %}
-          <form
-            method="post"
-            action="{% url 'domain_switch_to_direct' domain.id %}"
-            class="mt-4"
-            data-domain-retry-form
-            data-busy-label="Switching to direct routing…"
-            aria-busy="false"
-            onsubmit="return confirm('Switch this unverified setup to direct MX routing? Existing public DNS will not be changed automatically.')"
-          >
-            {% csrf_token %}
-            <button class="oi-button-primary">Switch to direct routing</button>
-          </form>
-          <p class="mt-2 text-xs">A new setup generation prevents the earlier provider-forwarding job from overwriting this choice.</p>
-        {% endif %}
       {% endif %}
       <ul class="mt-3 space-y-1 font-mono text-xs">
         {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
@@ -215,28 +363,26 @@
 
   {% if domain.setup_mode == 'PROVIDER_FORWARD' %}
     {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
-      {% with route=domain.inbound_routes.all.0 %}
-        {% if route %}
+        {% if active_route %}
           <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5">
             <h2 class="font-heading text-lg font-semibold text-blue-strong">Provider catch-all forwarding</h2>
             <p class="mt-2 text-sm text-blue-strong">Keep the current MX records. Configure your mail provider's catch-all to forward to this private, high-entropy route:</p>
             <div class="mt-3 flex items-center gap-2">
-              <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ route.address }}</code>
+              <code id="forwarding-route" class="break-all bg-white px-3 py-2 font-mono text-xs">{{ active_route.address }}</code>
               <button type="button" class="oi-button-secondary" data-copy="#forwarding-route">Copy</button>
             </div>
           </section>
         {% endif %}
-      {% endwith %}
     {% endif %}
   {% endif %}
 
-  {% with dns_records=domain.dns_records.all %}
+  {% with dns_records=display_dns_records %}
     {% if dns_records %}
-      {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
+      {% if active_transition.status == 'WAITING_DNS' or active_transition.status == 'WAITING_TEST' or domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
         <section class="mt-8">
         <div class="mb-3">
-          <h2 class="font-heading text-lg font-semibold">{% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
-          <p class="text-sm text-muted">Copy each record exactly into your DNS provider. Operational Inbox verifies these values but never changes DNS for you.</p>
+          <h2 class="font-heading text-lg font-semibold">{% if active_transition.to_mode == 'PROVIDER_FORWARD' %}Ownership record to keep{% elif active_transition.status == 'WAITING_DNS' %}Target DNS records to add{% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
+          <p class="text-sm text-muted">Copy each record exactly into your DNS provider. Operational Inbox verifies these values but never changes DNS for you.{% if active_transition %} Your current receiving route remains active while these target records are checked.{% endif %}</p>
         </div>
         <div class="oi-panel overflow-x-auto">
           <table class="w-full min-w-[820px] text-left text-sm">
@@ -248,7 +394,7 @@
                 <tr>
                   <td class="px-4 py-4">
                     {{ record.get_purpose_display }}
-                    {% if record.purpose == 'SES_VERIFICATION' and record.is_required %}<span class="block text-xs text-muted">Required for direct receiving</span>{% elif record.purpose == 'DKIM' or record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
+                    {% if active_transition.to_mode == 'DIRECT_MX' and record.purpose == 'MX' or active_transition.to_mode == 'DIRECT_MX' and record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for target direct receiving</span>{% elif record.purpose == 'SES_VERIFICATION' and record.is_required %}<span class="block text-xs text-muted">Required for direct receiving</span>{% elif record.purpose == 'DKIM' or record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
                   </td>
                   <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
                   <td class="px-4 py-4">
@@ -284,8 +430,13 @@
         <h2 class="font-heading text-lg font-semibold text-gold-strong">Mixed MX routing detected</h2>
         <p class="mt-2 text-sm text-gold-strong">Some records point to the configured Operational Inbox receiving region and others point elsewhere. Remove the conflicting records for the routing method you did not choose before testing delivery.</p>
       {% else %}
-        <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing provider MX detected — preserve it</h2>
-        <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to Operational Inbox. Provider catch-all forwarding keeps the current mail service intact.</p>
+        {% if active_transition.to_mode == 'DIRECT_MX' %}
+          <h2 class="font-heading text-lg font-semibold text-gold-strong">Current provider MX detected — replace it for the target route</h2>
+          <p class="mt-2 text-sm text-gold-strong">These records keep the current provider route live. Replace them with the target Operational Inbox MX record above only when you are ready to test direct receiving.</p>
+        {% else %}
+          <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing provider MX detected — preserve it</h2>
+          <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to Operational Inbox. Provider catch-all forwarding keeps the current mail service intact.</p>
+        {% endif %}
       {% endif %}
       <ul class="mt-3 space-y-1 font-mono text-xs text-gold-strong">
         {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
@@ -375,6 +526,35 @@
         }
         statusText.textContent = "Sending setup is continuing in the background. You can return later.";
         provisioningPanel.setAttribute("aria-busy", "false");
+      };
+      poll();
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const transitionPanel = document.querySelector("[data-routing-transition-poll]");
+      if (!transitionPanel) return;
+      const initialStatus = transitionPanel.dataset.transitionStatus;
+      const poll = async () => {
+        let consecutiveErrors = 0;
+        for (let attempt = 0; attempt < 72; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2000 : 5000));
+          try {
+            const domain = await window.OperationalInbox.request(transitionPanel.dataset.detailUrl);
+            consecutiveErrors = 0;
+            const currentStatus = domain.routing_transition?.status || "COMPLETE";
+            if (currentStatus !== initialStatus) {
+              window.location.reload();
+              return;
+            }
+          } catch (error) {
+            consecutiveErrors += 1;
+            if (consecutiveErrors >= 3) {
+              transitionPanel.setAttribute("aria-busy", "false");
+              return;
+            }
+          }
+        }
+        transitionPanel.setAttribute("aria-busy", "false");
       };
       poll();
     });
