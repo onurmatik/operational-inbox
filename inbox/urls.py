@@ -52,6 +52,11 @@ urlpatterns = [
         name="domain_retry_provisioning",
     ),
     path(
+        "app/domains/<uuid:domain_id>/routing/direct/",
+        views.domain_switch_to_direct,
+        name="domain_switch_to_direct",
+    ),
+    path(
         "app/domains/<uuid:domain_id>/test/",
         views.domain_create_test,
         name="domain_create_test",

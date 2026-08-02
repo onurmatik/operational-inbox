@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import F, Q
@@ -12,6 +14,7 @@ from inbox.models import (
     AuditEvent,
     Domain,
     DurableJob,
+    InboundRoute,
     Message,
     Notification,
     OutboundMessage,
@@ -63,6 +66,30 @@ def enqueue_job(
     return job
 
 
+def _inbound_job_generation(job: DurableJob) -> int:
+    return int(job.payload.get("setup_generation", 1))
+
+
+def _active_inbound_provision_job(domain: Domain) -> DurableJob | None:
+    active_jobs = DurableJob.objects.filter(
+        kind="provision_domain",
+        payload__domain_id=str(domain.id),
+        status__in=[
+            DurableJob.Status.PENDING,
+            DurableJob.Status.LEASED,
+            DurableJob.Status.RETRY,
+        ],
+    ).order_by("created_at")
+    return next(
+        (
+            job
+            for job in active_jobs
+            if _inbound_job_generation(job) == domain.inbound_setup_generation
+        ),
+        None,
+    )
+
+
 def can_retry_domain_provisioning(domain: Domain) -> bool:
     return domain.status == Domain.Status.ERROR and (
         domain.error_code in RETRYABLE_DOMAIN_PROVISION_ERROR_CODES
@@ -76,19 +103,7 @@ def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
         retry_generation = locked_domain.updated_at.strftime("%Y%m%d%H%M%S%f")
         if locked_domain.status == Domain.Status.PROVISIONING:
-            active_job = (
-                DurableJob.objects.filter(
-                    kind="provision_domain",
-                    payload__domain_id=str(locked_domain.id),
-                    status__in=[
-                        DurableJob.Status.PENDING,
-                        DurableJob.Status.LEASED,
-                        DurableJob.Status.RETRY,
-                    ],
-                )
-                .order_by("created_at")
-                .first()
-            )
+            active_job = _active_inbound_provision_job(locked_domain)
             if active_job is not None:
                 return locked_domain, active_job, False
         elif can_retry_domain_provisioning(locked_domain):
@@ -111,7 +126,106 @@ def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]
         job = enqueue_job(
             kind="provision_domain",
             idempotency_key=(f"provision-domain:{locked_domain.id}:retry:{retry_generation}"),
-            payload={"domain_id": str(locked_domain.id)},
+            payload={
+                "domain_id": str(locked_domain.id),
+                "setup_generation": locked_domain.inbound_setup_generation,
+                "setup_mode": locked_domain.setup_mode,
+            },
+            domain=locked_domain,
+        )
+        return locked_domain, job, True
+
+
+def can_switch_domain_to_direct(domain: Domain) -> bool:
+    return (
+        domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+        and domain.status
+        in {
+            Domain.Status.PROVISIONING,
+            Domain.Status.PENDING_DNS,
+            Domain.Status.ERROR,
+        }
+        and not domain.ownership_verified
+        and not domain.inbound_ready
+        and not domain.outbound_ready
+        and domain.outbound_status == Domain.OutboundStatus.DISABLED
+        and not domain.tests.exists()
+    )
+
+
+def switch_domain_to_direct(domain: Domain) -> tuple[Domain, DurableJob, bool]:
+    """Restart an unverified provider-forward setup as a fenced direct-MX attempt."""
+
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        if locked_domain.setup_mode == Domain.SetupMode.DIRECT_MX:
+            active_job = _active_inbound_provision_job(locked_domain)
+            if active_job is not None:
+                return locked_domain, active_job, False
+            raise ValidationError("This domain is already using direct routing.")
+        if not can_switch_domain_to_direct(locked_domain):
+            raise ValidationError(
+                "Routing can only be changed before domain ownership or delivery is verified."
+            )
+
+        locked_domain.inbound_setup_generation += 1
+        locked_domain.setup_mode = Domain.SetupMode.DIRECT_MX
+        locked_domain.status = Domain.Status.PROVISIONING
+        locked_domain.ownership_verified = False
+        locked_domain.inbound_ready = False
+        locked_domain.outbound_ready = False
+        locked_domain.outbound_status = Domain.OutboundStatus.DISABLED
+        locked_domain.ses_identity_status = ""
+        locked_domain.ses_identity_origin = ""
+        locked_domain.verified_at = None
+        locked_domain.last_checked_at = None
+        locked_domain.error_code = ""
+        locked_domain.error_message = ""
+        locked_domain.outbound_error_code = ""
+        locked_domain.outbound_error_message = ""
+        locked_domain.claim_expires_at = timezone.now() + timedelta(
+            hours=settings.DOMAIN_CLAIM_TTL_HOURS
+        )
+        locked_domain.save(
+            update_fields=(
+                "inbound_setup_generation",
+                "setup_mode",
+                "status",
+                "ownership_verified",
+                "inbound_ready",
+                "outbound_ready",
+                "outbound_status",
+                "ses_identity_status",
+                "ses_identity_origin",
+                "verified_at",
+                "last_checked_at",
+                "error_code",
+                "error_message",
+                "outbound_error_code",
+                "outbound_error_message",
+                "claim_expires_at",
+                "updated_at",
+            )
+        )
+        locked_domain.inbound_routes.filter(is_active=True).update(is_active=False)
+        local_part = f"route-{secrets.token_urlsafe(24).lower()}"
+        InboundRoute.objects.create(
+            domain=locked_domain,
+            kind=InboundRoute.Kind.DIRECT_DOMAIN,
+            local_part=local_part,
+            address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
+        )
+        job = enqueue_job(
+            kind="provision_domain",
+            idempotency_key=(
+                f"provision-domain:{locked_domain.id}:generation:"
+                f"{locked_domain.inbound_setup_generation}"
+            ),
+            payload={
+                "domain_id": str(locked_domain.id),
+                "setup_generation": locked_domain.inbound_setup_generation,
+                "setup_mode": locked_domain.setup_mode,
+            },
             domain=locked_domain,
         )
         return locked_domain, job, True
@@ -316,7 +430,11 @@ def _handle(job: DurableJob) -> None:
         ):
             raise RuntimeError("Notification delivery failed.")
     elif job.kind == "provision_domain":
-        provision_inbound(Domain.objects.get(id=job.payload["domain_id"]))
+        provision_inbound(
+            Domain.objects.get(id=job.payload["domain_id"]),
+            expected_generation=_inbound_job_generation(job),
+            expected_setup_mode=job.payload.get("setup_mode"),
+        )
     elif job.kind == "provision_outbound":
         provision_outbound_identity(Domain.objects.get(id=job.payload["domain_id"]))
     elif job.kind == "dns_check":
@@ -339,6 +457,13 @@ def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
     )
     if domain is None:
         return
+    if job.kind == "provision_domain":
+        expected_generation = _inbound_job_generation(job)
+        expected_setup_mode = job.payload.get("setup_mode")
+        if domain.inbound_setup_generation != expected_generation or (
+            expected_setup_mode and domain.setup_mode != expected_setup_mode
+        ):
+            return
     if job.kind == "provision_outbound":
         domain.outbound_status = (
             Domain.OutboundStatus.ERROR if terminal else Domain.OutboundStatus.PROVISIONING
@@ -374,14 +499,27 @@ def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
                 metadata={"attempts": job.attempts},
             )
         return
-    domain.status = Domain.Status.ERROR if terminal else Domain.Status.PROVISIONING
-    domain.error_code = "domain_provision_failed" if terminal else "domain_provision_retry"
-    domain.error_message = (
+    status = Domain.Status.ERROR if terminal else Domain.Status.PROVISIONING
+    error_code = "domain_provision_failed" if terminal else "domain_provision_retry"
+    error_message = (
         "SES identity provisioning failed after repeated attempts. Contact support to retry."
         if terminal
         else "SES identity provisioning is temporarily unavailable and will retry automatically."
     )
-    domain.save(update_fields=("status", "error_code", "error_message", "updated_at"))
+    updated = Domain.objects.filter(
+        id=domain.id,
+        inbound_setup_generation=expected_generation,
+        status=Domain.Status.PROVISIONING,
+    )
+    if expected_setup_mode:
+        updated = updated.filter(setup_mode=expected_setup_mode)
+    if not updated.update(
+        status=status,
+        error_code=error_code,
+        error_message=error_message,
+        updated_at=timezone.now(),
+    ):
+        return
     if terminal:
         AuditEvent.objects.create(
             domain=domain,
@@ -440,31 +578,48 @@ def run_due_jobs(*, limit: int = 100) -> dict[str, int]:
         try:
             _handle(job)
         except Exception:
-            job.leased_until = None
             if job.attempts >= job.max_attempts:
-                job.status = DurableJob.Status.FAILED
-                counts["failed"] += 1
+                next_status = DurableJob.Status.FAILED
+                count_key = "failed"
                 terminal = True
             else:
-                job.status = DurableJob.Status.RETRY
-                job.due_at = timezone.now() + timedelta(minutes=min(60, 2**job.attempts))
-                counts["retry"] += 1
+                next_status = DurableJob.Status.RETRY
+                count_key = "retry"
                 terminal = False
-            job.last_error_code = "job_handler_failed"
-            job.save(
-                update_fields=(
-                    "status",
-                    "leased_until",
-                    "due_at",
-                    "last_error_code",
-                    "updated_at",
-                )
+            retry_at = (
+                job.due_at
+                if terminal
+                else timezone.now() + timedelta(minutes=min(60, 2**job.attempts))
             )
+            settled = DurableJob.objects.filter(
+                id=job.id,
+                status=DurableJob.Status.LEASED,
+                attempts=job.attempts,
+            ).update(
+                status=next_status,
+                leased_until=None,
+                due_at=retry_at,
+                last_error_code="job_handler_failed",
+                updated_at=timezone.now(),
+            )
+            if not settled:
+                # A newer worker reclaimed this lease. Its attempt owns job
+                # finalization and any user-visible failure state.
+                continue
+            counts[count_key] += 1
+            job.refresh_from_db()
             _surface_job_failure(job, terminal=terminal)
         else:
-            job.status = DurableJob.Status.COMPLETE
-            job.leased_until = None
-            job.last_error_code = ""
-            job.save(update_fields=("status", "leased_until", "last_error_code", "updated_at"))
-            counts["complete"] += 1
+            settled = DurableJob.objects.filter(
+                id=job.id,
+                status=DurableJob.Status.LEASED,
+                attempts=job.attempts,
+            ).update(
+                status=DurableJob.Status.COMPLETE,
+                leased_until=None,
+                last_error_code="",
+                updated_at=timezone.now(),
+            )
+            if settled:
+                counts["complete"] += 1
     return counts

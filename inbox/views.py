@@ -68,9 +68,12 @@ from inbox.services.attachments import (
 )
 from inbox.services.domains import (
     DomainClaimConflict,
+    DomainClaimLookupError,
+    MXLayout,
+    classify_stored_mx,
     create_domain,
     create_domain_test,
-    inspect_mx,
+    inspect_domain_routing,
     normalize_hostname,
 )
 from inbox.services.drafts import (
@@ -81,9 +84,11 @@ from inbox.services.drafts import (
 )
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
+    can_switch_domain_to_direct,
     enqueue_job,
     request_outbound_provisioning,
     retry_domain_provisioning,
+    switch_domain_to_direct,
 )
 from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
 
@@ -914,11 +919,19 @@ def domain_mx_inspect(request: HttpRequest) -> JsonResponse:
         )
 
     cache_digest = hashlib.sha256(hostname.encode("ascii")).hexdigest()
-    cache_key = f"domain-mx-inspection:v1:{cache_digest}"
-    serialized_records = cache.get(cache_key)
-    if serialized_records is None:
+    cache_key = f"domain-routing-inspection:v3:{cache_digest}"
+    payload = cache.get(cache_key)
+    if payload is None:
         try:
-            mx_records = inspect_mx(hostname)
+            inspection = inspect_domain_routing(hostname)
+        except DomainClaimLookupError as exc:
+            return JsonResponse(
+                {
+                    "code": "claim_lookup_failed",
+                    "message": "; ".join(exc.messages),
+                },
+                status=503,
+            )
         except ValidationError as exc:
             return JsonResponse(
                 {
@@ -928,22 +941,21 @@ def domain_mx_inspect(request: HttpRequest) -> JsonResponse:
                 status=503,
             )
         serialized_records = [
-            {"preference": record.preference, "exchange": record.exchange} for record in mx_records
+            {"preference": record.preference, "exchange": record.exchange}
+            for record in inspection.mx_records
         ]
-        cache.set(cache_key, serialized_records, timeout=60)
-
-    return JsonResponse(
-        {
+        payload = {
             "hostname": hostname,
             "has_existing_mx": bool(serialized_records),
-            "recommended_setup_mode": (
-                Domain.SetupMode.PROVIDER_FORWARD
-                if serialized_records
-                else Domain.SetupMode.DIRECT_MX
-            ),
+            "mx_classification": inspection.classification.value,
+            "has_operational_inbox_claim": inspection.has_operational_inbox_claim,
+            "recommended_setup_mode": inspection.recommended_setup_mode,
+            "requires_explicit_choice": inspection.requires_explicit_choice,
             "mx_records": serialized_records,
         }
-    )
+        cache.set(cache_key, payload, timeout=60)
+
+    return JsonResponse(payload)
 
 
 @verified_required
@@ -997,7 +1009,11 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
             enqueue_job(
                 kind="provision_domain",
                 idempotency_key=f"provision-domain:{domain.id}",
-                payload={"domain_id": str(domain.id)},
+                payload={
+                    "domain_id": str(domain.id),
+                    "setup_generation": domain.inbound_setup_generation,
+                    "setup_mode": domain.setup_mode,
+                },
                 domain=domain,
             )
             request.session["domain_id"] = str(domain.id)
@@ -1020,6 +1036,7 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
     request.session["domain_id"] = str(domain.id)
     domain = Domain.objects.prefetch_related("dns_records", "inbound_routes").get(id=domain.id)
+    existing_mx_layout = classify_stored_mx(domain.existing_mx)
     return render(
         request,
         "inbox/domain_detail.html",
@@ -1027,6 +1044,11 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
             "active_nav": "domains",
             "domain": domain,
             "can_retry_provisioning": can_retry_domain_provisioning(domain),
+            "existing_mx_layout": existing_mx_layout.value,
+            "can_switch_to_direct": (
+                existing_mx_layout == MXLayout.OPERATIONAL_INBOX
+                and can_switch_domain_to_direct(domain)
+            ),
             "new_test_address": _active_domain_test_address(request, domain),
         },
     )
@@ -1056,6 +1078,38 @@ def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> Htt
             )
         else:
             messages.info(request, "A setup retry is already in progress.")
+    return redirect("domain_detail", domain_id=domain.id)
+
+
+@verified_required
+@require_POST
+def domain_switch_to_direct(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    domain = get_owned_domain(request.user, domain_id)
+    try:
+        domain, job, started = switch_domain_to_direct(domain)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        if started:
+            _audit(
+                domain,
+                request,
+                "domain.inbound_setup_mode_changed",
+                domain,
+                {
+                    "from": Domain.SetupMode.PROVIDER_FORWARD,
+                    "to": Domain.SetupMode.DIRECT_MX,
+                    "setup_generation": domain.inbound_setup_generation,
+                    "job_id": str(job.id),
+                },
+            )
+            messages.success(
+                request,
+                "Direct routing setup started. Existing DNS remains unchanged while fresh "
+                "ownership instructions are prepared.",
+            )
+        else:
+            messages.info(request, "Direct routing setup is already in progress.")
     return redirect("domain_detail", domain_id=domain.id)
 
 

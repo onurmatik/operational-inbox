@@ -179,3 +179,22 @@ def test_unroutable_envelope_does_not_use_mime_to(organization, project):
     assert process_sqs_body(sns_body(["unknown@inbound.example"]), s3_client=s3)
     assert not Message.objects.exists()
     assert IngressEvent.objects.get().error_code == "unroutable_recipient"
+
+
+@pytest.mark.django_db
+@override_settings(
+    AWS_INGRESS_BUCKET=BUCKET,
+    AWS_INBOUND_TOPIC_ARN=INBOUND_TOPIC,
+    AWS_DELIVERY_TOPIC_ARN=DELIVERY_TOPIC,
+)
+def test_forwarding_alias_is_not_accepted_after_domain_switches_to_direct(organization, project):
+    address = "route-old-forwarding@inbound.example"
+    domain = create_route(organization, project, address)
+    domain.setup_mode = Domain.SetupMode.DIRECT_MX
+    domain.save(update_fields=("setup_mode", "updated_at"))
+
+    s3 = FakeS3(raw_email())
+    assert process_sqs_body(sns_body([address]), s3_client=s3)
+
+    assert not Message.objects.exists()
+    assert IngressEvent.objects.get().error_code == "unroutable_recipient"

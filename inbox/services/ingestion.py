@@ -137,6 +137,8 @@ def _route_domains(recipients: list[str]) -> list[RoutedDomain]:
     for route in InboundRoute.objects.filter(
         address__in=normalized,
         is_active=True,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        domain__setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
         domain__status__in=[
             Domain.Status.PENDING_TEST,
             Domain.Status.READY,

@@ -518,7 +518,11 @@ def domains_create(request: HttpRequest, payload: DomainInput):
     enqueue_job(
         kind="provision_domain",
         idempotency_key=f"provision-domain:{domain.id}",
-        payload={"domain_id": str(domain.id)},
+        payload={
+            "domain_id": str(domain.id),
+            "setup_generation": domain.inbound_setup_generation,
+            "setup_mode": domain.setup_mode,
+        },
         domain=domain,
     )
     record_api_audit(

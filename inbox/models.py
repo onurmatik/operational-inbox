@@ -157,6 +157,7 @@ class Domain(UUIDTimeStampedModel):
     hostname = models.CharField(max_length=253)
     timezone = models.CharField(max_length=64, default="UTC")
     setup_mode = models.CharField(max_length=24, choices=SetupMode.choices)
+    inbound_setup_generation = models.PositiveBigIntegerField(default=1)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PROVISIONING)
     ownership_verified = models.BooleanField(default=False)
     inbound_ready = models.BooleanField(default=False)

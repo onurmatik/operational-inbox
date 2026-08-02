@@ -5,6 +5,7 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 
 import boto3
 import dns.exception
@@ -31,6 +32,10 @@ class DomainLimitError(ValidationError):
     pass
 
 
+class DomainClaimLookupError(ValidationError):
+    pass
+
+
 class DomainClaimConflict(ValidationError):
     def __init__(self, *, existing_domain: Domain | None = None) -> None:
         self.existing_domain = existing_domain
@@ -43,6 +48,43 @@ class DomainClaimConflict(ValidationError):
 class MXObservation:
     preference: int
     exchange: str
+
+
+class MXLayout(StrEnum):
+    NONE = "NONE"
+    OPERATIONAL_INBOX = "OPERATIONAL_INBOX"
+    EXTERNAL = "EXTERNAL"
+    MIXED = "MIXED"
+
+
+class DomainRoutingClassification(StrEnum):
+    NO_MX = "NO_MX"
+    OPERATIONAL_INBOX_RECONNECT = "OPERATIONAL_INBOX_RECONNECT"
+    SES_MX_UNCLAIMED = "SES_MX_UNCLAIMED"
+    EXTERNAL_MX = "EXTERNAL_MX"
+    MIXED_MX = "MIXED_MX"
+
+
+@dataclass(frozen=True)
+class DomainRoutingInspection:
+    classification: DomainRoutingClassification
+    mx_records: tuple[MXObservation, ...]
+    # None means the TXT record was irrelevant to the observed MX layout and
+    # therefore was intentionally not queried.
+    has_operational_inbox_claim: bool | None
+    recommended_setup_mode: str | None
+
+    @property
+    def requires_explicit_choice(self) -> bool:
+        return self.recommended_setup_mode is None
+
+
+def expected_inbound_mx_exchange() -> str:
+    return f"inbound-smtp.{settings.AWS_REGION}.amazonaws.com"
+
+
+def operational_inbox_claim_record_name(hostname: str) -> str:
+    return f"_operational-inbox-claim.{hostname}"
 
 
 def normalize_hostname(value: str) -> str:
@@ -81,6 +123,114 @@ def inspect_mx(hostname: str, resolver: dns.resolver.Resolver | None = None) -> 
             continue
         observations.append(MXObservation(preference=int(answer.preference), exchange=exchange))
     return sorted(observations, key=lambda item: (item.preference, item.exchange))
+
+
+def inspect_operational_inbox_claim(
+    hostname: str, resolver: dns.resolver.Resolver | None = None
+) -> bool:
+    resolver = resolver or dns.resolver.Resolver()
+    record_name = operational_inbox_claim_record_name(hostname)
+    try:
+        answers = resolver.resolve(record_name, "TXT", lifetime=5)
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return False
+    except dns.resolver.NoNameservers as exc:
+        raise DomainClaimLookupError(
+            "The domain's nameservers did not answer the ownership-record lookup. "
+            "Try again shortly."
+        ) from exc
+    except (dns.exception.Timeout, dns.resolver.LifetimeTimeout) as exc:
+        raise DomainClaimLookupError(
+            "The ownership-record lookup timed out. Try again shortly."
+        ) from exc
+    return any(True for _ in answers)
+
+
+def classify_mx_layout(mx_records: list[MXObservation] | tuple[MXObservation, ...]) -> MXLayout:
+    if not mx_records:
+        return MXLayout.NONE
+    expected_exchange = expected_inbound_mx_exchange().casefold()
+    expected_matches = [
+        item.exchange.rstrip(".").casefold() == expected_exchange for item in mx_records
+    ]
+    if all(expected_matches):
+        return MXLayout.OPERATIONAL_INBOX
+    if any(expected_matches):
+        return MXLayout.MIXED
+    return MXLayout.EXTERNAL
+
+
+def classify_domain_routing(
+    mx_records: list[MXObservation] | tuple[MXObservation, ...],
+    *,
+    has_operational_inbox_claim: bool | None,
+) -> DomainRoutingInspection:
+    records = tuple(mx_records)
+    layout = classify_mx_layout(records)
+    if layout == MXLayout.NONE:
+        classification = DomainRoutingClassification.NO_MX
+        recommended_setup_mode = Domain.SetupMode.DIRECT_MX
+    elif layout == MXLayout.OPERATIONAL_INBOX and has_operational_inbox_claim is True:
+        classification = DomainRoutingClassification.OPERATIONAL_INBOX_RECONNECT
+        recommended_setup_mode = Domain.SetupMode.DIRECT_MX
+    elif layout == MXLayout.OPERATIONAL_INBOX:
+        # SES inbound endpoints are shared across AWS customers. Without an
+        # Operational Inbox-specific historical hint, require an explicit choice.
+        classification = DomainRoutingClassification.SES_MX_UNCLAIMED
+        recommended_setup_mode = None
+    elif layout == MXLayout.MIXED:
+        classification = DomainRoutingClassification.MIXED_MX
+        recommended_setup_mode = None
+    else:
+        classification = DomainRoutingClassification.EXTERNAL_MX
+        recommended_setup_mode = Domain.SetupMode.PROVIDER_FORWARD
+    return DomainRoutingInspection(
+        classification=classification,
+        mx_records=records,
+        has_operational_inbox_claim=has_operational_inbox_claim,
+        recommended_setup_mode=recommended_setup_mode,
+    )
+
+
+def inspect_domain_routing(
+    hostname: str, resolver: dns.resolver.Resolver | None = None
+) -> DomainRoutingInspection:
+    normalized = normalize_hostname(hostname)
+    resolver = resolver or dns.resolver.Resolver()
+    mx_records = inspect_mx(normalized, resolver=resolver)
+    # The historical claim only changes the interpretation of an all-SES MX
+    # layout. Do not let an unrelated TXT lookup block no-MX, external-provider,
+    # or already-ambiguous mixed-MX setup choices.
+    has_claim: bool | None = None
+    if classify_mx_layout(mx_records) == MXLayout.OPERATIONAL_INBOX:
+        has_claim = inspect_operational_inbox_claim(normalized, resolver=resolver)
+    return classify_domain_routing(
+        mx_records,
+        has_operational_inbox_claim=has_claim,
+    )
+
+
+def classify_stored_mx(records: list[dict[str, object]]) -> MXLayout:
+    observations = []
+    for record in records:
+        try:
+            raw_preference = record["preference"]
+            raw_exchange = record["exchange"]
+            if (
+                isinstance(raw_preference, bool)
+                or not isinstance(raw_preference, (int, str))
+                or not isinstance(raw_exchange, str)
+            ):
+                return MXLayout.MIXED
+            observations.append(
+                MXObservation(
+                    preference=int(raw_preference),
+                    exchange=raw_exchange,
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            return MXLayout.MIXED
+    return classify_mx_layout(observations)
 
 
 def _assert_limits(owner: User) -> None:
@@ -158,13 +308,14 @@ def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:
 
 
 def recommended_setup(domain: Domain) -> str:
-    if domain.existing_mx:
+    layout = classify_stored_mx(domain.existing_mx)
+    if layout == MXLayout.EXTERNAL:
         return Domain.SetupMode.PROVIDER_FORWARD
     return domain.setup_mode
 
 
 def application_ownership_record_name(domain: Domain) -> str:
-    return f"_operational-inbox-claim.{domain.hostname}"
+    return operational_inbox_claim_record_name(domain.hostname)
 
 
 def _upsert_dns_instruction(
@@ -243,7 +394,7 @@ def build_inbound_dns_instructions(
             purpose=DomainDNSRecord.Purpose.MX,
             record_type="MX",
             name=domain.hostname,
-            value="inbound-smtp.us-east-1.amazonaws.com",
+            value=expected_inbound_mx_exchange(),
             priority=10,
             is_required=True,
         )
@@ -303,47 +454,78 @@ def build_dns_instructions(
 
 def expire_unverified_claims() -> int:
     now = timezone.now()
-    expired = list(
-        Domain.objects.filter(
-            ownership_verified=False,
-            claim_expires_at__lte=now,
-            status__in=[Domain.Status.PROVISIONING, Domain.Status.PENDING_DNS],
-        )
-    )
-    for domain in expired:
-        domain.status = Domain.Status.DISABLED
-        domain.inbound_ready = False
-        domain.outbound_ready = False
-        domain.outbound_status = Domain.OutboundStatus.DISABLED
-        domain.error_code = "claim_expired"
-        domain.error_message = "The ownership claim expired before verification."
-        domain.save(
-            update_fields=(
-                "status",
-                "inbound_ready",
-                "outbound_ready",
-                "outbound_status",
-                "error_code",
-                "error_message",
-                "updated_at",
+    with transaction.atomic():
+        # Lock and re-evaluate candidates in one transaction. A routing-mode
+        # switch renews the claim under the same row lock, so a claim selected
+        # by an earlier snapshot cannot disable the newer setup generation.
+        expired = list(
+            Domain.objects.select_for_update().filter(
+                ownership_verified=False,
+                claim_expires_at__lte=now,
+                status__in=[Domain.Status.PROVISIONING, Domain.Status.PENDING_DNS],
             )
         )
-        domain.inbound_routes.update(is_active=False)
+        for domain in expired:
+            domain.status = Domain.Status.DISABLED
+            domain.inbound_ready = False
+            domain.outbound_ready = False
+            domain.outbound_status = Domain.OutboundStatus.DISABLED
+            domain.error_code = "claim_expired"
+            domain.error_message = "The ownership claim expired before verification."
+            domain.save(
+                update_fields=(
+                    "status",
+                    "inbound_ready",
+                    "outbound_ready",
+                    "outbound_status",
+                    "error_code",
+                    "error_message",
+                    "updated_at",
+                )
+            )
+            domain.inbound_routes.update(is_active=False)
     return len(expired)
 
 
-def provision_inbound(domain: Domain, *, ses_client=None) -> Domain:
+def _matches_inbound_provisioning_attempt(
+    domain: Domain,
+    *,
+    expected_generation: int,
+    expected_setup_mode: str,
+) -> bool:
+    return (
+        domain.status == Domain.Status.PROVISIONING
+        and domain.inbound_setup_generation == expected_generation
+        and domain.setup_mode == expected_setup_mode
+    )
+
+
+def provision_inbound(
+    domain: Domain,
+    *,
+    expected_generation: int | None = None,
+    expected_setup_mode: str | None = None,
+    ses_client=None,
+) -> Domain:
     """Prepare receiving instructions without provisioning optional sending."""
 
-    if domain.status == Domain.Status.DISABLED:
-        return domain
-    if domain.status != Domain.Status.PROVISIONING:
+    expected_generation = expected_generation or domain.inbound_setup_generation
+    expected_setup_mode = expected_setup_mode or domain.setup_mode
+    if not _matches_inbound_provisioning_attempt(
+        domain,
+        expected_generation=expected_generation,
+        expected_setup_mode=expected_setup_mode,
+    ):
         return domain
 
-    if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+    if expected_setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
         with transaction.atomic():
             locked_domain = Domain.objects.select_for_update().get(id=domain.id)
-            if locked_domain.status != Domain.Status.PROVISIONING:
+            if not _matches_inbound_provisioning_attempt(
+                locked_domain,
+                expected_generation=expected_generation,
+                expected_setup_mode=expected_setup_mode,
+            ):
                 return locked_domain
             build_inbound_dns_instructions(
                 locked_domain,
@@ -382,24 +564,49 @@ def provision_inbound(domain: Domain, *, ses_client=None) -> Domain:
         # Persist intent before the AWS calls. A retry can then distinguish an
         # identity this application started creating from an unrelated existing
         # identity without overloading the observed SES verification status.
+        intent_recorded = Domain.objects.filter(
+            id=domain.id,
+            status=Domain.Status.PROVISIONING,
+            inbound_setup_generation=expected_generation,
+            setup_mode=expected_setup_mode,
+        ).update(
+            ses_identity_status="PROVISIONING",
+            ses_identity_origin=Domain.SESIdentityOrigin.MANAGED,
+            updated_at=timezone.now(),
+        )
+        if not intent_recorded:
+            domain.refresh_from_db()
+            return domain
         domain.ses_identity_status = "PROVISIONING"
         domain.ses_identity_origin = Domain.SESIdentityOrigin.MANAGED
-        domain.save(update_fields=("ses_identity_status", "ses_identity_origin", "updated_at"))
         may_manage_identity = True
 
     if may_manage_identity and (
         verification_status not in {"PENDING", "SUCCESS"}
         or (verification_status == "PENDING" and not verification_token)
     ):
+        # Re-check immediately before the account-scoped write. Final state is
+        # fenced again under a row lock below, but stale attempts should avoid
+        # starting even an idempotent SES verification whenever possible.
+        if not Domain.objects.filter(
+            id=domain.id,
+            status=Domain.Status.PROVISIONING,
+            inbound_setup_generation=expected_generation,
+            setup_mode=expected_setup_mode,
+        ).exists():
+            domain.refresh_from_db()
+            return domain
         verification = client.verify_domain_identity(Domain=domain.hostname)
         verification_token = str(verification["VerificationToken"])
         verification_status = "PENDING"
 
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
-        if locked_domain.status == Domain.Status.DISABLED:
-            return locked_domain
-        if locked_domain.status != Domain.Status.PROVISIONING:
+        if not _matches_inbound_provisioning_attempt(
+            locked_domain,
+            expected_generation=expected_generation,
+            expected_setup_mode=expected_setup_mode,
+        ):
             return locked_domain
         build_inbound_dns_instructions(
             locked_domain,
@@ -650,6 +857,11 @@ def reconcile_ses_identity_adoption(
 
 def _assert_domain_test_ready(domain: Domain) -> None:
     required_records = domain.dns_records.filter(is_required=True)
+    expected_route_kind = (
+        InboundRoute.Kind.DIRECT_DOMAIN
+        if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        else InboundRoute.Kind.FORWARDING_ALIAS
+    )
     if (
         domain.status != Domain.Status.PENDING_TEST
         or not domain.ownership_verified
@@ -659,7 +871,10 @@ def _assert_domain_test_ready(domain: Domain) -> None:
         )
         or not required_records.exists()
         or required_records.exclude(status=DomainDNSRecord.Status.VALID).exists()
-        or not domain.inbound_routes.filter(is_active=True).exists()
+        or not domain.inbound_routes.filter(
+            is_active=True,
+            kind=expected_route_kind,
+        ).exists()
     ):
         raise ValidationError("Verify the required DNS records before generating a test address.")
 
@@ -714,8 +929,15 @@ def apply_domain_readiness(
 ) -> bool:
     """Derive separate ownership, inbound, and outbound readiness from observations."""
     now = now or timezone.now()
-    if domain.status in {Domain.Status.ERROR, Domain.Status.DISABLED}:
+    if domain.status in {
+        Domain.Status.PROVISIONING,
+        Domain.Status.ERROR,
+        Domain.Status.DISABLED,
+    }:
         return False
+    observed_generation = domain.inbound_setup_generation
+    observed_status = domain.status
+    observed_outbound_status = domain.outbound_status
     previous_ownership = domain.ownership_verified
     records = list(domain.dns_records.all())
     requires_fresh_application_proof = domain.ses_identity_origin in {
@@ -840,7 +1062,32 @@ def apply_domain_readiness(
         domain.error_code = ""
         domain.error_message = ""
     domain.last_checked_at = now
-    domain.save()
+    updated = Domain.objects.filter(
+        id=domain.id,
+        inbound_setup_generation=observed_generation,
+        status=observed_status,
+        outbound_status=observed_outbound_status,
+    ).update(
+        ownership_verified=domain.ownership_verified,
+        inbound_ready=domain.inbound_ready,
+        outbound_ready=domain.outbound_ready,
+        outbound_status=domain.outbound_status,
+        ses_identity_status=domain.ses_identity_status,
+        ses_identity_origin=domain.ses_identity_origin,
+        verified_at=domain.verified_at,
+        last_checked_at=domain.last_checked_at,
+        status=domain.status,
+        error_code=domain.error_code,
+        error_message=domain.error_message,
+        outbound_error_code=domain.outbound_error_code,
+        outbound_error_message=domain.outbound_error_message,
+        updated_at=now,
+    )
+    if not updated:
+        # A routing-mode transition or another lifecycle update won the race.
+        # Preserve that newer state instead of writing this stale observation.
+        domain.refresh_from_db()
+        return False
     if adoption_completed:
         AuditEvent.objects.get_or_create(
             domain=domain,

@@ -37,7 +37,6 @@
     const submitButton = form.querySelector("[data-domain-submit]");
     const choices = form.querySelector("[data-mx-choices]");
     const choiceHelp = form.querySelector("[data-mx-choice-help]");
-    const alternativeButton = form.querySelector("[data-show-alternative]");
     const overrideWarning = form.querySelector("[data-override-warning]");
     const status = form.querySelector("#mx-inspection-status");
     const statusTitle = form.querySelector("[data-mx-status-title]");
@@ -52,7 +51,6 @@
       submitButton,
       choices,
       choiceHelp,
-      alternativeButton,
       overrideWarning,
       status,
       statusTitle,
@@ -64,9 +62,17 @@
     const DIRECT_MX = "DIRECT_MX";
     const PROVIDER_FORWARD = "PROVIDER_FORWARD";
     const supportedModes = new Set([DIRECT_MX, PROVIDER_FORWARD]);
+    const routingClassifications = new Set([
+      "NO_MX",
+      "OPERATIONAL_INBOX_RECONNECT",
+      "SES_MX_UNCLAIMED",
+      "EXTERNAL_MX",
+      "MIXED_MX",
+    ]);
     const defaultChoiceHelp = choiceHelp.textContent.trim();
     let inspectedInputValue = "";
     let recommendedMode = "";
+    let routingClassification = "";
     let requestSequence = 0;
     let controller = null;
 
@@ -83,7 +89,9 @@
       const palette =
         kind === "error"
           ? "border-coral-strong/40 bg-coral-soft text-coral-strong"
-          : "border-blue-strong/40 bg-blue-soft text-blue-strong";
+          : kind === "warning"
+            ? "border-gold-strong/40 bg-gold-soft text-gold-strong"
+            : "border-blue-strong/40 bg-blue-soft text-blue-strong";
       status.className = `mt-5 border p-4 ${palette}`;
       status.setAttribute("role", kind === "error" ? "alert" : "status");
       statusTitle.textContent = title;
@@ -108,12 +116,12 @@
       requestSequence += 1;
       inspectedInputValue = "";
       recommendedMode = "";
+      routingClassification = "";
       form.setAttribute("aria-busy", "false");
       status.classList.add("hidden");
       choices.classList.add("hidden");
       submitButton.classList.add("hidden");
-      alternativeButton.classList.add("hidden");
-      alternativeButton.setAttribute("aria-expanded", "false");
+      submitButton.disabled = false;
       overrideWarning.classList.add("hidden");
       checkButton.classList.remove("hidden");
       checkButton.disabled = false;
@@ -124,45 +132,61 @@
 
     const updateOverrideWarning = () => {
       const selectedMode = radios.find((radio) => radio.checked)?.value || "";
-      if (selectedMode) {
-        submitButton.textContent =
-          selectedMode === PROVIDER_FORWARD
-            ? "Continue with current provider"
-            : "Continue with direct routing";
-      }
-      const isOverride = recommendedMode && selectedMode && selectedMode !== recommendedMode;
-      if (!isOverride) {
+      submitButton.disabled = !selectedMode;
+      if (!selectedMode) {
+        submitButton.textContent = "Choose a routing method";
         overrideWarning.classList.add("hidden");
         overrideWarning.textContent = "";
         return;
       }
-      overrideWarning.textContent =
-        recommendedMode === PROVIDER_FORWARD
-          ? "Existing MX records were detected. Direct routing will replace the current mail delivery path when you update DNS."
-          : "No existing mail provider was detected. Provider forwarding only works after you configure a provider with catch-all forwarding.";
+      submitButton.textContent =
+        selectedMode === PROVIDER_FORWARD
+          ? "Continue with current provider"
+          : "Continue with direct routing";
+
+      const isOverride = recommendedMode && selectedMode !== recommendedMode;
+      let warning = "";
+      if (isOverride) {
+        warning =
+          recommendedMode === PROVIDER_FORWARD
+            ? "Existing provider MX records were detected. Direct routing requires removing or replacing that delivery path when you update DNS."
+            : routingClassification === "OPERATIONAL_INBOX_RECONNECT"
+              ? "This looks like a previous Operational Inbox direct setup. Provider forwarding only works if another mail provider accepts the domain and forwards unmatched mail to the private route."
+              : "No existing mail provider was detected. Provider forwarding only works after you configure a provider with catch-all forwarding.";
+      } else if (!recommendedMode && routingClassification === "MIXED_MX") {
+        warning =
+          selectedMode === DIRECT_MX
+            ? "Mixed MX records were detected. Remove the other provider MX records before relying on direct routing."
+            : "Mixed MX records were detected. Remove the Operational Inbox SES MX record and configure your provider's catch-all before testing forwarding.";
+      } else if (!recommendedMode && routingClassification === "SES_MX_UNCLAIMED") {
+        warning =
+          selectedMode === DIRECT_MX
+            ? "This SES endpoint may belong to another setup. Operational Inbox will require a new ownership record before activating direct routing."
+            : "Provider forwarding requires a separate provider that accepts mail for this domain and supports catch-all forwarding.";
+      }
+      if (!warning) {
+        overrideWarning.classList.add("hidden");
+        overrideWarning.textContent = "";
+        return;
+      }
+      overrideWarning.textContent = warning;
       overrideWarning.classList.remove("hidden");
     };
 
-    const revealRecommendation = (mode) => {
-      recommendedMode = mode;
+    const revealRecommendation = (mode, classification) => {
+      recommendedMode = mode || "";
+      routingClassification = classification;
       radios.forEach((radio) => {
-        radio.checked = radio.value === mode;
+        radio.checked = Boolean(mode) && radio.value === mode;
       });
-      cards.forEach((card) => {
-        card.classList.toggle("hidden", card.dataset.setupCard !== mode);
-      });
+      cards.forEach((card) => card.classList.remove("hidden"));
       form.querySelectorAll("[data-recommendation]").forEach((badge) => {
-        badge.classList.toggle("hidden", badge.dataset.recommendation !== mode);
+        badge.classList.toggle("hidden", !mode || badge.dataset.recommendation !== mode);
       });
       choices.classList.remove("hidden");
-      choiceHelp.textContent =
-        "We selected the safest default based on public MX records. Review it or choose a different setup.";
-      alternativeButton.classList.remove("hidden");
-      alternativeButton.setAttribute("aria-expanded", "false");
-      submitButton.textContent =
-        mode === PROVIDER_FORWARD
-          ? "Continue with current provider"
-          : "Continue with direct routing";
+      choiceHelp.textContent = mode
+        ? "We selected the safest default based on public DNS. Both routing methods remain available."
+        : "The detected DNS can support more than one interpretation. Review both methods and choose explicitly.";
       submitButton.classList.remove("hidden");
       checkButton.classList.add("hidden");
       updateOverrideWarning();
@@ -196,10 +220,10 @@
       const activeSequence = ++requestSequence;
       inspectedInputValue = "";
       recommendedMode = "";
+      routingClassification = "";
       clearSelection();
       choices.classList.add("hidden");
       submitButton.classList.add("hidden");
-      alternativeButton.classList.add("hidden");
       overrideWarning.classList.add("hidden");
       checkButton.classList.remove("hidden");
       checkButton.disabled = true;
@@ -221,20 +245,49 @@
           payload &&
           typeof payload.hostname === "string" &&
           typeof payload.has_existing_mx === "boolean" &&
-          supportedModes.has(payload.recommended_setup_mode) &&
-          payload.has_existing_mx ===
-            (payload.recommended_setup_mode === PROVIDER_FORWARD) &&
+          routingClassifications.has(payload.mx_classification) &&
+          (payload.has_operational_inbox_claim === null ||
+            typeof payload.has_operational_inbox_claim === "boolean") &&
+          (payload.recommended_setup_mode === null ||
+            supportedModes.has(payload.recommended_setup_mode)) &&
+          typeof payload.requires_explicit_choice === "boolean" &&
+          payload.requires_explicit_choice === (payload.recommended_setup_mode === null) &&
           Array.isArray(payload.mx_records) &&
+          payload.has_existing_mx === (payload.mx_records.length > 0) &&
           payload.mx_records.every(
             (record) =>
               Number.isInteger(record.preference) && typeof record.exchange === "string"
           );
-        if (!responseIsValid) throw new Error("The server returned an unreadable MX result.");
+        if (!responseIsValid) throw new Error("The server returned an unreadable DNS result.");
         if (activeSequence !== requestSequence || inputValue() !== requestedValue) return;
 
         inspectedInputValue = requestedValue;
-        revealRecommendation(payload.recommended_setup_mode);
-        if (payload.has_existing_mx) {
+        revealRecommendation(payload.recommended_setup_mode, payload.mx_classification);
+        if (payload.mx_classification === "OPERATIONAL_INBOX_RECONNECT") {
+          setStatus({
+            kind: "result",
+            title: "Previous Operational Inbox setup found",
+            body:
+              "This domain already points to the configured receiving service and has an older claim record. The MX can stay; a fresh ownership value will be required before activation.",
+            records: formatRecords(payload.mx_records),
+          });
+        } else if (payload.mx_classification === "SES_MX_UNCLAIMED") {
+          setStatus({
+            kind: "warning",
+            title: "SES receiving route found",
+            body:
+              "This SES endpoint is shared and does not identify a specific Operational Inbox setup. Choose the intended routing method explicitly.",
+            records: formatRecords(payload.mx_records),
+          });
+        } else if (payload.mx_classification === "MIXED_MX") {
+          setStatus({
+            kind: "warning",
+            title: "Mixed mail routing found",
+            body:
+              "Some MX records point to Operational Inbox's SES region and others point elsewhere. Choose the intended owner, then remove the conflicting MX records before testing.",
+            records: formatRecords(payload.mx_records),
+          });
+        } else if (payload.mx_classification === "EXTERNAL_MX") {
           setStatus({
             kind: "result",
             title: "Existing mail service found",
@@ -253,13 +306,13 @@
         if (error.name === "AbortError" || activeSequence !== requestSequence) return;
         inspectedInputValue = "";
         recommendedMode = "";
+        routingClassification = "";
         clearSelection();
         choices.classList.add("hidden");
         submitButton.classList.add("hidden");
-        alternativeButton.classList.add("hidden");
         setStatus({
           kind: "error",
-          title: `We could not check MX records for ${requestedValue}.`,
+          title: `We could not check DNS for ${requestedValue}.`,
           body: `${error.message} Nothing was changed; try again.`,
         });
         checkButton.classList.remove("hidden");
@@ -273,11 +326,6 @@
       }
     };
 
-    alternativeButton.addEventListener("click", () => {
-      cards.forEach((card) => card.classList.remove("hidden"));
-      alternativeButton.classList.add("hidden");
-      alternativeButton.setAttribute("aria-expanded", "true");
-    });
     radios.forEach((radio) => radio.addEventListener("change", updateOverrideWarning));
     checkButton.addEventListener("click", checkMx);
     hostnameInput.addEventListener("input", () => {
@@ -292,6 +340,12 @@
       if (!inspectedInputValue || inspectedInputValue !== inputValue()) {
         event.preventDefault();
         checkMx();
+        return;
+      }
+      if (!radios.some((radio) => radio.checked)) {
+        event.preventDefault();
+        updateOverrideWarning();
+        radios[0].focus();
         return;
       }
       form.setAttribute("aria-busy", "true");

@@ -26,9 +26,11 @@ from inbox.models import (
     Report,
 )
 from inbox.services.domains import (
+    DomainClaimLookupError,
     MXObservation,
     build_dns_instructions,
     build_inbound_dns_instructions,
+    classify_domain_routing,
 )
 from inbox.services.drafts import revise_draft
 
@@ -92,7 +94,7 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
     assert b"Check domain and continue" in response.content
     assert b"data-mx-inspect-url" in response.content
     assert b"data-mx-check" in response.content
-    assert b"Choose a different setup" in response.content
+    assert b"Choose a different setup" not in response.content
     assert b"We check public MX records first" in response.content
     assert b"Direct routing to Operational Inbox" in response.content
     assert b"Route this domain's MX records directly to Operational Inbox" in response.content
@@ -113,9 +115,9 @@ def test_domain_mx_inspection_recommends_and_caches_public_dns_result(client, ow
 
     def no_existing_mx(hostname):
         calls.append(hostname)
-        return []
+        return classify_domain_routing([], has_operational_inbox_claim=None)
 
-    monkeypatch.setattr("inbox.views.inspect_mx", no_existing_mx)
+    monkeypatch.setattr("inbox.views.inspect_domain_routing", no_existing_mx)
     url = reverse("domain_mx_inspect")
     first = client.post(url, {"hostname": "Portfolio.Fit."})
     second = client.post(url, {"hostname": "portfolio.fit"})
@@ -125,7 +127,10 @@ def test_domain_mx_inspection_recommends_and_caches_public_dns_result(client, ow
     assert first.json() == {
         "hostname": "portfolio.fit",
         "has_existing_mx": False,
+        "mx_classification": "NO_MX",
+        "has_operational_inbox_claim": None,
         "recommended_setup_mode": Domain.SetupMode.DIRECT_MX,
+        "requires_explicit_choice": False,
         "mx_records": [],
     }
     assert calls == ["portfolio.fit"]
@@ -139,21 +144,25 @@ def test_domain_mx_inspection_preserves_existing_mail_and_surfaces_dns_failures(
     client.force_login(owner)
     cache.clear()
     monkeypatch.setattr(
-        "inbox.views.inspect_mx",
-        lambda hostname: [MXObservation(10, "mx1.example.net")],
+        "inbox.views.inspect_domain_routing",
+        lambda hostname: classify_domain_routing(
+            [MXObservation(10, "mx1.example.net")],
+            has_operational_inbox_claim=False,
+        ),
     )
     url = reverse("domain_mx_inspect")
     existing = client.post(url, {"hostname": "mail.example.org"})
 
     assert existing.status_code == 200
     assert existing.json()["recommended_setup_mode"] == Domain.SetupMode.PROVIDER_FORWARD
+    assert existing.json()["mx_classification"] == "EXTERNAL_MX"
     assert existing.json()["mx_records"] == [{"preference": 10, "exchange": "mx1.example.net"}]
     assert client.get(url, {"hostname": "mail.example.org"}).status_code == 405
 
     def unavailable(hostname):
         raise ValidationError("The MX lookup timed out. Try again shortly.")
 
-    monkeypatch.setattr("inbox.views.inspect_mx", unavailable)
+    monkeypatch.setattr("inbox.views.inspect_domain_routing", unavailable)
     failed = client.post(url, {"hostname": "timeout.example.org"})
     invalid = client.post(url, {"hostname": "not-a-domain"})
 
@@ -161,6 +170,59 @@ def test_domain_mx_inspection_preserves_existing_mail_and_surfaces_dns_failures(
     assert failed.json()["code"] == "mx_lookup_failed"
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "invalid_hostname"
+
+    def claim_unavailable(hostname):
+        raise DomainClaimLookupError("The ownership-record lookup timed out.")
+
+    monkeypatch.setattr("inbox.views.inspect_domain_routing", claim_unavailable)
+    claim_failed = client.post(url, {"hostname": "claim-timeout.example.org"})
+    assert claim_failed.status_code == 503
+    assert claim_failed.json()["code"] == "claim_lookup_failed"
+
+
+@pytest.mark.django_db
+def test_domain_mx_inspection_recognizes_reconnect_and_requires_ambiguous_choices(
+    client, owner, monkeypatch
+):
+    client.force_login(owner)
+    cache.clear()
+
+    def inspect(hostname):
+        if hostname == "reconnect.example.org":
+            return classify_domain_routing(
+                [MXObservation(10, "inbound-smtp.us-east-1.amazonaws.com")],
+                has_operational_inbox_claim=True,
+            )
+        if hostname == "shared-ses.example.org":
+            return classify_domain_routing(
+                [MXObservation(5, "INBOUND-SMTP.US-EAST-1.AMAZONAWS.COM.")],
+                has_operational_inbox_claim=False,
+            )
+        return classify_domain_routing(
+            [
+                MXObservation(10, "inbound-smtp.us-east-1.amazonaws.com"),
+                MXObservation(20, "mx.provider.example"),
+            ],
+            has_operational_inbox_claim=True,
+        )
+
+    monkeypatch.setattr("inbox.views.inspect_domain_routing", inspect)
+    url = reverse("domain_mx_inspect")
+
+    reconnect = client.post(url, {"hostname": "reconnect.example.org"}).json()
+    shared_ses = client.post(url, {"hostname": "shared-ses.example.org"}).json()
+    mixed = client.post(url, {"hostname": "mixed.example.org"}).json()
+
+    assert reconnect["mx_classification"] == "OPERATIONAL_INBOX_RECONNECT"
+    assert reconnect["recommended_setup_mode"] == Domain.SetupMode.DIRECT_MX
+    assert reconnect["has_operational_inbox_claim"] is True
+    assert reconnect["requires_explicit_choice"] is False
+    assert shared_ses["mx_classification"] == "SES_MX_UNCLAIMED"
+    assert shared_ses["recommended_setup_mode"] is None
+    assert shared_ses["requires_explicit_choice"] is True
+    assert mixed["mx_classification"] == "MIXED_MX"
+    assert mixed["recommended_setup_mode"] is None
+    assert mixed["requires_explicit_choice"] is True
 
 
 @pytest.mark.django_db
@@ -260,6 +322,95 @@ def test_provider_forward_inbound_detail_shows_only_claim_and_private_route(
     assert b"inbound-smtp.us-east-1.amazonaws.com" not in response.content
     assert b"._domainkey.forward-only.example.org" not in response.content
     assert b"Amazon SES" not in response.content
+
+
+@pytest.mark.django_db
+def test_unverified_provider_setup_can_recover_to_detected_direct_routing(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="reconnect.example.org",
+        status=Domain.Status.PENDING_DNS,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    domain.existing_mx = [
+        {
+            "preference": 10,
+            "exchange": "inbound-smtp.us-east-1.amazonaws.com",
+        }
+    ]
+    domain.save(update_fields=("existing_mx", "updated_at"))
+    build_inbound_dns_instructions(domain, ownership_token="fresh-reconnect-claim")
+    previous_route = domain.inbound_routes.get()
+
+    detail = client.get(reverse("domain_detail", args=[domain.id]))
+    switch_url = reverse("domain_switch_to_direct", args=[domain.id])
+    get_switch = client.get(switch_url)
+    switched = client.post(switch_url, follow=True)
+
+    domain.refresh_from_db()
+    previous_route.refresh_from_db()
+    assert detail.status_code == 200
+    assert b"Direct receiving route found during setup" in detail.content
+    assert b"Switch to direct routing" in detail.content
+    assert b"Existing provider MX detected" not in detail.content
+    assert get_switch.status_code == 405
+    assert switched.status_code == 200
+    assert b"Direct routing setup started" in switched.content
+    assert b"Incoming email routes directly to Operational Inbox" in switched.content
+    assert domain.setup_mode == Domain.SetupMode.DIRECT_MX
+    assert domain.inbound_setup_generation == 2
+    assert domain.status == Domain.Status.PROVISIONING
+    assert not previous_route.is_active
+    assert domain.inbound_routes.filter(
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        is_active=True,
+    ).exists()
+    assert domain.dns_records.get(purpose=DomainDNSRecord.Purpose.OWNERSHIP).value == (
+        "fresh-reconnect-claim"
+    )
+    assert AuditEvent.objects.filter(
+        domain=domain,
+        event_type="domain.inbound_setup_mode_changed",
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_verified_direct_detail_does_not_ask_for_another_ownership_claim(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="verified-reconnect.example.org",
+        status=Domain.Status.READY,
+    )
+    domain.ownership_verified = True
+    domain.inbound_ready = True
+    domain.existing_mx = [
+        {
+            "preference": 10,
+            "exchange": "inbound-smtp.us-east-1.amazonaws.com",
+        }
+    ]
+    domain.save(
+        update_fields=(
+            "ownership_verified",
+            "inbound_ready",
+            "existing_mx",
+            "updated_at",
+        )
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"this domain's ownership claim is verified" in response.content
+    assert b"require a fresh ownership claim before activation" not in response.content
 
 
 @pytest.mark.django_db

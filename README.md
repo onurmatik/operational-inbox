@@ -131,9 +131,12 @@ only. Sending has its own explicit lifecycle:
 `DISABLED -> PROVISIONING -> PENDING_DNS -> READY`, with capability-local `ERROR` and `DEGRADED`
 states. A sending failure never disables an otherwise ready inbound route.
 
-Operational Inbox checks current MX records before presenting setup guidance. If MX records
-already exist, it recommends the forwarding path and never tells the owner to replace those
-records blindly.
+Operational Inbox checks current MX records and the presence of its historical ownership-record
+name before presenting setup guidance. External-provider MX records recommend forwarding. An MX
+set that already points only to the configured SES receiving region plus an existing
+`_operational-inbox-claim` record is treated as a direct-routing reconnect hint. The old public
+claim value is never reused as ownership proof; every new database claim still requires its own
+fresh nonce. Shared SES MX or mixed-provider results require an explicit routing choice.
 
 ### Direct MX
 

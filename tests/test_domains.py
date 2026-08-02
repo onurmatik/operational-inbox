@@ -18,13 +18,21 @@ from inbox.models import (
     DomainTest,
 )
 from inbox.services.domains import (
+    DomainClaimLookupError,
+    DomainRoutingClassification,
+    MXObservation,
     application_ownership_record_name,
     apply_domain_readiness,
     build_dns_instructions,
     build_inbound_dns_instructions,
+    classify_domain_routing,
+    classify_mx_layout,
     create_domain,
     create_domain_test,
+    expected_inbound_mx_exchange,
+    inspect_domain_routing,
     inspect_mx,
+    inspect_operational_inbox_claim,
     normalize_hostname,
     provision_inbound,
     provision_outbound_identity,
@@ -57,6 +65,81 @@ def test_unavailable_nameservers_do_not_look_like_missing_mx():
 
     with pytest.raises(ValidationError, match="nameservers did not answer"):
         inspect_mx("example.org", resolver=resolver)
+
+
+@override_settings(AWS_REGION="eu-west-1")
+def test_domain_routing_classification_distinguishes_reconnect_external_and_mixed_mx():
+    expected = MXObservation(10, "INBOUND-SMTP.EU-WEST-1.AMAZONAWS.COM.")
+    external = MXObservation(20, "mx.provider.example")
+
+    reconnect = classify_domain_routing(
+        [expected],
+        has_operational_inbox_claim=True,
+    )
+    shared_ses = classify_domain_routing(
+        [expected],
+        has_operational_inbox_claim=False,
+    )
+    provider = classify_domain_routing(
+        [external],
+        has_operational_inbox_claim=True,
+    )
+    mixed = classify_domain_routing(
+        [expected, external],
+        has_operational_inbox_claim=True,
+    )
+    empty = classify_domain_routing([], has_operational_inbox_claim=False)
+
+    assert expected_inbound_mx_exchange() == "inbound-smtp.eu-west-1.amazonaws.com"
+    assert reconnect.classification == DomainRoutingClassification.OPERATIONAL_INBOX_RECONNECT
+    assert reconnect.recommended_setup_mode == Domain.SetupMode.DIRECT_MX
+    assert shared_ses.classification == DomainRoutingClassification.SES_MX_UNCLAIMED
+    assert shared_ses.requires_explicit_choice
+    assert provider.classification == DomainRoutingClassification.EXTERNAL_MX
+    assert provider.recommended_setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+    assert mixed.classification == DomainRoutingClassification.MIXED_MX
+    assert mixed.requires_explicit_choice
+    assert empty.classification == DomainRoutingClassification.NO_MX
+    assert empty.recommended_setup_mode == Domain.SetupMode.DIRECT_MX
+    assert classify_mx_layout([expected]).value == "OPERATIONAL_INBOX"
+
+
+def test_domain_routing_inspection_uses_claim_only_as_a_reconnect_hint():
+    resolver = Mock()
+    mx_answer = Mock(preference=10, exchange="inbound-smtp.us-east-1.amazonaws.com.")
+    resolver.resolve.side_effect = [[mx_answer], [Mock()]]
+
+    inspection = inspect_domain_routing("Reconnect.Example.", resolver=resolver)
+
+    assert inspection.classification == DomainRoutingClassification.OPERATIONAL_INBOX_RECONNECT
+    assert inspection.has_operational_inbox_claim
+    assert resolver.resolve.call_args_list[0].args == ("reconnect.example", "MX")
+    assert resolver.resolve.call_args_list[1].args == (
+        "_operational-inbox-claim.reconnect.example",
+        "TXT",
+    )
+
+
+def test_external_mx_inspection_does_not_depend_on_claim_txt_lookup():
+    resolver = Mock()
+    resolver.resolve.return_value = [Mock(preference=10, exchange="mx.provider.example.")]
+
+    inspection = inspect_domain_routing("example.org", resolver=resolver)
+
+    assert inspection.classification == DomainRoutingClassification.EXTERNAL_MX
+    assert inspection.has_operational_inbox_claim is None
+    resolver.resolve.assert_called_once_with("example.org", "MX", lifetime=5)
+
+
+def test_claim_lookup_absence_and_failure_are_distinct():
+    missing = Mock()
+    missing.resolve.side_effect = dns.resolver.NoAnswer()
+    assert not inspect_operational_inbox_claim("example.org", resolver=missing)
+
+    unavailable = Mock()
+    unavailable.resolve.side_effect = dns.exception.Timeout()
+    with pytest.raises(DomainClaimLookupError, match="ownership-record lookup timed out"):
+        inspect_operational_inbox_claim("example.org", resolver=unavailable)
 
 
 def test_txt_tokens_are_case_sensitive_but_dns_targets_are_not():
@@ -648,6 +731,59 @@ def test_provisioning_cannot_resurrect_a_domain_disabled_during_aws_calls(organi
     assert domain.ses_identity_status == "PROVISIONING"
     assert domain.ses_identity_origin == Domain.SESIdentityOrigin.MANAGED
     assert not domain.dns_records.exists()
+
+
+@pytest.mark.django_db
+def test_stale_direct_attempt_does_not_record_ses_intent_after_lifecycle_change(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="stale-before-intent.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    ses = Mock()
+
+    def disable_during_identity_read(**kwargs):
+        Domain.objects.filter(id=domain.id).update(status=Domain.Status.DISABLED)
+        return {"VerificationAttributes": {}}
+
+    ses.get_identity_verification_attributes.side_effect = disable_during_identity_read
+
+    result = provision_inbound(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert result.status == Domain.Status.DISABLED
+    assert domain.status == Domain.Status.DISABLED
+    assert domain.ses_identity_status == ""
+    assert domain.ses_identity_origin == ""
+    ses.verify_domain_identity.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_readiness_checks_leave_provisioning_generation_untouched(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="provisioning-readiness.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="old-observation",
+        status=DomainDNSRecord.Status.VALID,
+    )
+
+    assert not apply_domain_readiness(domain)
+
+    domain.refresh_from_db()
+    assert domain.status == Domain.Status.PROVISIONING
+    assert not domain.ownership_verified
+    assert domain.last_checked_at is None
 
 
 @pytest.mark.django_db

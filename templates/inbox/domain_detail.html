@@ -180,6 +180,39 @@
     </div>
   {% endif %}
 
+  {% if existing_mx_layout == 'OPERATIONAL_INBOX' %}
+    <section class="mt-6 border border-blue-strong/40 bg-blue-soft p-5 text-blue-strong">
+      <h2 class="font-heading text-lg font-semibold">Direct receiving route found during setup</h2>
+      {% if domain.setup_mode == 'DIRECT_MX' %}
+        {% if domain.ownership_verified %}
+          <p class="mt-2 text-sm">The setup-time MX check found the configured Operational Inbox receiving region, and this domain's ownership claim is verified. Use the DNS status above as the current source of truth.</p>
+        {% else %}
+          <p class="mt-2 text-sm">The setup-time MX check found the configured Operational Inbox receiving region. If that routing is still in place, keep it; this setup will still require a fresh ownership claim before activation.</p>
+        {% endif %}
+      {% else %}
+        <p class="mt-2 text-sm">The setup-time MX check found the configured Operational Inbox receiving region. Provider forwarding is only needed when another mail provider remains in front of this domain.</p>
+        {% if can_switch_to_direct %}
+          <form
+            method="post"
+            action="{% url 'domain_switch_to_direct' domain.id %}"
+            class="mt-4"
+            data-domain-retry-form
+            data-busy-label="Switching to direct routing…"
+            aria-busy="false"
+            onsubmit="return confirm('Switch this unverified setup to direct MX routing? Existing public DNS will not be changed automatically.')"
+          >
+            {% csrf_token %}
+            <button class="oi-button-primary">Switch to direct routing</button>
+          </form>
+          <p class="mt-2 text-xs">A new setup generation prevents the earlier provider-forwarding job from overwriting this choice.</p>
+        {% endif %}
+      {% endif %}
+      <ul class="mt-3 space-y-1 font-mono text-xs">
+        {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
+      </ul>
+    </section>
+  {% endif %}
+
   {% if domain.setup_mode == 'PROVIDER_FORWARD' %}
     {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
       {% with route=domain.inbound_routes.all.0 %}
@@ -245,10 +278,15 @@
     {% endif %}
   {% endwith %}
 
-  {% if domain.existing_mx %}
+  {% if domain.existing_mx and existing_mx_layout != 'OPERATIONAL_INBOX' %}
     <section class="mt-8 border border-gold-strong/40 bg-gold-soft p-5">
-      <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing MX detected — preserve it</h2>
-      <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to Operational Inbox. Provider catch-all forwarding keeps the current mail service intact.</p>
+      {% if existing_mx_layout == 'MIXED' %}
+        <h2 class="font-heading text-lg font-semibold text-gold-strong">Mixed MX routing detected</h2>
+        <p class="mt-2 text-sm text-gold-strong">Some records point to the configured Operational Inbox receiving region and others point elsewhere. Remove the conflicting records for the routing method you did not choose before testing delivery.</p>
+      {% else %}
+        <h2 class="font-heading text-lg font-semibold text-gold-strong">Existing provider MX detected — preserve it</h2>
+        <p class="mt-2 text-sm text-gold-strong">Do not replace these records unless you intentionally dedicate this domain to Operational Inbox. Provider catch-all forwarding keeps the current mail service intact.</p>
+      {% endif %}
       <ul class="mt-3 space-y-1 font-mono text-xs text-gold-strong">
         {% for mx in domain.existing_mx %}<li>{{ mx.preference }} {{ mx.exchange }}</li>{% endfor %}
       </ul>

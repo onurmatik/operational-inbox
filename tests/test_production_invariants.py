@@ -152,6 +152,41 @@ def test_expired_claim_releases_hostname_and_disables_routes(monkeypatch, organi
 
 
 @pytest.mark.django_db
+def test_claim_expiry_rechecks_a_ttl_renewed_before_row_lock(monkeypatch, project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="renewed-before-expiry.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() - timedelta(seconds=1),
+    )
+    route = InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        local_part="route-renewed",
+        address="route-renewed@inbound.example.net",
+    )
+    select_for_update = Domain.objects.select_for_update
+
+    def renew_before_lock(*args, **kwargs):
+        Domain.objects.filter(id=domain.id).update(
+            inbound_setup_generation=2,
+            claim_expires_at=timezone.now() + timedelta(days=1),
+        )
+        return select_for_update(*args, **kwargs)
+
+    monkeypatch.setattr(Domain.objects, "select_for_update", renew_before_lock)
+
+    assert expire_unverified_claims() == 0
+
+    domain.refresh_from_db()
+    route.refresh_from_db()
+    assert domain.status == Domain.Status.PENDING_DNS
+    assert domain.inbound_setup_generation == 2
+    assert route.is_active
+
+
+@pytest.mark.django_db
 def test_domain_readiness_is_derived_separately(organization, project):
     domain = Domain.objects.create(
         owner=project.owner,
@@ -224,7 +259,11 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
     local_part = f"route-{domain.id.hex[:12]}"
     InboundRoute.objects.create(
         domain=domain,
-        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        kind=(
+            InboundRoute.Kind.DIRECT_DOMAIN
+            if setup_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS
+        ),
         local_part=local_part,
         address=f"{local_part}@inbound.example.net",
     )
