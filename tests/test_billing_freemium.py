@@ -45,6 +45,7 @@ def make_domain(owner: User, hostname: str) -> Domain:
 
 
 @pytest.mark.django_db
+@override_settings(MAX_DOMAINS_PER_USER=20)
 @pytest.mark.parametrize(
     ("status", "is_pro"),
     [
@@ -63,8 +64,11 @@ def test_subscription_status_controls_entitlements(free_owner, status, is_pro):
         subscription_plan="pro",
     )
 
+    entitlements = for_user(free_owner)
+
     assert profile.is_pro is is_pro
-    assert for_user(free_owner).is_pro is is_pro
+    assert entitlements.is_pro is is_pro
+    assert entitlements.domain_limit == (20 if is_pro else 1)
 
 
 @pytest.mark.django_db

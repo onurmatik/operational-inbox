@@ -29,7 +29,7 @@ English.
 - A complete inbox with search and filters, conversation timelines, security verdicts,
   quarantined attachments, reports, notifications, settings, API-token management, and an
   append-only audit view.
-- Account-level freemium access with one Free domain, a five-domain Pro plan, Stripe Checkout,
+- Account-level freemium access with one Free domain, a 20-domain Pro plan, Stripe Checkout,
   dynamically configured monthly pricing, Customer Portal subscription management, and
   signature-verified webhook synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
@@ -120,10 +120,10 @@ Subject similarity can create a merge suggestion but never silently merges conve
 inbound message reopens a resolved/waiting conversation and invalidates any existing draft
 approval.
 
-The default abuse controls are 5 active domains per user, 5 domain
-provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy verification-link resend
-attempts per hour, and a 72-hour unverified domain claim. All limits are configurable through
-environment variables.
+The default plan limits are one active domain on Free and 20 active domains on Pro. Abuse controls
+allow 5 domain provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy
+verification-link resend attempts per hour, and a 72-hour unverified domain claim. All limits are
+configurable through environment variables.
 
 ## Domain onboarding without breaking mail
 

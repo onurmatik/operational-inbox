@@ -10,7 +10,7 @@ from django.db.models import QuerySet
 from inbox.models import BillingProfile, Domain, User
 
 FREE_DOMAIN_LIMIT = 1
-PRO_DOMAIN_LIMIT = 5
+PRO_DOMAIN_LIMIT = 20
 
 
 class PlanRequired(ValidationError):
