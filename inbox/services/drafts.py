@@ -17,9 +17,11 @@ from inbox.models import (
     User,
 )
 from inbox.services.ai import generate_draft_output
+from inbox.services.entitlements import require_pro
 
 
 def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
+    require_pro(message.domain.owner, "AI reply drafts")
     if (
         message.is_quarantined
         or message.conversation.status == message.conversation.Status.QUARANTINED
@@ -51,6 +53,7 @@ def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
+    require_pro(owner, "AI reply drafts")
     locked = (
         ReplyDraft.objects.select_for_update().select_related("current_revision").get(id=draft.id)
     )
@@ -83,6 +86,7 @@ def revise_draft(
 def approve_exact_revision(
     *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
 ) -> OutboundMessage:
+    require_pro(owner, "Outbound sending")
     locked = (
         ReplyDraft.objects.select_for_update()
         .select_related("domain", "current_revision", "context_message", "conversation")
@@ -154,6 +158,7 @@ def approve_exact_revision(
 
 @transaction.atomic
 def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessage:
+    require_pro(owner, "Outbound sending")
     if original.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can resend a message.")
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:

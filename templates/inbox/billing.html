@@ -1,0 +1,48 @@
+{% extends "app_base.html" %}
+{% block title %}Plan & billing · Operational Inbox{% endblock %}
+{% block content %}
+  <div class="border-b border-line pb-6">
+    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Account subscription</p>
+    <h1 class="mt-1 font-heading text-3xl font-semibold">Plan &amp; billing</h1>
+    <p class="mt-1 text-sm text-muted">Your plan applies to every domain owned by this account.</p>
+  </div>
+
+  {% if request.GET.checkout == "success" %}
+    <div class="mt-6 border border-forest/30 bg-forest/5 p-4 text-sm">Checkout completed. Pro access will appear as soon as Stripe confirms the subscription.</div>
+  {% elif request.GET.checkout == "cancelled" %}
+    <div class="mt-6 border border-line bg-white p-4 text-sm">Checkout was cancelled. Your current plan is unchanged.</div>
+  {% endif %}
+
+  <div class="mt-7 grid gap-6 lg:grid-cols-2">
+    <section class="oi-panel p-6">
+      <div class="flex items-start justify-between gap-4">
+        <div><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Current plan</p><h2 class="mt-1 font-heading text-2xl font-semibold">{% if plan_entitlements.is_pro %}Pro{% else %}Free{% endif %}</h2></div>
+        <span class="oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span>
+      </div>
+      {% if billing_profile %}
+        <p class="mt-4 text-sm text-muted">Subscription status: {{ billing_profile.get_subscription_status_display }}{% if billing_profile.cancel_at_period_end %} · cancels at period end{% endif %}</p>
+        {% if billing_profile.current_period_end %}<p class="mt-1 text-xs text-muted">Current period ends {{ billing_profile.current_period_end|date:"Y-m-d H:i T" }}.</p>{% endif %}
+      {% endif %}
+      {% if plan_entitlements.is_pro %}
+        <form method="post" action="{% url 'billing_portal' %}" class="mt-6">{% csrf_token %}<button class="oi-button-secondary">Manage subscription</button></form>
+      {% else %}
+        {% if billing_configured %}
+          <form method="post" action="{% url 'billing_checkout' %}" class="mt-6">{% csrf_token %}<button class="oi-button-primary">Upgrade to Pro{% if price and price.amount %} · {{ price.currency }} {{ price.amount }}/{{ price.interval }}{% endif %}</button></form>
+        {% else %}
+          <p class="mt-6 border border-line bg-paper p-3 text-sm text-muted">Online upgrades are temporarily unavailable.</p>
+        {% endif %}
+      {% endif %}
+    </section>
+
+    <section class="oi-panel overflow-hidden">
+      <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] border-b border-line bg-paper/60 px-5 py-3 font-mono text-[10px] uppercase tracking-[0.08em] text-muted"><span>Capability</span><span>Free</span><span>Pro</span></div>
+      <div class="divide-y divide-line text-sm">
+        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Managed domains</span><span>1</span><span>5</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Secure inbox, search, attachments</span><span>Yes</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>AI triage, drafts, and reports</span><span>—</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Approved outbound sending</span><span>—</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>API and custom policies</span><span>—</span><span>Yes</span></div>
+      </div>
+    </section>
+  </div>
+{% endblock %}

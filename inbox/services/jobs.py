@@ -27,6 +27,7 @@ from inbox.services.domains import (
     provision_inbound,
     provision_outbound_identity,
 )
+from inbox.services.entitlements import for_user
 from inbox.services.notifications import (
     create_aging_notifications,
     create_classification_notifications,
@@ -321,11 +322,17 @@ def schedule_work(now=None) -> int:
     ):
         _, _, started = request_outbound_provisioning(domain)
         count += int(started)
-    for message in Message.objects.filter(
-        direction=Message.Direction.INBOUND,
-        is_quarantined=False,
-        normalized_purged_at__isnull=True,
-    ).exclude(classifications__is_current=True):
+    for message in (
+        Message.objects.filter(
+            direction=Message.Direction.INBOUND,
+            is_quarantined=False,
+            normalized_purged_at__isnull=True,
+        )
+        .select_related("domain__owner")
+        .exclude(classifications__is_current=True)
+    ):
+        if not for_user(message.domain.owner).ai:
+            continue
         enqueue_job(
             kind="classify_message",
             idempotency_key=f"classify:{message.id}",
@@ -334,7 +341,7 @@ def schedule_work(now=None) -> int:
         )
         count += 1
     for domain in Domain.objects.exclude(status=Domain.Status.DISABLED).select_related(
-        "report_schedule"
+        "report_schedule", "owner"
     ):
         from inbox.models import ReportSchedule
 
@@ -342,6 +349,8 @@ def schedule_work(now=None) -> int:
         if not schedule.is_enabled:
             continue
         create_aging_notifications(domain, now=now)
+        if not for_user(domain.owner).ai:
+            continue
         if schedule.review_frequency == schedule.Frequency.HOURLY:
             scheduled_times: list[datetime] = []
             current_hour = now.replace(minute=0, second=0, microsecond=0)
@@ -403,13 +412,17 @@ def schedule_work(now=None) -> int:
 
 def _handle(job: DurableJob) -> None:
     if job.kind == "classify_message":
-        message = Message.objects.get(id=job.payload["message_id"])
+        message = Message.objects.select_related("domain__owner").get(id=job.payload["message_id"])
+        if not for_user(message.domain.owner).ai:
+            return
         classification = classify_message(message)
         if classification is None:
             raise RuntimeError("Classification remains unavailable.")
         create_classification_notifications(classification)
     elif job.kind == "generate_report":
-        domain = Domain.objects.get(id=job.payload["domain_id"])
+        domain = Domain.objects.select_related("owner").get(id=job.payload["domain_id"])
+        if not for_user(domain.owner).ai:
+            return
         scheduled_for = datetime.fromisoformat(job.payload["scheduled_for"])
         report = generate_report(
             domain=domain,

@@ -45,6 +45,7 @@ from inbox.services.drafts import (
     resend_outbound,
     revise_draft,
 )
+from inbox.services.entitlements import for_user
 from inbox.services.jobs import (
     enqueue_job,
     request_outbound_provisioning,
@@ -250,12 +251,24 @@ def handle_http_error(request: HttpRequest, exc: HttpError):
 def require_scope(request: HttpRequest, scope: str) -> None:
     auth = request.auth
     if isinstance(auth, APIToken):
+        if not for_user(auth.owner).api:
+            raise APIError(
+                "upgrade_required",
+                "Operational Inbox Pro is required for API access.",
+                status=403,
+            )
         if not auth.has_scope(scope):
             raise APIError("insufficient_scope", "This token lacks the required scope.", status=403)
         return
     user = request.user
     if not user.is_authenticated or not user.is_email_verified:
         raise APIError("authentication_required", "Authentication is required.", status=401)
+    if not for_user(user).api:
+        raise APIError(
+            "upgrade_required",
+            "Operational Inbox Pro is required for API access.",
+            status=403,
+        )
 
 
 def record_api_audit(

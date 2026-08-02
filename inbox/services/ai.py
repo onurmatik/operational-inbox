@@ -14,6 +14,7 @@ from openai.types.shared_params.reasoning_effort import ReasoningEffort
 from pydantic import BaseModel, ConfigDict, Field
 
 from inbox.models import AgentRun, AuditEvent, Classification, Domain, Message
+from inbox.services.entitlements import require_pro
 
 
 class AIProcessingError(RuntimeError):
@@ -172,6 +173,7 @@ def _call_structured(
 
 
 def classify_message(message: Message, *, client: OpenAI | None = None) -> Classification | None:
+    require_pro(message.domain.owner, "AI classification")
     run = AgentRun.objects.create(
         domain=message.domain,
         kind=AgentRun.Kind.TRIAGE,

@@ -17,6 +17,7 @@ dependencies = [
   "openai>=1.99,<3",
   "pydantic>=2.11,<3",
   "python-dotenv>=1.0,<2",
+  "stripe>=12,<15",
   "whitenoise>=6.8,<7",
 ]
 

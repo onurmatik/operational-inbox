@@ -90,6 +90,58 @@ class UUIDTimeStampedModel(models.Model):
         abstract = True
 
 
+class BillingProfile(UUIDTimeStampedModel):
+    class SubscriptionStatus(models.TextChoices):
+        NONE = "none", "No subscription"
+        INCOMPLETE = "incomplete", "Incomplete"
+        INCOMPLETE_EXPIRED = "incomplete_expired", "Incomplete expired"
+        TRIALING = "trialing", "Trialing"
+        ACTIVE = "active", "Active"
+        PAST_DUE = "past_due", "Past due"
+        CANCELED = "canceled", "Canceled"
+        UNPAID = "unpaid", "Unpaid"
+        PAUSED = "paused", "Paused"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="billing_profile",
+    )
+    stripe_customer_id = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True, unique=True)
+    stripe_price_id = models.CharField(max_length=255, blank=True)
+    subscription_plan = models.CharField(max_length=32, blank=True)
+    subscription_status = models.CharField(
+        max_length=32,
+        choices=SubscriptionStatus.choices,
+        default=SubscriptionStatus.NONE,
+    )
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+    last_stripe_event_created = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        ordering = ("user__email",)
+
+    @property
+    def is_pro(self) -> bool:
+        active_status = self.subscription_status in {
+            self.SubscriptionStatus.ACTIVE,
+            self.SubscriptionStatus.TRIALING,
+            self.SubscriptionStatus.PAST_DUE,
+        }
+        return active_status and self.subscription_plan == "pro"
+
+
+class StripeWebhookEvent(UUIDTimeStampedModel):
+    stripe_event_id = models.CharField(max_length=255, unique=True)
+    event_type = models.CharField(max_length=120)
+    stripe_created = models.PositiveBigIntegerField()
+
+    class Meta:
+        ordering = ("-stripe_created", "-created_at")
+
+
 class EmailVerificationToken(UUIDTimeStampedModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
     token_hash = models.CharField(max_length=64, unique=True)

@@ -6,6 +6,7 @@ import pytest
 from django.utils import timezone
 
 from inbox.models import (
+    BillingProfile,
     Conversation,
     Domain,
     Message,
@@ -17,12 +18,18 @@ from inbox.models import (
 
 @pytest.fixture
 def owner(db) -> User:
-    return User.objects.create_user(
+    user = User.objects.create_user(
         email="owner@example.com",
         password="Correct-Horse-Battery-123",
         email_verified_at=timezone.now(),
         is_active=True,
     )
+    BillingProfile.objects.create(
+        user=user,
+        subscription_status=BillingProfile.SubscriptionStatus.ACTIVE,
+        subscription_plan="pro",
+    )
+    return user
 
 
 @pytest.fixture

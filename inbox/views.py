@@ -28,6 +28,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.cache import never_cache
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from sesame.utils import get_parameters
 from sesame.views import LoginView as SesameLoginView
@@ -70,6 +71,14 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
+from inbox.services.billing import (
+    billing_configured,
+    construct_event,
+    create_checkout_url,
+    create_portal_url,
+    price_summary,
+    process_event,
+)
 from inbox.services.domains import (
     DomainClaimConflict,
     DomainClaimLookupError,
@@ -85,6 +94,7 @@ from inbox.services.drafts import (
     resend_outbound,
     revise_draft,
 )
+from inbox.services.entitlements import can_manage_domain, for_user
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
     enqueue_job,
@@ -363,6 +373,17 @@ def _audit(
         request_id=getattr(request, "request_id", "web"),
         metadata=metadata or {},
     )
+
+
+def _upgrade_required(request: HttpRequest, feature: str) -> HttpResponse:
+    messages.warning(request, f"{feature} requires Operational Inbox Pro.")
+    return redirect("billing")
+
+
+def _domain_write_required(request: HttpRequest, domain: Domain) -> HttpResponse | None:
+    if can_manage_domain(request.user, domain):
+        return None
+    return _upgrade_required(request, "Managing additional domains")
 
 
 def verified_required(view):
@@ -820,6 +841,8 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @require_POST
 def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if denied := _domain_write_required(request, domain):
+        return denied
     conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
     status = request.POST.get("status", "")
     if status not in Conversation.Status.values or status == Conversation.Status.QUARANTINED:
@@ -839,6 +862,8 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @require_POST
 def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if not for_user(request.user).ai:
+        return _upgrade_required(request, "AI reply drafts")
     conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
     if message is None:
@@ -861,6 +886,8 @@ def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResp
 @require_POST
 def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if not for_user(request.user).ai:
+        return _upgrade_required(request, "AI reply drafts")
     draft = domain_get_or_404(
         ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
     )
@@ -882,6 +909,8 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @require_POST
 def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if not for_user(request.user).outbound:
+        return _upgrade_required(request, "Outbound sending")
     draft = domain_get_or_404(
         ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
     )
@@ -910,6 +939,8 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @require_POST
 def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if not for_user(request.user).outbound:
+        return _upgrade_required(request, "Outbound sending")
     original = domain_get_or_404(
         OutboundMessage.objects.select_related("conversation", "revision"),
         domain=domain,
@@ -939,7 +970,7 @@ def domains_list(request: HttpRequest) -> HttpResponse:
         {
             "active_nav": "domains",
             "domains": Domain.objects.filter(owner=request.user),
-            "limit": settings.MAX_DOMAINS_PER_USER,
+            "limit": for_user(request.user).domain_limit,
         },
     )
 
@@ -1006,6 +1037,10 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
         request.POST or None,
         initial={"hostname": pending_domain} if pending_domain else None,
     )
+    entitlements = for_user(request.user)
+    active_domain_count = request.user.domains.exclude(status=Domain.Status.DISABLED).count()
+    if request.method == "POST" and active_domain_count >= entitlements.domain_limit:
+        return _upgrade_required(request, "Connecting another domain")
     if request.method == "POST" and form.is_valid():
         try:
             domain = create_domain(
@@ -1180,6 +1215,8 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 @require_POST
 def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
     try:
         domain, job, started = retry_domain_provisioning(domain)
     except ValidationError as exc:
@@ -1209,6 +1246,8 @@ def _start_domain_routing_transition(
     target_mode: str,
 ) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
     try:
         transition, started = begin_routing_transition(domain, target_mode)
     except ValidationError as exc:
@@ -1274,6 +1313,8 @@ def domain_switch_to_direct(request: HttpRequest, domain_id: uuid.UUID) -> HttpR
 @require_POST
 def domain_routing_transition_cancel(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_ROUTING_TRANSITION_STATUSES)
         .order_by("-created_at", "-id")
@@ -1312,6 +1353,8 @@ def domain_routing_transition_cancel(request: HttpRequest, domain_id: uuid.UUID)
 @require_POST
 def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
     active_transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_ROUTING_TRANSITION_STATUSES)
         .order_by("-created_at", "-id")
@@ -1356,6 +1399,10 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
 @require_POST
 def domain_enable_outbound(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if not for_user(request.user).outbound:
+        return _upgrade_required(request, "Outbound sending")
+    if denied := _domain_write_required(request, domain):
+        return denied
     try:
         domain, job, started = request_outbound_provisioning(domain)
     except ValidationError as exc:
@@ -1382,6 +1429,8 @@ def domain_enable_outbound(request: HttpRequest, domain_id: uuid.UUID) -> HttpRe
 @require_POST
 def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
     domain.outbound_ready = False
@@ -1434,6 +1483,8 @@ def reports_list(request: HttpRequest) -> HttpResponse:
 def notifications_list(request: HttpRequest) -> HttpResponse:
     domain = current_domain(request)
     if request.method == "POST":
+        if denied := _domain_write_required(request, domain):
+            return denied
         Notification.objects.filter(
             domain=domain,
             channel=Notification.Channel.IN_APP,
@@ -1464,6 +1515,8 @@ def schedules_settings(request: HttpRequest) -> HttpResponse:
         prefix="schedule",
     )
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
+    if request.method == "POST" and not for_user(request.user).custom_settings:
+        return _upgrade_required(request, "Custom schedules and retention")
     if request.method == "POST":
         if request.POST.get("form") == "schedule" and schedule_form.is_valid():
             schedule_form.save()
@@ -1492,6 +1545,8 @@ def schedules_settings(request: HttpRequest) -> HttpResponse:
 def api_tokens(request: HttpRequest) -> HttpResponse:
     domain = current_domain(request)
     form = APITokenForm(request.POST or None)
+    if request.method == "POST" and not for_user(request.user).api:
+        return _upgrade_required(request, "API access")
     if request.method == "POST" and form.is_valid():
         token, raw = APIToken.issue(
             domain=domain,
@@ -1519,6 +1574,8 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
 @require_POST
 def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if not for_user(request.user).api:
+        return _upgrade_required(request, "API access")
     token = domain_get_or_404(APIToken.objects, domain=domain, id=token_id)
     token.revoked_at = timezone.now()
     token.save(update_fields=("revoked_at", "updated_at"))
@@ -1538,6 +1595,73 @@ def audit_log(request: HttpRequest) -> HttpResponse:
             "audit_events": AuditEvent.objects.filter(domain=domain)[:250],
         },
     )
+
+
+@verified_required
+def billing(request: HttpRequest) -> HttpResponse:
+    profile = getattr(request.user, "billing_profile", None)
+    price = None
+    if billing_configured():
+        try:
+            price = price_summary()
+        except Exception:
+            logger.exception("Stripe price lookup failed")
+    return render(
+        request,
+        "inbox/billing.html",
+        {
+            "active_nav": "billing",
+            "billing_profile": profile,
+            "billing_configured": billing_configured(),
+            "price": price,
+        },
+    )
+
+
+@verified_required
+@require_POST
+def billing_checkout(request: HttpRequest) -> HttpResponse:
+    try:
+        url = create_checkout_url(request.user)
+    except ValidationError as exc:
+        messages.info(request, "; ".join(exc.messages))
+        return redirect("billing")
+    except Exception:
+        logger.exception("Stripe Checkout creation failed", extra={"user_id": request.user.id})
+        messages.error(request, "Checkout is temporarily unavailable. Try again shortly.")
+        return redirect("billing")
+    return redirect(url)
+
+
+@verified_required
+@require_POST
+def billing_portal(request: HttpRequest) -> HttpResponse:
+    try:
+        url = create_portal_url(request.user)
+    except Exception:
+        logger.exception(
+            "Stripe customer portal creation failed", extra={"user_id": request.user.id}
+        )
+        messages.error(request, "Subscription management is temporarily unavailable.")
+        return redirect("billing")
+    return redirect(url)
+
+
+@csrf_exempt
+@require_POST
+def stripe_webhook(request: HttpRequest) -> JsonResponse:
+    try:
+        event = construct_event(request.body, request.headers.get("Stripe-Signature", ""))
+    except Exception as exc:
+        # Stripe signature errors intentionally receive the same non-sensitive response.
+        logger.warning("Stripe webhook rejected", extra={"error_type": type(exc).__name__})
+        return JsonResponse({"received": False}, status=400)
+    try:
+        process_event(event)
+    except Exception:
+        logger.exception("Stripe webhook processing failed")
+        return JsonResponse({"received": False}, status=500)
+    return JsonResponse({"received": True})
 
 
 @verified_required

@@ -91,6 +91,10 @@ urlpatterns = [
         name="api_token_revoke",
     ),
     path("app/settings/audit/", views.audit_log, name="audit"),
+    path("app/billing/", views.billing, name="billing"),
+    path("app/billing/checkout/", views.billing_checkout, name="billing_checkout"),
+    path("app/billing/portal/", views.billing_portal, name="billing_portal"),
+    path("webhooks/stripe/", views.stripe_webhook, name="stripe_webhook"),
     path(
         "app/attachments/<uuid:attachment_id>/download/",
         views.attachment_download,

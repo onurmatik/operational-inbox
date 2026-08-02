@@ -1,6 +1,7 @@
 {% extends "app_base.html" %}
 {% block title %}{{ conversation.subject|default:"Conversation" }} · Operational Inbox{% endblock %}
 {% block content %}
+  {% if not plan_entitlements.is_pro %}<div class="mb-6 border border-line bg-white p-4 text-sm"><strong>Free inbox mode.</strong> AI drafts and outbound sending require <a href="{% url 'billing' %}" class="font-semibold text-forest underline">Pro</a>.</div>{% endif %}
   <nav class="mb-4 text-xs text-muted">
     <a href="{% url 'inbox' %}" class="hover:text-forest">Inbox</a>
     <span class="mx-2">/</span>{{ conversation.domain.hostname }}

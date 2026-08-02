@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from inbox.models import AgentRun, Classification, Domain, Message, Report, ReportItem
 from inbox.services.ai import AIProcessingError, generate_report_output
+from inbox.services.entitlements import require_pro
 
 
 def domain_zone(domain: Domain) -> ZoneInfo:
@@ -67,9 +68,7 @@ class ReportCandidate:
         return "Unclassified message; manual review is required."
 
 
-def _report_candidates(
-    domain: Domain, start: datetime, end: datetime
-) -> list[ReportCandidate]:
+def _report_candidates(domain: Domain, start: datetime, end: datetime) -> list[ReportCandidate]:
     aging_cutoff = end - timedelta(hours=domain.report_schedule.aging_reminder_hours)
     messages = list(
         Message.objects.filter(
@@ -135,6 +134,7 @@ def _fallback_content(candidates: list[ReportCandidate]) -> tuple[str, str]:
 def generate_report(
     *, domain: Domain, kind: str, now: datetime | None = None, client=None
 ) -> Report:
+    require_pro(domain.owner, "AI reports")
     now = now or timezone.now()
     key = schedule_key(domain, kind, now)
     existing = Report.objects.filter(domain=domain, kind=kind, schedule_key=key).first()

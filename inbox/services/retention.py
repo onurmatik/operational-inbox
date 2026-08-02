@@ -31,6 +31,7 @@ from inbox.models import (
     SignupAttempt,
     content_digest,
 )
+from inbox.services.entitlements import for_user
 
 
 def _delete_s3_key(client: Any, key: str) -> None:
@@ -47,9 +48,14 @@ def _default_retention_days(field_name: str) -> int:
     return int(getattr(RetentionPolicy(), field_name))
 
 
-def _purge_ingress_events(
-    *, raw_cutoff: Any, metadata_cutoff: Any, now: Any
-) -> tuple[int, int]:
+def _effective_retention_days(domain: Domain, policy: RetentionPolicy, field_name: str) -> int:
+    configured = int(getattr(policy, field_name))
+    if for_user(domain.owner).custom_settings:
+        return configured
+    return min(configured, _default_retention_days(field_name))
+
+
+def _purge_ingress_events(*, raw_cutoff: Any, metadata_cutoff: Any, now: Any) -> tuple[int, int]:
     events = IngressEvent.objects.all()
     expired_metadata = events.filter(created_at__lte=metadata_cutoff)
     metadata_count = expired_metadata.count()
@@ -88,14 +94,21 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         "verification_tokens": 0,
         "terminal_jobs": 0,
     }
-    domains = list(Domain.objects.all())
+    domains = list(Domain.objects.select_related("owner").all())
     domain_policies: list[tuple[Domain, RetentionPolicy]] = []
     for domain in domains:
         policy, _ = RetentionPolicy.objects.get_or_create(domain=domain)
         domain_policies.append((domain, policy))
 
     for domain, policy in domain_policies:
-        attachment_cutoff = now - timedelta(days=policy.attachment_days)
+        attachment_days = _effective_retention_days(domain, policy, "attachment_days")
+        raw_message_days = _effective_retention_days(domain, policy, "raw_message_days")
+        normalized_content_days = _effective_retention_days(
+            domain, policy, "normalized_content_days"
+        )
+        audit_metadata_days = _effective_retention_days(domain, policy, "audit_metadata_days")
+        delivery_metadata_days = _effective_retention_days(domain, policy, "delivery_metadata_days")
+        attachment_cutoff = now - timedelta(days=attachment_days)
         for attachment in Attachment.objects.filter(
             domain=domain,
             purged_at__isnull=True,
@@ -124,7 +137,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
                 )
             )
             counts["attachments"] += 1
-        raw_cutoff = now - timedelta(days=policy.raw_message_days)
+        raw_cutoff = now - timedelta(days=raw_message_days)
         for message in (
             Message.objects.filter(
                 domain=domain,
@@ -139,7 +152,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             message.raw_purged_at = now
             message.save(update_fields=("raw_s3_key", "raw_purged_at", "updated_at"))
             counts["raw"] += 1
-        normalized_cutoff = now - timedelta(days=policy.normalized_content_days)
+        normalized_cutoff = now - timedelta(days=normalized_content_days)
         old_messages = list(
             Message.objects.filter(
                 domain=domain,
@@ -210,21 +223,19 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             body_text="",
             content_hash=redacted_hash,
         )
-        report_cutoff = now - timedelta(days=policy.normalized_content_days)
-        old_reports = Report.objects.filter(
-            domain=domain, period_end__lte=report_cutoff
-        )
+        report_cutoff = now - timedelta(days=normalized_content_days)
+        old_reports = Report.objects.filter(domain=domain, period_end__lte=report_cutoff)
         ReportItem.objects.filter(report__in=old_reports).update(summary="")
         old_reports.update(title="Expired report", content="")
-        Notification.objects.filter(
-            domain=domain, created_at__lte=normalized_cutoff
-        ).update(title="Expired notification", body="")
-        audit_cutoff = now - timedelta(days=policy.audit_metadata_days)
+        Notification.objects.filter(domain=domain, created_at__lte=normalized_cutoff).update(
+            title="Expired notification", body=""
+        )
+        audit_cutoff = now - timedelta(days=audit_metadata_days)
         deleted, _ = AuditEvent.all_objects.filter(
             domain=domain, created_at__lte=audit_cutoff
         ).delete()
         counts["audit"] += deleted
-        delivery_cutoff = now - timedelta(days=policy.delivery_metadata_days)
+        delivery_cutoff = now - timedelta(days=delivery_metadata_days)
         deleted, _ = DeliveryEvent.objects.filter(
             domain=domain, occurred_at__lte=delivery_cutoff
         ).delete()
@@ -249,11 +260,17 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
     # tenant's operational metadata early.
     global_raw_days = max(
         [_default_retention_days("raw_message_days")]
-        + [policy.raw_message_days for _, policy in domain_policies]
+        + [
+            _effective_retention_days(domain, policy, "raw_message_days")
+            for domain, policy in domain_policies
+        ]
     )
     global_metadata_days = max(
         [_default_retention_days("audit_metadata_days")]
-        + [policy.audit_metadata_days for _, policy in domain_policies]
+        + [
+            _effective_retention_days(domain, policy, "audit_metadata_days")
+            for domain, policy in domain_policies
+        ]
     )
     ingress_raw, ingress_metadata = _purge_ingress_events(
         raw_cutoff=now - timedelta(days=global_raw_days),

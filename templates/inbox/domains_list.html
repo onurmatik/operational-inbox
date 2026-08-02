@@ -7,7 +7,7 @@
       <h1 class="mt-1 font-heading text-3xl font-semibold">Domains</h1>
       <p class="mt-1 text-sm text-muted">Existing root MX records are never replaced automatically.</p>
     </div>
-    <a href="{% url 'domain_create' %}" class="oi-button-primary">Connect domain</a>
+    {% if plan_entitlements.is_pro or not current_domain %}<a href="{% url 'domain_create' %}" class="oi-button-primary">Connect domain</a>{% else %}<a href="{% url 'billing' %}" class="oi-button-primary">Upgrade to connect domain</a>{% endif %}
   </div>
   <div class="mt-6 oi-panel divide-y divide-line">
     {% for domain in domains %}

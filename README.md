@@ -29,6 +29,9 @@ English.
 - A complete inbox with search and filters, conversation timelines, security verdicts,
   quarantined attachments, reports, notifications, settings, API-token management, and an
   append-only audit view.
+- Account-level freemium access with one Free domain, a five-domain Pro plan, Stripe Checkout,
+  dynamically configured monthly pricing, Customer Portal subscription management, and
+  signature-verified webhook synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
   sanitization, domain-local message threading, multi-domain delivery, and delivery-event processing.
 - Structured OpenAI triage, reply drafting, and report generation with a deterministic report
@@ -514,7 +517,7 @@ These checks are intentionally local; this repository does not install a GitHub 
 
 ## MVP boundaries
 
-Not included: teams or roles, pricing/billing, custom cron expressions, legal hold, marketing or
+Not included: teams or roles, annual or usage-based billing, custom cron expressions, legal hold, marketing or
 bulk email, personal IMAP/POP replacement, automatic acknowledgement, autonomous external
 replies, or automatic model analysis of attachment contents. Customer DNS is verified and shown
 as exact instructions but is never modified by the application.

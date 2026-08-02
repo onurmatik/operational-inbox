@@ -55,6 +55,41 @@ for model in (
     admin.site.register(model, DomainScopedAdmin)
 
 
+@admin.register(models.BillingProfile)
+class BillingProfileAdmin(admin.ModelAdmin):
+    list_display = (
+        "user",
+        "subscription_status",
+        "stripe_customer_id",
+        "stripe_subscription_id",
+        "updated_at",
+    )
+    search_fields = ("user__email", "stripe_customer_id", "stripe_subscription_id")
+    readonly_fields = [field.name for field in models.BillingProfile._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(models.StripeWebhookEvent)
+class StripeWebhookEventAdmin(admin.ModelAdmin):
+    list_display = ("stripe_event_id", "event_type", "stripe_created", "created_at")
+    search_fields = ("stripe_event_id", "event_type")
+    readonly_fields = [field.name for field in models.StripeWebhookEvent._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(models.IngressEvent)
 class IngressEventAdmin(admin.ModelAdmin):
     list_display = ("ses_message_id", "status", "attempts", "created_at")

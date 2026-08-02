@@ -29,6 +29,7 @@
         <a href="{% url 'schedules_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'schedules' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Schedules &amp; retention</a>
         <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'api_tokens' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">⌁</span>API tokens</a>
         <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'audit' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">≡</span>Audit</a>
+        <a href="{% url 'billing' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'billing' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◈</span>Plan &amp; billing<span class="ml-auto oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span></a>
       </nav>
       <div class="border-t border-line p-4">
         <p class="truncate text-xs font-semibold">{{ request.user.email }}</p>
@@ -41,9 +42,18 @@
         <div class="hidden min-w-0 items-center gap-2 text-sm sm:flex">
           <span class="truncate font-semibold">{{ current_domain.hostname }}</span>
         </div>
-        <a href="{% url 'domain_create' %}" class="oi-button-primary min-h-9">Connect domain</a>
+        {% if plan_entitlements.is_pro or not current_domain %}
+          <a href="{% url 'domain_create' %}" class="oi-button-primary min-h-9">Connect domain</a>
+        {% else %}
+          <a href="{% url 'billing' %}" class="oi-button-primary min-h-9">Upgrade to connect domain</a>
+        {% endif %}
       </header>
       <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
+        {% if current_domain and not current_domain_writable %}
+          <div class="mb-6 border border-gold-strong/40 bg-gold-soft p-4 text-sm text-gold-strong">
+            <strong>This domain is read-only on Free.</strong> New mail continues to arrive, but changes require <a href="{% url 'billing' %}" class="underline">Operational Inbox Pro</a>.
+          </div>
+        {% endif %}
         {% block content %}{% endblock %}
       </main>
     </div>

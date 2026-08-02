@@ -236,13 +236,14 @@ def classify_stored_mx(records: list[dict[str, object]]) -> MXLayout:
 
 
 def _assert_limits(owner: User) -> None:
+    from inbox.services.entitlements import for_user
+
+    domain_limit = for_user(owner).domain_limit
     if (
         Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED).count()
-        >= settings.MAX_DOMAINS_PER_USER
+        >= domain_limit
     ):
-        raise DomainLimitError(
-            f"A user can provision at most {settings.MAX_DOMAINS_PER_USER} domains."
-        )
+        raise DomainLimitError(f"This plan can provision at most {domain_limit} domains.")
     since = timezone.now() - timedelta(seconds=settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS)
     recent = Domain.objects.filter(owner=owner, created_at__gte=since).count()
     if recent >= settings.DOMAIN_PROVISION_RATE_LIMIT:
