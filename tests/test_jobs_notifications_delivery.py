@@ -29,7 +29,7 @@ def test_durable_job_retries_and_reclaims_expired_lease(monkeypatch, organizatio
         kind="classify_message",
         idempotency_key=f"classify:{inbound_message.id}",
         payload={"message_id": str(inbound_message.id)},
-        organization=organization,
+        domain=organization,
     )
     monkeypatch.setattr("inbox.services.jobs.classify_message", lambda message: None)
     counts = run_due_jobs(limit=1)
@@ -40,7 +40,7 @@ def test_durable_job_retries_and_reclaims_expired_lease(monkeypatch, organizatio
     job.due_at = timezone.now() - timedelta(seconds=1)
     job.save()
     classification = Classification.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         source=Classification.Source.OWNER,
         category=Classification.Category.INFORMATIONAL,
@@ -57,8 +57,7 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
     monkeypatch, organization, project
 ):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="mail.example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -68,7 +67,7 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
         kind="provision_domain",
         idempotency_key=f"provision-domain:{domain.id}",
         payload={"domain_id": str(domain.id)},
-        organization=organization,
+        domain=organization,
     )
     job.max_attempts = 1
     job.save(update_fields=("max_attempts", "updated_at"))
@@ -90,8 +89,7 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
 @pytest.mark.django_db
 def test_recoverable_domain_retry_creates_one_new_active_job(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="retry-existing.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.ERROR,
@@ -103,7 +101,7 @@ def test_recoverable_domain_retry_creates_one_new_active_job(organization, proje
         kind="provision_domain",
         idempotency_key=f"provision-domain:{domain.id}",
         payload={"domain_id": str(domain.id)},
-        organization=organization,
+        domain=organization,
     )
     completed.status = DurableJob.Status.COMPLETE
     completed.save(update_fields=("status", "updated_at"))
@@ -134,8 +132,7 @@ def test_recoverable_domain_retry_creates_one_new_active_job(organization, proje
 @pytest.mark.django_db
 def test_scheduler_repairs_provisioning_domain_without_an_active_job(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="stranded-provisioning.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -161,7 +158,7 @@ def test_important_notification_is_deduplicated_and_email_delivered(
     mailoutbox, organization, inbound_message
 ):
     classification = Classification.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         source=Classification.Source.OWNER,
         category=Classification.Category.SUSPICIOUS,

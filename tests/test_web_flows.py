@@ -21,9 +21,7 @@ from inbox.models import (
     DurableJob,
     InboundRoute,
     Notification,
-    Organization,
     OutboundMessage,
-    Project,
     ReplyDraft,
     Report,
 )
@@ -40,8 +38,7 @@ def _setup_domain(
     setup_mode: str = Domain.SetupMode.DIRECT_MX,
 ) -> Domain:
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname=hostname,
         setup_mode=setup_mode,
         status=status,
@@ -49,7 +46,6 @@ def _setup_domain(
     )
     local_part = f"route-{domain.id.hex[:12]}"
     InboundRoute.objects.create(
-        organization=organization,
         domain=domain,
         kind=(
             InboundRoute.Kind.DIRECT_DOMAIN
@@ -79,7 +75,7 @@ def test_choice_widgets_do_not_receive_text_input_styles():
 def test_domain_create_explains_the_routing_tradeoff(client, owner, organization, project):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session["pending_domain"] = "portfolio.fit"
     session.save()
 
@@ -169,7 +165,7 @@ def test_domain_detail_provisioning_waits_and_auto_polls_without_actions(
 ):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -200,7 +196,7 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
 ):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -240,7 +236,7 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
 def test_domain_detail_pending_test_enables_delivery_test(client, owner, organization, project):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -282,7 +278,7 @@ def test_domain_detail_pending_test_enables_delivery_test(client, owner, organiz
 def test_web_rejects_premature_domain_test_creation(client, owner, organization, project):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -300,7 +296,7 @@ def test_web_rejects_premature_domain_test_creation(client, owner, organization,
     assert b"Verify the required DNS records" in response.content
     assert not DomainTest.objects.filter(domain=domain).exists()
     assert not AuditEvent.objects.filter(
-        organization=organization,
+        domain=organization,
         event_type="domain.test_created",
         object_id=domain.id,
     ).exists()
@@ -312,7 +308,7 @@ def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
 ):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -350,7 +346,7 @@ def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
 ):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     domain = _setup_domain(
         organization,
@@ -393,7 +389,7 @@ def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
     )
     assert (
         AuditEvent.objects.filter(
-            organization=organization,
+            domain=domain,
             event_type="domain.provision_retry_requested",
             object_id=domain.id,
         ).count()
@@ -406,10 +402,10 @@ def test_authenticated_application_pages_render(
     client, owner, organization, project, conversation, inbound_message
 ):
     client.force_login(owner)
-    client.session["organization_id"] = str(organization.id)
+    client.session["domain_id"] = str(organization.id)
     client.session.save()
     Classification.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         source=Classification.Source.OWNER,
         category=Classification.Category.ACTIONABLE,
@@ -418,8 +414,7 @@ def test_authenticated_application_pages_render(
         recommended_action="Respond after verifying the request.",
     )
     Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.READY,
@@ -429,8 +424,7 @@ def test_authenticated_application_pages_render(
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
     Notification.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         channel=Notification.Channel.IN_APP,
         kind="important",
@@ -439,7 +433,7 @@ def test_authenticated_application_pages_render(
         body="An actionable message arrived.",
     )
     Report.objects.create(
-        organization=organization,
+        domain=organization,
         kind=Report.Kind.DAILY,
         schedule_key="2026-07-31:daily",
         period_start=timezone.now() - timedelta(days=1),
@@ -449,7 +443,7 @@ def test_authenticated_application_pages_render(
         content="One actionable item.",
     )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.OWNER,
         actor_id=owner.id,
         event_type="test.rendered",
@@ -458,8 +452,7 @@ def test_authenticated_application_pages_render(
         request_id="web-test",
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -470,8 +463,7 @@ def test_authenticated_application_pages_render(
         body_text="Reviewable response.",
     )
     OutboundMessage.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         revision=revision,
         status=OutboundMessage.Status.UNKNOWN,
@@ -490,7 +482,6 @@ def test_authenticated_application_pages_render(
         reverse("conversation_detail", args=[conversation.id]),
         reverse("domains"),
         reverse("domain_create"),
-        reverse("projects"),
         reverse("reports"),
         reverse("notifications"),
         reverse("schedules_settings"),
@@ -523,7 +514,7 @@ def test_conversation_state_and_api_token_web_actions(
 ):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     state = client.post(
         reverse("conversation_status", args=[conversation.id]), {"status": "RESOLVED"}
@@ -551,10 +542,10 @@ def test_conversation_state_and_api_token_web_actions(
 def test_attachment_web_locked_and_expired_responses(client, owner, organization, inbound_message):
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     attachment = Attachment.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         display_name="malware.bin",
         content_type="application/octet-stream",
@@ -574,24 +565,27 @@ def test_attachment_web_locked_and_expired_responses(client, owner, organization
 
 
 @pytest.mark.django_db
-def test_owner_can_switch_organizations_and_project_selection_is_cleared(
+def test_owner_can_switch_domains(
     client, owner, organization, project
 ):
-    second = Organization.objects.create(owner=owner, name="Second Operations", slug="second")
-    Project.objects.create(organization=second, name="Second Project", slug="second")
+    second = Domain.objects.create(
+        owner=owner,
+        hostname="second.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now(),
+    )
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
-    session["project_id"] = str(project.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     response = client.post(
-        reverse("organization_switch"),
-        {"organization_id": str(second.id), "next": reverse("dashboard")},
+        reverse("domain_switch"),
+        {"domain_id": str(second.id), "next": reverse("dashboard")},
     )
     assert response.status_code == 302
     assert response.url == reverse("dashboard")
-    assert client.session["organization_id"] == str(second.id)
-    assert "project_id" not in client.session
+    assert client.session["domain_id"] == str(second.id)
 
 
 @pytest.mark.django_db
@@ -601,8 +595,7 @@ def test_complete_inbox_has_filter_preserving_pagination(
     now = timezone.now()
     for index in range(50):
         Conversation.objects.create(
-            organization=organization,
-            project=project,
+            domain=project,
             subject=f"Paged conversation {index:02d}",
             normalized_subject=f"paged conversation {index:02d}",
             first_message_at=now - timedelta(minutes=index + 1),
@@ -610,7 +603,7 @@ def test_complete_inbox_has_filter_preserving_pagination(
         )
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     first = client.get(reverse("inbox"), {"state": "OPEN"})
     second = client.get(reverse("inbox"), {"state": "OPEN", "page": 2})
@@ -630,7 +623,7 @@ def test_quarantined_inbox_preview_never_leaks_body(
     conversation.save(update_fields=("status", "updated_at"))
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
     response = client.get(reverse("inbox"))
     assert b"DO-NOT-LEAK-QUARANTINED-CONTENT" not in response.content
@@ -644,7 +637,7 @@ def test_quarantined_inbox_preview_never_leaks_body(
 @pytest.mark.django_db
 def test_provider_backed_audit_events_use_product_language(client, owner, organization):
     AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.AWS,
         event_type="domain.ses_identity_adoption_pending",
         object_type="Domain",
@@ -652,7 +645,7 @@ def test_provider_backed_audit_events_use_product_language(client, owner, organi
     )
     client.force_login(owner)
     session = client.session
-    session["organization_id"] = str(organization.id)
+    session["domain_id"] = str(organization.id)
     session.save()
 
     response = client.get(reverse("audit"))

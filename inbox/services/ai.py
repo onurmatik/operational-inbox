@@ -13,7 +13,7 @@ from openai.types.shared_params.reasoning import Reasoning
 from openai.types.shared_params.reasoning_effort import ReasoningEffort
 from pydantic import BaseModel, ConfigDict, Field
 
-from inbox.models import AgentRun, AuditEvent, Classification, Message, Organization
+from inbox.models import AgentRun, AuditEvent, Classification, Domain, Message
 
 
 class AIProcessingError(RuntimeError):
@@ -101,8 +101,8 @@ Prioritize unresolved, suspicious, critical, high urgency, and aging items.
 Return only the requested structured output."""
 
 
-def safety_identifier(organization_id: object) -> str:
-    digest = hashlib.sha256(f"operational-inbox:{organization_id}".encode()).hexdigest()
+def safety_identifier(domain_id: object) -> str:
+    digest = hashlib.sha256(f"operational-inbox:{domain_id}".encode()).hexdigest()
     return f"oi_{digest[:48]}"
 
 
@@ -138,7 +138,7 @@ def _call_structured(
     instructions: str,
     user_input: str,
     schema: type[SchemaT],
-    organization_id: object,
+    domain_id: object,
     client: OpenAI | None = None,
     max_output_tokens: int = 3000,
 ) -> ParsedAIResult:
@@ -156,7 +156,7 @@ def _call_structured(
             text_format=schema,
             store=False,
             max_output_tokens=max_output_tokens,
-            safety_identifier=safety_identifier(organization_id),
+            safety_identifier=safety_identifier(domain_id),
         )
     except Exception as exc:
         raise AIProcessingError("The model request failed.") from exc
@@ -173,8 +173,7 @@ def _call_structured(
 
 def classify_message(message: Message, *, client: OpenAI | None = None) -> Classification | None:
     run = AgentRun.objects.create(
-        organization=message.organization,
-        project=message.project,
+        domain=message.domain,
         kind=AgentRun.Kind.TRIAGE,
         status=AgentRun.Status.RUNNING,
         model_name=settings.OPENAI_TRIAGE_MODEL,
@@ -190,7 +189,7 @@ def classify_message(message: Message, *, client: OpenAI | None = None) -> Class
             instructions=TRIAGE_INSTRUCTIONS,
             user_input=build_triage_input(message),
             schema=TriageOutput,
-            organization_id=message.organization_id,
+            domain_id=message.domain_id,
             client=client,
         )
         output = result.output
@@ -205,7 +204,7 @@ def classify_message(message: Message, *, client: OpenAI | None = None) -> Class
                 previous.is_current = False
                 previous.save(update_fields=("is_current", "updated_at"))
             classification = Classification.objects.create(
-                organization=message.organization,
+                domain=message.domain,
                 message=message,
                 source=Classification.Source.AGENT,
                 category=output.category.value,
@@ -226,7 +225,7 @@ def classify_message(message: Message, *, client: OpenAI | None = None) -> Class
             update_fields=("status", "input_tokens", "output_tokens", "completed_at", "updated_at")
         )
         AuditEvent.objects.create(
-            organization=message.organization,
+            domain=message.domain,
             actor_type=AuditEvent.ActorType.AGENT,
             event_type="message.classified",
             object_type="Classification",
@@ -262,8 +261,7 @@ def generate_draft_output(message: Message, *, client: OpenAI | None = None) -> 
         )
     user_input += "END UNTRUSTED CONVERSATION DATA"
     run = AgentRun.objects.create(
-        organization=message.organization,
-        project=message.project,
+        domain=message.domain,
         kind=AgentRun.Kind.DRAFT,
         status=AgentRun.Status.RUNNING,
         model_name=settings.OPENAI_DRAFT_MODEL,
@@ -279,7 +277,7 @@ def generate_draft_output(message: Message, *, client: OpenAI | None = None) -> 
             instructions=DRAFT_INSTRUCTIONS,
             user_input=user_input,
             schema=DraftOutput,
-            organization_id=message.organization_id,
+            domain_id=message.domain_id,
             client=client,
             max_output_tokens=5000,
         )
@@ -289,7 +287,7 @@ def generate_draft_output(message: Message, *, client: OpenAI | None = None) -> 
         run.completed_at = timezone.now()
         run.save(update_fields=("status", "error_code", "completed_at", "updated_at"))
         AuditEvent.objects.create(
-            organization=message.organization,
+            domain=message.domain,
             actor_type=AuditEvent.ActorType.AGENT,
             event_type="agent.draft_failed",
             object_type="AgentRun",
@@ -306,7 +304,7 @@ def generate_draft_output(message: Message, *, client: OpenAI | None = None) -> 
         update_fields=("status", "input_tokens", "output_tokens", "completed_at", "updated_at")
     )
     AuditEvent.objects.create(
-        organization=message.organization,
+        domain=message.domain,
         actor_type=AuditEvent.ActorType.AGENT,
         event_type="agent.draft_completed",
         object_type="AgentRun",
@@ -321,13 +319,13 @@ def generate_draft_output(message: Message, *, client: OpenAI | None = None) -> 
 
 def generate_report_output(
     *,
-    organization: Organization,
+    domain: Domain,
     schedule_key: str,
     input_text: str,
     client: OpenAI | None = None,
 ) -> tuple[ReportOutput, AgentRun]:
     run, _ = AgentRun.objects.update_or_create(
-        organization=organization,
+        domain=domain,
         kind=AgentRun.Kind.REPORT,
         schedule_key=schedule_key,
         defaults={
@@ -350,7 +348,7 @@ def generate_report_output(
             instructions=REPORT_INSTRUCTIONS,
             user_input=input_text,
             schema=ReportOutput,
-            organization_id=organization.id,
+            domain_id=domain.id,
             client=client,
             max_output_tokens=7000,
         )
@@ -360,7 +358,7 @@ def generate_report_output(
         run.completed_at = timezone.now()
         run.save(update_fields=("status", "error_code", "completed_at", "updated_at"))
         AuditEvent.objects.create(
-            organization=organization,
+            domain=domain,
             actor_type=AuditEvent.ActorType.AGENT,
             event_type="agent.report_failed",
             object_type="AgentRun",
@@ -377,7 +375,7 @@ def generate_report_output(
         update_fields=("status", "input_tokens", "output_tokens", "completed_at", "updated_at")
     )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=domain,
         actor_type=AuditEvent.ActorType.AGENT,
         event_type="agent.report_completed",
         object_type="AgentRun",

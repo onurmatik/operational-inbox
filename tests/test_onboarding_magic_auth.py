@@ -12,26 +12,23 @@ from django.utils import timezone
 from freezegun import freeze_time
 from sesame.utils import get_query_string, get_token
 
-from inbox.models import Organization, Project, ReportSchedule, RetentionPolicy, User
+from inbox.models import Domain, ReportSchedule, RetentionPolicy, User
 
 MAGIC_LINK_SCOPE = "operational-inbox-login"
 LOCMEM_EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
 
 
-def _workspace_for(user: User) -> tuple[Organization, Project]:
-    organization = Organization.objects.create(
+def _workspace_for(user: User) -> Domain:
+    domain = Domain.objects.create(
         owner=user,
-        name="Magic Link Operations",
-        slug=f"magic-{str(user.pk)[:8]}",
+        hostname=f"magic-{str(user.pk)[:8]}.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now(),
     )
-    project = Project.objects.create(
-        organization=organization,
-        name="Primary Operations",
-        slug="primary",
-    )
-    ReportSchedule.objects.create(organization=organization)
-    RetentionPolicy.objects.create(organization=organization)
-    return organization, project
+    ReportSchedule.objects.create(domain=domain)
+    RetentionPolicy.objects.create(domain=domain)
+    return domain
 
 
 def _callback_for(user: User, *, scope: str = MAGIC_LINK_SCOPE, next_url: str = "") -> str:
@@ -118,7 +115,7 @@ def test_signup_collects_only_an_email_address(client):
 
 @pytest.mark.django_db
 @override_settings(EMAIL_BACKEND=LOCMEM_EMAIL_BACKEND)
-def test_magic_link_request_creates_passwordless_defaults_once(client, mailoutbox):
+def test_magic_link_request_creates_passwordless_user_without_domain(client, mailoutbox):
     first = client.post(reverse("signup"), {"email": " New.Owner@EXAMPLE.com "})
     second = client.post(reverse("signup"), {"email": "new.owner@example.com"})
 
@@ -129,16 +126,15 @@ def test_magic_link_request_creates_passwordless_defaults_once(client, mailoutbo
     assert user.email_verified_at is None
     assert not user.has_usable_password()
     assert User.objects.filter(email=user.email).count() == 1
-    assert Organization.objects.filter(owner=user).count() == 1
-    assert Project.objects.filter(organization__owner=user).count() == 1
-    assert ReportSchedule.objects.filter(organization__owner=user).count() == 1
-    assert RetentionPolicy.objects.filter(organization__owner=user).count() == 1
+    assert not Domain.objects.filter(owner=user).exists()
+    assert not ReportSchedule.objects.filter(domain__owner=user).exists()
+    assert not RetentionPolicy.objects.filter(domain__owner=user).exists()
     assert len(mailoutbox) == 2
 
 
 @pytest.mark.django_db
 @override_settings(EMAIL_BACKEND=LOCMEM_EMAIL_BACKEND)
-def test_magic_link_request_adds_missing_defaults_for_existing_user_idempotently(
+def test_magic_link_request_keeps_existing_user_domainless_idempotently(
     client, mailoutbox
 ):
     user = User.objects.create_user(email="existing@example.com", password="Legacy-password-123")
@@ -150,10 +146,7 @@ def test_magic_link_request_adds_missing_defaults_for_existing_user_idempotently
     assert second.status_code == 200
     user.refresh_from_db()
     assert user.is_active
-    assert Organization.objects.filter(owner=user).count() == 1
-    assert Project.objects.filter(organization__owner=user).count() == 1
-    assert ReportSchedule.objects.filter(organization__owner=user).count() == 1
-    assert RetentionPolicy.objects.filter(organization__owner=user).count() == 1
+    assert not Domain.objects.filter(owner=user).exists()
     assert len(mailoutbox) == 2
 
 
@@ -183,7 +176,6 @@ def test_valid_magic_link_logs_in_verifies_and_carries_domain_to_creation(client
     assert requested.status_code == 200
 
     user = User.objects.get(email="domain-owner@example.com")
-    organization = Organization.objects.get(owner=user)
     callback = client.get(_local_url(_email_url(mailoutbox[0])))
 
     assert callback.status_code == 302
@@ -191,7 +183,7 @@ def test_valid_magic_link_logs_in_verifies_and_carries_domain_to_creation(client
     user.refresh_from_db()
     assert user.email_verified_at is not None
     assert client.session["_auth_user_id"] == str(user.pk)
-    assert client.session["organization_id"] == str(organization.pk)
+    assert "domain_id" not in client.session
     domain_create = client.get(reverse("domain_create"))
     assert domain_create.status_code == 200
     assert domain_create.context["form"]["hostname"].value() == "mail.example.com"
@@ -365,7 +357,7 @@ def test_inactive_already_verified_user_is_not_reactivated_or_issued_magic_link(
     user.refresh_from_db()
     assert not user.is_active
     assert user.has_usable_password()
-    assert not Organization.objects.filter(owner=user).exists()
+    assert not Domain.objects.filter(owner=user).exists()
     assert len(mailoutbox) == 1
     assert reverse("sesame_login") not in mailoutbox[0].body
 
@@ -385,7 +377,7 @@ def test_privileged_accounts_do_not_receive_public_magic_links(client, mailoutbo
     user.refresh_from_db()
     assert user.is_active
     assert user.has_usable_password()
-    assert not Organization.objects.filter(owner=user).exists()
+    assert not Domain.objects.filter(owner=user).exists()
     assert len(mailoutbox) == 1
     assert reverse("sesame_login") not in mailoutbox[0].body
 
@@ -402,7 +394,7 @@ def test_magic_link_is_rejected_if_user_is_promoted_before_callback(client):
     _assert_invalid_link_redirect(response, client)
     user.refresh_from_db()
     assert user.email_verified_at is None
-    assert not Organization.objects.filter(owner=user).exists()
+    assert not Domain.objects.filter(owner=user).exists()
 
 
 @pytest.mark.django_db

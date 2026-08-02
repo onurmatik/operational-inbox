@@ -130,7 +130,7 @@ def test_bucket_location_is_not_constrained_by_an_object_prefix() -> None:
     )
     assert listing["Action"] == "s3:ListBucket"
     assert listing["Condition"] == {
-        "StringLike": {"s3:prefix": ["ingress/*", "organizations/*", "backups/*"]}
+        "StringLike": {"s3:prefix": ["ingress/*", "domains/*", "backups/*"]}
     }
 
 

@@ -54,27 +54,32 @@ from tests.test_ingestion import BUCKET, DELIVERY_TOPIC, FakeS3, create_route, s
 
 
 def _ready_outbound(owner, organization, project, conversation, inbound_message):
-    Domain.objects.create(
-        organization=organization,
-        project=project,
-        hostname="example.org",
-        setup_mode=Domain.SetupMode.DIRECT_MX,
-        status=Domain.Status.READY,
-        ownership_verified=True,
-        inbound_ready=True,
-        outbound_ready=True,
-        claim_expires_at=timezone.now() + timedelta(days=1),
+    project.hostname = "example.org"
+    project.setup_mode = Domain.SetupMode.DIRECT_MX
+    project.status = Domain.Status.READY
+    project.ownership_verified = True
+    project.inbound_ready = True
+    project.outbound_ready = True
+    project.save(
+        update_fields=(
+            "hostname",
+            "setup_mode",
+            "status",
+            "ownership_verified",
+            "inbound_ready",
+            "outbound_ready",
+            "updated_at",
+        )
     )
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -124,8 +129,7 @@ def test_deploy_contract_uses_ephemeral_github_app_auth_and_fixed_mail_backend()
 def test_expired_claim_releases_hostname_and_disables_routes(monkeypatch, organization, project):
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     expired = create_domain(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="reclaim.example",
         setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
     )
@@ -138,8 +142,7 @@ def test_expired_claim_releases_hostname_and_disables_routes(monkeypatch, organi
     assert expired.status == Domain.Status.DISABLED
     assert not expired.inbound_routes.filter(is_active=True).exists()
     replacement = create_domain(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="reclaim.example",
         setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
     )
@@ -149,15 +152,13 @@ def test_expired_claim_releases_hostname_and_disables_routes(monkeypatch, organi
 @pytest.mark.django_db
 def test_domain_readiness_is_derived_separately(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="ready.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PENDING_DNS,
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
     ownership = DomainDNSRecord.objects.create(
-        organization=organization,
         domain=domain,
         purpose=DomainDNSRecord.Purpose.OWNERSHIP,
         record_type="TXT",
@@ -166,7 +167,6 @@ def test_domain_readiness_is_derived_separately(organization, project):
         status=DomainDNSRecord.Status.VALID,
     )
     mx = DomainDNSRecord.objects.create(
-        organization=organization,
         domain=domain,
         purpose=DomainDNSRecord.Purpose.MX,
         record_type="MX",
@@ -176,7 +176,6 @@ def test_domain_readiness_is_derived_separately(organization, project):
         status=DomainDNSRecord.Status.VALID,
     )
     DomainTest.objects.create(
-        organization=organization,
         domain=domain,
         token_hash="a" * 64,
         status=DomainTest.Status.RECEIVED,
@@ -209,8 +208,7 @@ def test_domain_readiness_is_derived_separately(organization, project):
 @pytest.mark.parametrize("setup_mode", Domain.SetupMode.values)
 def test_delivery_test_targets_the_customer_path(organization, project, setup_mode):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname=f"{setup_mode.casefold().replace('_', '-')}.example",
         setup_mode=setup_mode,
         status=Domain.Status.PENDING_TEST,
@@ -220,7 +218,6 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
     )
     local_part = f"route-{domain.id.hex[:12]}"
     InboundRoute.objects.create(
-        organization=organization,
         domain=domain,
         kind=InboundRoute.Kind.DIRECT_DOMAIN,
         local_part=local_part,
@@ -254,8 +251,7 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
 )
 def test_delivery_test_rejects_premature_domain_states(organization, project, status):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname=f"{status.casefold().replace('_', '-')}.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=status,
@@ -321,10 +317,9 @@ def test_new_inbound_message_marks_existing_draft_stale(owner, organization, pro
     first_id = "<thread-first@example.net>"
     s3 = FakeS3(_threaded_email(first_id))
     assert process_sqs_body(sns_body([route_address]), s3_client=s3)
-    message = Message.objects.get(project=project)
+    message = Message.objects.get(domain=project)
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=message.conversation,
         context_message=message,
     )
@@ -413,7 +408,7 @@ def test_retention_redacts_normalized_personal_content(
     inbound_message.received_at = old
     inbound_message.save(update_fields=("received_at", "updated_at"))
     classification = Classification.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         source=Classification.Source.OWNER,
         category=Classification.Category.ACTIONABLE,
@@ -422,7 +417,7 @@ def test_retention_redacts_normalized_personal_content(
         recommended_action="Personal action",
     )
     attachment = Attachment.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         display_name="customer-name.txt",
         content_type="text/plain",
@@ -433,8 +428,7 @@ def test_retention_redacts_normalized_personal_content(
         purge_at=timezone.now() + timedelta(days=90),
     )
     notification = Notification.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         channel=Notification.Channel.IN_APP,
         kind="sensitive",
@@ -444,7 +438,7 @@ def test_retention_redacts_normalized_personal_content(
     )
     Notification.objects.filter(id=notification.id).update(created_at=old)
     report = Report.objects.create(
-        organization=organization,
+        domain=organization,
         kind=Report.Kind.DAILY,
         schedule_key="old-retention-report",
         period_start=old - timedelta(days=1),
@@ -454,7 +448,7 @@ def test_retention_redacts_normalized_personal_content(
         content="Sensitive report content",
     )
     report_item = ReportItem.objects.create(
-        organization=organization,
+        domain=organization,
         report=report,
         conversation=conversation,
         classification=classification,
@@ -500,15 +494,15 @@ def test_signup_rate_limit_is_durable_and_returns_retry_after(client):
 @pytest.mark.django_db
 def test_disabled_tenant_invalidates_bearer_token(client, owner, organization):
     _, raw = APIToken.issue(
-        organization=organization,
+        domain=organization,
         owner=owner,
         name="Read",
         scopes=[APIToken.Scope.READ],
     )
-    organization.is_active = False
-    organization.save(update_fields=("is_active", "updated_at"))
+    organization.status = Domain.Status.DISABLED
+    organization.save(update_fields=("status", "updated_at"))
     response = client.get(
-        f"/api/v1/organizations/{organization.id}/projects",
+        f"/api/v1/domains/{organization.id}",
         headers={"Authorization": f"Bearer {raw}"},
     )
     assert response.status_code == 401

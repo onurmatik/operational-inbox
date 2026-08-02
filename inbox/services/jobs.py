@@ -14,7 +14,6 @@ from inbox.models import (
     DurableJob,
     Message,
     Notification,
-    Organization,
     OutboundMessage,
     Report,
 )
@@ -29,8 +28,8 @@ from inbox.services.outbound import recover_stale_submissions, submit_outbound
 from inbox.services.receipt_rules import reconcile_receipt_rule
 from inbox.services.reports import (
     daily_report_due,
+    domain_zone,
     generate_report,
-    organization_zone,
     schedule_key,
 )
 
@@ -46,12 +45,12 @@ RETRYABLE_DOMAIN_PROVISION_ERROR_CODES = frozenset(
 
 
 def enqueue_job(
-    *, kind: str, idempotency_key: str, payload: dict[str, Any], organization=None, due_at=None
+    *, kind: str, idempotency_key: str, payload: dict[str, Any], domain=None, due_at=None
 ) -> DurableJob:
     job, _ = DurableJob.objects.get_or_create(
         idempotency_key=idempotency_key,
         defaults={
-            "organization": organization,
+            "domain": domain,
             "kind": kind,
             "payload": payload,
             "due_at": due_at or timezone.now(),
@@ -111,7 +110,7 @@ def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]
             kind="provision_domain",
             idempotency_key=(f"provision-domain:{locked_domain.id}:retry:{retry_generation}"),
             payload={"domain_id": str(locked_domain.id)},
-            organization=locked_domain.organization,
+            domain=locked_domain,
         )
         return locked_domain, job, True
 
@@ -135,16 +134,18 @@ def schedule_work(now=None) -> int:
             kind="classify_message",
             idempotency_key=f"classify:{message.id}",
             payload={"message_id": str(message.id)},
-            organization=message.organization,
+            domain=message.domain,
         )
         count += 1
-    for organization in Organization.objects.filter(is_active=True).select_related(
+    for domain in Domain.objects.exclude(status=Domain.Status.DISABLED).select_related(
         "report_schedule"
     ):
-        schedule = organization.report_schedule
+        from inbox.models import ReportSchedule
+
+        schedule, _ = ReportSchedule.objects.get_or_create(domain=domain)
         if not schedule.is_enabled:
             continue
-        create_aging_notifications(organization, now=now)
+        create_aging_notifications(domain, now=now)
         if schedule.review_frequency == schedule.Frequency.HOURLY:
             scheduled_times: list[datetime] = []
             current_hour = now.replace(minute=0, second=0, microsecond=0)
@@ -158,31 +159,31 @@ def schedule_work(now=None) -> int:
                     scheduled_times.append(candidate)
                     candidate += timedelta(hours=1)
             for scheduled_for in scheduled_times:
-                key = schedule_key(organization, Report.Kind.HOURLY, scheduled_for)
+                key = schedule_key(domain, Report.Kind.HOURLY, scheduled_for)
                 enqueue_job(
                     kind="generate_report",
-                    idempotency_key=f"report:{organization.id}:hourly:{key}",
+                    idempotency_key=f"report:{domain.id}:hourly:{key}",
                     payload={
-                        "organization_id": str(organization.id),
+                        "domain_id": str(domain.id),
                         "kind": Report.Kind.HOURLY,
                         "scheduled_for": scheduled_for.isoformat(),
                     },
-                    organization=organization,
+                    domain=domain,
                 )
                 count += 1
         if schedule.review_frequency == schedule.Frequency.DAILY and daily_report_due(
-            organization, now
+            domain, now
         ):
-            key = schedule_key(organization, Report.Kind.DAILY, now)
+            key = schedule_key(domain, Report.Kind.DAILY, now)
             enqueue_job(
                 kind="generate_report",
-                idempotency_key=f"report:{organization.id}:daily:{key}",
+                idempotency_key=f"report:{domain.id}:daily:{key}",
                 payload={
-                    "organization_id": str(organization.id),
+                    "domain_id": str(domain.id),
                     "kind": Report.Kind.DAILY,
                     "scheduled_for": now.isoformat(),
                 },
-                organization=organization,
+                domain=domain,
             )
             count += 1
     for outbound in OutboundMessage.objects.filter(status=OutboundMessage.Status.QUEUED):
@@ -190,7 +191,7 @@ def schedule_work(now=None) -> int:
             kind="send_outbound",
             idempotency_key=f"outbound:{outbound.id}",
             payload={"outbound_id": str(outbound.id)},
-            organization=outbound.organization,
+            domain=outbound.domain,
         )
         count += 1
     for notification in Notification.objects.filter(
@@ -200,7 +201,7 @@ def schedule_work(now=None) -> int:
             kind="send_notification",
             idempotency_key=f"notification:{notification.id}",
             payload={"notification_id": str(notification.id)},
-            organization=notification.organization,
+            domain=notification.domain,
         )
         count += 1
     return count
@@ -214,19 +215,19 @@ def _handle(job: DurableJob) -> None:
             raise RuntimeError("Classification remains unavailable.")
         create_classification_notifications(classification)
     elif job.kind == "generate_report":
-        organization = Organization.objects.get(id=job.payload["organization_id"])
+        domain = Domain.objects.get(id=job.payload["domain_id"])
         scheduled_for = datetime.fromisoformat(job.payload["scheduled_for"])
         report = generate_report(
-            organization=organization,
+            domain=domain,
             kind=job.payload["kind"],
             now=scheduled_for,
         )
-        schedule = organization.report_schedule
+        schedule = domain.report_schedule
         if schedule.last_review_at is None or report.period_end > schedule.last_review_at:
             schedule.last_review_at = report.period_end
         if report.kind == Report.Kind.DAILY:
             schedule.last_daily_report_local_date = report.period_end.astimezone(
-                organization_zone(organization)
+                domain_zone(domain)
             ).date()
         schedule.save(
             update_fields=("last_review_at", "last_daily_report_local_date", "updated_at")
@@ -239,8 +240,6 @@ def _handle(job: DurableJob) -> None:
         ):
             raise RuntimeError("Notification delivery failed.")
     elif job.kind == "provision_domain":
-        from inbox.models import Domain
-
         provision_ses_identity(Domain.objects.get(id=job.payload["domain_id"]))
     elif job.kind == "dns_check":
         from django.core.management import call_command
@@ -272,7 +271,7 @@ def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
     domain.save(update_fields=("status", "error_code", "error_message", "updated_at"))
     if terminal:
         AuditEvent.objects.create(
-            organization=domain.organization,
+            domain=domain,
             actor_type=AuditEvent.ActorType.SYSTEM,
             event_type="domain.provision_failed",
             object_type="Domain",

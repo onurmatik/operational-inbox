@@ -90,92 +90,6 @@ class UUIDTimeStampedModel(models.Model):
         abstract = True
 
 
-class Organization(UUIDTimeStampedModel):
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="organizations"
-    )
-    name = models.CharField(max_length=120)
-    slug = models.SlugField(max_length=80)
-    timezone = models.CharField(max_length=64, default="UTC")
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=("owner", "slug"), name="uniq_owner_org_slug")
-        ]
-        ordering = ("name",)
-
-    def __str__(self) -> str:
-        return self.name
-
-
-class OrganizationScopedModel(UUIDTimeStampedModel):
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, related_name="+")
-
-    class Meta:
-        abstract = True
-
-
-class ProjectScopedModel(OrganizationScopedModel):
-    project = models.ForeignKey("Project", on_delete=models.CASCADE, related_name="+")
-
-    class Meta:
-        abstract = True
-
-    def clean(self) -> None:
-        super().clean()
-        if self.project_id and self.organization_id:
-            project_org_id = self.project.organization_id
-            if project_org_id != self.organization_id:
-                raise ValidationError("Project and object must belong to the same organization.")
-
-
-class Project(OrganizationScopedModel):
-    name = models.CharField(max_length=120)
-    slug = models.SlugField(max_length=80)
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("organization", "slug"), name="uniq_organization_project_slug"
-            )
-        ]
-        ordering = ("name",)
-
-    def __str__(self) -> str:
-        return self.name
-
-
-class ReportSchedule(OrganizationScopedModel):
-    class Frequency(models.TextChoices):
-        HOURLY = "HOURLY", "Hourly"
-        DAILY = "DAILY", "Daily"
-
-    organization = models.OneToOneField(
-        Organization, on_delete=models.CASCADE, related_name="report_schedule"
-    )
-    review_frequency = models.CharField(
-        max_length=10, choices=Frequency.choices, default=Frequency.HOURLY
-    )
-    daily_report_time = models.TimeField(default="09:00")
-    aging_reminder_hours = models.PositiveSmallIntegerField(default=24)
-    is_enabled = models.BooleanField(default=True)
-    last_review_at = models.DateTimeField(null=True, blank=True)
-    last_daily_report_local_date = models.DateField(null=True, blank=True)
-
-
-class RetentionPolicy(OrganizationScopedModel):
-    organization = models.OneToOneField(
-        Organization, on_delete=models.CASCADE, related_name="retention_policy"
-    )
-    raw_message_days = models.PositiveSmallIntegerField(default=90)
-    attachment_days = models.PositiveSmallIntegerField(default=90)
-    normalized_content_days = models.PositiveSmallIntegerField(default=365)
-    audit_metadata_days = models.PositiveSmallIntegerField(default=730)
-    delivery_metadata_days = models.PositiveSmallIntegerField(default=730)
-
-
 class EmailVerificationToken(UUIDTimeStampedModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
     token_hash = models.CharField(max_length=64, unique=True)
@@ -210,7 +124,7 @@ class SignupAttempt(UUIDTimeStampedModel):
         ]
 
 
-class Domain(ProjectScopedModel):
+class Domain(UUIDTimeStampedModel):
     class SetupMode(models.TextChoices):
         DIRECT_MX = "DIRECT_MX", "Direct routing to Operational Inbox"
         PROVIDER_FORWARD = "PROVIDER_FORWARD", "Provider catch-all forwarding"
@@ -229,7 +143,11 @@ class Domain(ProjectScopedModel):
         ADOPTION_PENDING = "ADOPTION_PENDING", "Existing identity; ownership pending"
         ADOPTED = "ADOPTED", "Existing identity; ownership verified"
 
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="domains"
+    )
     hostname = models.CharField(max_length=253)
+    timezone = models.CharField(max_length=64, default="UTC")
     setup_mode = models.CharField(max_length=24, choices=SetupMode.choices)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PROVISIONING)
     ownership_verified = models.BooleanField(default=False)
@@ -290,7 +208,43 @@ class Domain(ProjectScopedModel):
         )
 
 
-class DomainDNSRecord(OrganizationScopedModel):
+class DomainScopedModel(UUIDTimeStampedModel):
+    domain = models.ForeignKey(Domain, on_delete=models.CASCADE, related_name="+")
+
+    class Meta:
+        abstract = True
+
+
+class ReportSchedule(DomainScopedModel):
+    class Frequency(models.TextChoices):
+        HOURLY = "HOURLY", "Hourly"
+        DAILY = "DAILY", "Daily"
+
+    domain = models.OneToOneField(
+        Domain, on_delete=models.CASCADE, related_name="report_schedule"
+    )
+    review_frequency = models.CharField(
+        max_length=10, choices=Frequency.choices, default=Frequency.HOURLY
+    )
+    daily_report_time = models.TimeField(default="09:00")
+    aging_reminder_hours = models.PositiveSmallIntegerField(default=24)
+    is_enabled = models.BooleanField(default=True)
+    last_review_at = models.DateTimeField(null=True, blank=True)
+    last_daily_report_local_date = models.DateField(null=True, blank=True)
+
+
+class RetentionPolicy(DomainScopedModel):
+    domain = models.OneToOneField(
+        Domain, on_delete=models.CASCADE, related_name="retention_policy"
+    )
+    raw_message_days = models.PositiveSmallIntegerField(default=90)
+    attachment_days = models.PositiveSmallIntegerField(default=90)
+    normalized_content_days = models.PositiveSmallIntegerField(default=365)
+    audit_metadata_days = models.PositiveSmallIntegerField(default=730)
+    delivery_metadata_days = models.PositiveSmallIntegerField(default=730)
+
+
+class DomainDNSRecord(DomainScopedModel):
     class Purpose(models.TextChoices):
         OWNERSHIP = "OWNERSHIP", "Ownership"
         SES_VERIFICATION = "SES_VERIFICATION", "Operational Inbox verification"
@@ -326,13 +280,8 @@ class DomainDNSRecord(OrganizationScopedModel):
             )
         ]
 
-    def clean(self) -> None:
-        super().clean()
-        if self.domain_id and self.organization_id != self.domain.organization_id:
-            raise ValidationError("Domain and DNS record must belong to the same organization.")
 
-
-class InboundRoute(OrganizationScopedModel):
+class InboundRoute(DomainScopedModel):
     class Kind(models.TextChoices):
         DIRECT_DOMAIN = "DIRECT_DOMAIN", "Direct domain"
         FORWARDING_ALIAS = "FORWARDING_ALIAS", "Forwarding alias"
@@ -347,13 +296,8 @@ class InboundRoute(OrganizationScopedModel):
     class Meta:
         indexes = [models.Index(fields=("address", "is_active"))]
 
-    def clean(self) -> None:
-        super().clean()
-        if self.domain_id and self.organization_id != self.domain.organization_id:
-            raise ValidationError("Domain and route must belong to the same organization.")
 
-
-class DomainTest(OrganizationScopedModel):
+class DomainTest(DomainScopedModel):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         RECEIVED = "RECEIVED", "Received"
@@ -367,12 +311,6 @@ class DomainTest(OrganizationScopedModel):
         "Message", on_delete=models.SET_NULL, null=True, blank=True, related_name="domain_tests"
     )
 
-    def clean(self) -> None:
-        super().clean()
-        if self.domain_id and self.organization_id != self.domain.organization_id:
-            raise ValidationError("Domain and test must belong to the same organization.")
-
-
 class IngressEvent(UUIDTimeStampedModel):
     class Status(models.TextChoices):
         RECEIVED = "RECEIVED", "Received"
@@ -381,13 +319,6 @@ class IngressEvent(UUIDTimeStampedModel):
         RETRY = "RETRY", "Retry"
         QUARANTINED = "QUARANTINED", "Quarantined"
 
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="ingress_events",
-    )
     sns_message_id = models.CharField(max_length=128, unique=True)
     ses_message_id = models.CharField(max_length=128, db_index=True)
     source_topic_arn = models.CharField(max_length=512)
@@ -401,7 +332,7 @@ class IngressEvent(UUIDTimeStampedModel):
     processed_at = models.DateTimeField(null=True, blank=True)
 
 
-class Conversation(ProjectScopedModel):
+class Conversation(DomainScopedModel):
     class Status(models.TextChoices):
         OPEN = "OPEN", "Open"
         WAITING_EXTERNAL = "WAITING_EXTERNAL", "Waiting for external reply"
@@ -427,10 +358,10 @@ class Conversation(ProjectScopedModel):
 
     class Meta:
         ordering = ("-last_message_at",)
-        indexes = [models.Index(fields=("organization", "project", "status", "-last_message_at"))]
+        indexes = [models.Index(fields=("domain", "status", "-last_message_at"))]
 
 
-class Message(ProjectScopedModel):
+class Message(DomainScopedModel):
     class Direction(models.TextChoices):
         INBOUND = "INBOUND", "Inbound"
         OUTBOUND = "OUTBOUND", "Outbound"
@@ -474,25 +405,24 @@ class Message(ProjectScopedModel):
         ordering = ("received_at", "created_at")
         constraints = [
             models.UniqueConstraint(
-                fields=("project", "provider_message_id"), name="uniq_project_provider_message"
+                fields=("domain", "provider_message_id"), name="uniq_domain_provider_message"
             )
         ]
         indexes = [
-            models.Index(fields=("organization", "project", "-received_at")),
+            models.Index(fields=("domain", "-received_at")),
             models.Index(fields=("conversation", "direction", "-received_at")),
         ]
 
     def clean(self) -> None:
         super().clean()
         if self.conversation_id and (
-            self.conversation.organization_id != self.organization_id
-            or self.conversation.project_id != self.project_id
+            self.conversation.domain_id != self.domain_id
         ):
-            raise ValidationError("Conversation and message must share organization and project.")
+            raise ValidationError("Conversation and message must belong to the same domain.")
         reject_header_injection(self.subject, "subject")
 
 
-class MessageRecipient(OrganizationScopedModel):
+class MessageRecipient(DomainScopedModel):
     class Kind(models.TextChoices):
         ENVELOPE = "ENVELOPE", "Envelope recipient"
         TO = "TO", "To"
@@ -513,11 +443,11 @@ class MessageRecipient(OrganizationScopedModel):
 
     def clean(self) -> None:
         super().clean()
-        if self.message_id and self.organization_id != self.message.organization_id:
-            raise ValidationError("Message and recipient must belong to the same organization.")
+        if self.message_id and self.domain_id != self.message.domain_id:
+            raise ValidationError("Message and recipient must belong to the same domain.")
 
 
-class MessageReference(OrganizationScopedModel):
+class MessageReference(DomainScopedModel):
     class Kind(models.TextChoices):
         MESSAGE_ID = "MESSAGE_ID", "Message-ID"
         IN_REPLY_TO = "IN_REPLY_TO", "In-Reply-To"
@@ -537,7 +467,7 @@ class MessageReference(OrganizationScopedModel):
         ]
 
 
-class Attachment(OrganizationScopedModel):
+class Attachment(DomainScopedModel):
     class ScanStatus(models.TextChoices):
         CLEAN = "CLEAN", "Clean"
         QUARANTINED = "QUARANTINED", "Quarantined"
@@ -558,10 +488,10 @@ class Attachment(OrganizationScopedModel):
     purged_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        indexes = [models.Index(fields=("organization", "scan_status", "purge_at"))]
+        indexes = [models.Index(fields=("domain", "scan_status", "purge_at"))]
 
 
-class Classification(OrganizationScopedModel):
+class Classification(DomainScopedModel):
     class Source(models.TextChoices):
         AGENT = "AGENT", "Agent"
         OWNER = "OWNER", "Owner override"
@@ -601,10 +531,10 @@ class Classification(OrganizationScopedModel):
                 name="uniq_current_message_classification",
             )
         ]
-        indexes = [models.Index(fields=("organization", "category", "urgency", "-created_at"))]
+        indexes = [models.Index(fields=("domain", "category", "urgency", "-created_at"))]
 
 
-class AgentRun(OrganizationScopedModel):
+class AgentRun(DomainScopedModel):
     class Kind(models.TextChoices):
         TRIAGE = "TRIAGE", "Triage"
         DRAFT = "DRAFT", "Draft"
@@ -617,7 +547,6 @@ class AgentRun(OrganizationScopedModel):
         FAILED = "FAILED", "Failed"
         REFUSED = "REFUSED", "Refused"
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True)
     kind = models.CharField(max_length=10, choices=Kind.choices)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.QUEUED)
     model_name = models.CharField(max_length=120)
@@ -634,7 +563,7 @@ class AgentRun(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("organization", "kind", "schedule_key"),
+                fields=("domain", "kind", "schedule_key"),
                 condition=~Q(schedule_key=""),
                 name="uniq_agent_schedule_key",
             )
@@ -649,8 +578,8 @@ class DurableJob(UUIDTimeStampedModel):
         RETRY = "RETRY", "Retry"
         FAILED = "FAILED", "Failed"
 
-    organization = models.ForeignKey(
-        Organization, on_delete=models.CASCADE, null=True, blank=True, related_name="jobs"
+    domain = models.ForeignKey(
+        Domain, on_delete=models.CASCADE, null=True, blank=True, related_name="jobs"
     )
     kind = models.CharField(max_length=64)
     idempotency_key = models.CharField(max_length=255, unique=True)
@@ -666,7 +595,7 @@ class DurableJob(UUIDTimeStampedModel):
         indexes = [models.Index(fields=("status", "due_at", "leased_until"))]
 
 
-class ReplyDraft(ProjectScopedModel):
+class ReplyDraft(DomainScopedModel):
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="reply_drafts"
     )
@@ -684,7 +613,7 @@ class ReplyDraft(ProjectScopedModel):
     rejected_at = models.DateTimeField(null=True, blank=True)
 
 
-class ReplyDraftRevision(OrganizationScopedModel):
+class ReplyDraftRevision(DomainScopedModel):
     draft = models.ForeignKey(ReplyDraft, on_delete=models.CASCADE, related_name="revisions")
     number = models.PositiveSmallIntegerField()
     subject = models.CharField(max_length=998)
@@ -703,8 +632,8 @@ class ReplyDraftRevision(OrganizationScopedModel):
 
     def clean(self) -> None:
         super().clean()
-        if self.draft_id and self.organization_id != self.draft.organization_id:
-            raise ValidationError("Draft and revision must belong to the same organization.")
+        if self.draft_id and self.domain_id != self.draft.domain_id:
+            raise ValidationError("Draft and revision must belong to the same domain.")
         reject_header_injection(self.subject, "subject")
 
     def save(self, *args: Any, **kwargs: Any) -> None:
@@ -714,7 +643,7 @@ class ReplyDraftRevision(OrganizationScopedModel):
         super().save(*args, **kwargs)
 
 
-class DraftApproval(OrganizationScopedModel):
+class DraftApproval(DomainScopedModel):
     revision = models.OneToOneField(
         ReplyDraftRevision, on_delete=models.CASCADE, related_name="approval"
     )
@@ -729,14 +658,14 @@ class DraftApproval(OrganizationScopedModel):
             return
         draft = self.revision.draft
         errors: dict[str, str] = {}
-        if self.organization_id != draft.organization_id:
-            errors["organization"] = "Approval and draft must belong to the same organization."
+        if self.domain_id != draft.domain_id:
+            errors["domain"] = "Approval and draft must belong to the same domain."
         if draft.current_revision_id != self.revision_id:
             errors["revision"] = "Only the current exact revision can be approved."
         if self.content_hash != self.revision.content_hash:
             errors["content_hash"] = "The approved content hash does not match the revision."
-        if self.approved_by_id != draft.organization.owner_id:
-            errors["approved_by"] = "Only the organization owner can approve a reply."
+        if self.approved_by_id != draft.domain.owner_id:
+            errors["approved_by"] = "Only the domain owner can approve a reply."
         if errors:
             raise ValidationError(errors)
 
@@ -746,7 +675,7 @@ class DraftApproval(OrganizationScopedModel):
         super().save(*args, **kwargs)
 
 
-class OutboundMessage(ProjectScopedModel):
+class OutboundMessage(DomainScopedModel):
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
         SUBMITTING = "SUBMITTING", "Submitting"
@@ -827,7 +756,7 @@ class OutboundMessage(ProjectScopedModel):
                 )
 
 
-class Report(OrganizationScopedModel):
+class Report(DomainScopedModel):
     class Kind(models.TextChoices):
         HOURLY = "HOURLY", "Hourly review"
         DAILY = "DAILY", "Daily report"
@@ -841,7 +770,6 @@ class Report(OrganizationScopedModel):
         AI = "AI", "AI generated"
         DETERMINISTIC = "DETERMINISTIC", "Deterministic fallback"
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True)
     kind = models.CharField(max_length=10, choices=Kind.choices)
     schedule_key = models.CharField(max_length=160)
     period_start = models.DateTimeField()
@@ -859,13 +787,13 @@ class Report(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("organization", "kind", "schedule_key"), name="uniq_report_schedule_key"
+                fields=("domain", "kind", "schedule_key"), name="uniq_report_schedule_key"
             )
         ]
         ordering = ("-period_end",)
 
 
-class ReportItem(OrganizationScopedModel):
+class ReportItem(DomainScopedModel):
     report = models.ForeignKey(Report, on_delete=models.CASCADE, related_name="items")
     conversation = models.ForeignKey(
         Conversation, on_delete=models.SET_NULL, null=True, blank=True, related_name="report_items"
@@ -887,7 +815,7 @@ class ReportItem(OrganizationScopedModel):
         ]
 
 
-class Notification(OrganizationScopedModel):
+class Notification(DomainScopedModel):
     class Channel(models.TextChoices):
         IN_APP = "IN_APP", "In application"
         EMAIL = "EMAIL", "Email"
@@ -898,7 +826,6 @@ class Notification(OrganizationScopedModel):
         FAILED = "FAILED", "Failed"
         READ = "READ", "Read"
 
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, null=True, blank=True)
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications"
     )
@@ -915,14 +842,14 @@ class Notification(OrganizationScopedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("organization", "channel", "dedupe_key"),
+                fields=("domain", "channel", "dedupe_key"),
                 name="uniq_notification_dedupe",
             )
         ]
         ordering = ("-created_at",)
 
 
-class DeliveryEvent(OrganizationScopedModel):
+class DeliveryEvent(DomainScopedModel):
     outbound_message = models.ForeignKey(
         OutboundMessage,
         on_delete=models.CASCADE,
@@ -951,7 +878,7 @@ class AuditEventQuerySet(models.QuerySet["AuditEvent"]):
         raise ValidationError("Audit events are append-only.")
 
 
-class AuditEvent(OrganizationScopedModel):
+class AuditEvent(DomainScopedModel):
     class ActorType(models.TextChoices):
         OWNER = "OWNER", "Owner"
         SYSTEM = "SYSTEM", "System"
@@ -971,7 +898,7 @@ class AuditEvent(OrganizationScopedModel):
 
     class Meta:
         ordering = ("-created_at",)
-        indexes = [models.Index(fields=("organization", "event_type", "-created_at"))]
+        indexes = [models.Index(fields=("domain", "event_type", "-created_at"))]
 
     @property
     def public_event_type(self) -> str:
@@ -990,7 +917,7 @@ class AuditEvent(OrganizationScopedModel):
         raise ValidationError("Audit events are append-only.")
 
 
-class APIToken(OrganizationScopedModel):
+class APIToken(DomainScopedModel):
     class Scope(models.TextChoices):
         READ = "read", "Read"
         WRITE = "write", "Write"
@@ -1009,7 +936,7 @@ class APIToken(OrganizationScopedModel):
     def issue(
         cls,
         *,
-        organization: Organization,
+        domain: Domain,
         owner: User,
         name: str,
         scopes: list[str],
@@ -1018,11 +945,11 @@ class APIToken(OrganizationScopedModel):
         allowed = {choice for choice, _ in cls.Scope.choices}
         if not scopes or not set(scopes).issubset(allowed):
             raise ValidationError({"scopes": "Select one or more valid token scopes."})
-        if owner.id != organization.owner_id:
-            raise ValidationError({"owner": "Only the organization owner can create API tokens."})
+        if owner.id != domain.owner_id:
+            raise ValidationError({"owner": "Only the domain owner can create API tokens."})
         raw = f"oi_{secrets.token_urlsafe(36)}"
         token = cls.objects.create(
-            organization=organization,
+            domain=domain,
             owner=owner,
             name=name,
             prefix=raw[:10],

@@ -11,9 +11,9 @@ urlpatterns = [
     path("verify/<str:token>/", views.verify_email, name="verify_email"),
     path("app/", views.dashboard, name="dashboard"),
     path(
-        "app/organizations/switch/",
-        views.organization_switch,
-        name="organization_switch",
+        "app/domains/switch/",
+        views.domain_switch,
+        name="domain_switch",
     ),
     path("app/inbox/", views.inbox_list, name="inbox"),
     path(
@@ -61,7 +61,6 @@ urlpatterns = [
         views.domain_disable,
         name="domain_disable",
     ),
-    path("app/projects/", views.projects, name="projects"),
     path("app/reports/", views.reports_list, name="reports"),
     path("app/notifications/", views.notifications_list, name="notifications"),
     path("app/settings/schedules/", views.schedules_settings, name="schedules_settings"),

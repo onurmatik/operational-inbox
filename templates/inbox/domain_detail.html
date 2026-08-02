@@ -14,7 +14,6 @@
       <h1 class="mt-3 font-heading text-3xl font-semibold">{{ domain.hostname }}</h1>
       <p class="mt-1 text-sm text-muted">
         {% if domain.setup_mode == 'DIRECT_MX' %}Incoming email routes directly to Operational Inbox{% else %}Incoming email is forwarded by your current provider{% endif %}
-        · project {{ domain.project.name }}
       </p>
     </div>
     <div class="flex flex-wrap gap-2">
@@ -23,8 +22,8 @@
           id="dns-check-button"
           type="button"
           class="oi-button-primary"
-          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
-          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-check-url="/api/v1/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/domains/{{ domain.id }}"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >I've updated DNS — Check records</button>
       {% elif domain.status == 'PENDING_TEST' %}
@@ -38,8 +37,8 @@
           id="dns-check-button"
           type="button"
           class="oi-button-secondary"
-          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
-          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-check-url="/api/v1/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/domains/{{ domain.id }}"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >Check DNS again</button>
       {% elif domain.status == 'READY' %}
@@ -47,8 +46,8 @@
           id="dns-check-button"
           type="button"
           class="oi-button-secondary"
-          data-check-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}/check"
-          data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+          data-check-url="/api/v1/domains/{{ domain.id }}/check"
+          data-detail-url="/api/v1/domains/{{ domain.id }}"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >Check DNS now</button>
       {% endif %}
@@ -63,7 +62,7 @@
       aria-live="polite"
       aria-busy="true"
       data-provisioning-poll
-      data-detail-url="/api/v1/organizations/{{ current_organization.id }}/domains/{{ domain.id }}"
+      data-detail-url="/api/v1/domains/{{ domain.id }}"
     >
       <p class="font-mono text-[10px] font-semibold uppercase tracking-[0.08em]">Automatic step</p>
       <h2 class="mt-2 font-heading text-lg font-semibold">Preparing your DNS instructions</h2>
@@ -204,16 +203,16 @@
                   </td>
                   <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
                   <td class="px-4 py-4">
-                    <div class="flex items-start gap-2">
-                      <code id="dns-name-{{ record.id }}" class="break-all font-mono text-xs">{{ record.name }}</code>
-                      <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-name-{{ record.id }}" aria-label="Copy DNS host">Copy</button>
+                    <div class="grid min-w-0 grid-cols-[minmax(0,1fr)_4.75rem] items-center gap-3">
+                      <code id="dns-name-{{ record.id }}" class="min-w-0 break-all font-mono text-xs">{{ record.name }}</code>
+                      <button type="button" class="oi-button-secondary min-h-9 w-[4.75rem] px-2 text-xs text-forest" data-copy="#dns-name-{{ record.id }}" aria-label="Copy DNS host" aria-live="polite">Copy</button>
                     </div>
                   </td>
                   <td class="px-4 py-4 font-mono">{{ record.priority|default:"—" }}</td>
                   <td class="px-4 py-4">
-                    <div class="flex items-start gap-2">
-                      <code id="dns-value-{{ record.id }}" class="max-w-md break-all bg-paper px-2 py-1 font-mono text-xs">{{ record.value }}</code>
-                      <button type="button" class="text-xs font-semibold text-forest" data-copy="#dns-value-{{ record.id }}" aria-label="Copy DNS value">Copy</button>
+                    <div class="grid min-w-0 grid-cols-[minmax(0,1fr)_4.75rem] items-center gap-3">
+                      <code id="dns-value-{{ record.id }}" class="min-w-0 max-w-md break-all bg-paper px-2 py-1 font-mono text-xs">{{ record.value }}</code>
+                      <button type="button" class="oi-button-secondary min-h-9 w-[4.75rem] px-2 text-xs text-forest" data-copy="#dns-value-{{ record.id }}" aria-label="Copy DNS value" aria-live="polite">Copy</button>
                     </div>
                   </td>
                   <td class="px-4 py-4">

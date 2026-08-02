@@ -4,34 +4,27 @@ from typing import Any
 
 from django.http import HttpRequest
 
-from inbox.models import Conversation, Notification, Project
+from inbox.models import Conversation, Domain, Notification
 
 
 def navigation_context(request: HttpRequest) -> dict[str, Any]:
     if not request.user.is_authenticated:
         return {}
-    organizations = request.user.organizations.filter(is_active=True).order_by("name")
-    organization_id = request.session.get("organization_id")
-    selected = organizations.filter(id=organization_id).first() if organization_id else None
-    selected = selected or organizations.first()
+    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
+    domain_id = request.session.get("domain_id")
+    selected = domains.filter(id=domain_id).first() if domain_id else None
+    selected = selected or domains.first()
     if selected is None:
-        return {"nav_organizations": organizations}
-    project_id = request.session.get("project_id")
-    current_project = (
-        Project.objects.filter(organization=selected, id=project_id, is_active=True).first()
-        if project_id
-        else None
-    )
+        return {"nav_domains": domains}
     return {
-        "nav_organizations": organizations,
-        "current_organization": selected,
-        "current_project": current_project,
+        "nav_domains": domains,
+        "current_domain": selected,
         "nav_unread_notifications": Notification.objects.filter(
-            organization=selected,
+            domain=selected,
             channel=Notification.Channel.IN_APP,
             read_at__isnull=True,
         ).count(),
         "nav_quarantine_count": Conversation.objects.filter(
-            organization=selected, status=Conversation.Status.QUARANTINED
+            domain=selected, status=Conversation.Status.QUARANTINED
         ).count(),
     }

@@ -21,16 +21,16 @@ English.
   django-sesame magic links for both sign-in and sign-up, and configurable abuse limits.
   The pending domain travels in short-lived, user-bound signed state so the email can be opened
   in another browser. Staff and superuser accounts remain on Django admin's password login.
-- One owner per organization, with one user able to own multiple organizations. Team roles and
-  memberships are intentionally absent from the MVP.
-- Organization/project onboarding, direct-MX and provider-forwarding domain onboarding, exact
+- One owner per domain, with one user able to own multiple domains. Team roles and memberships
+  are intentionally absent from the MVP.
+- Direct-MX and provider-forwarding domain onboarding, exact
   DNS instructions, DNS drift checks, test delivery, separate inbound/outbound readiness, and
   safe domain disablement.
 - A complete inbox with search and filters, conversation timelines, security verdicts,
   quarantined attachments, reports, notifications, settings, API-token management, and an
   append-only audit view.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
-  sanitization, message threading, multi-project delivery, and delivery-event processing.
+  sanitization, domain-local message threading, multi-domain delivery, and delivery-event processing.
 - Structured OpenAI triage, reply drafting, and report generation with a deterministic report
   fallback when OpenAI is unavailable.
 - Immutable reply revisions, exact-revision approval, explicit resend, and conservative SES
@@ -88,36 +88,36 @@ SES `receipt.recipients`, never from the untrusted MIME `To` header.
 At-least-once delivery is handled at two levels:
 
 1. SNS `MessageId` is globally unique in the ingress ledger.
-2. `(project, SES messageId)` is unique for normalized messages.
+2. `(domain, SES messageId)` is unique for normalized messages.
 
-If one SES message targets multiple projects, each project gets its own `Message`, raw MIME copy,
-and attachment copies under an organization/project S3 prefix. The SQS message is deleted only
+If one SES message targets multiple domains, each domain gets its own `Message`, raw MIME copy,
+and attachment copies under a domain S3 prefix. The SQS message is deleted only
 after every routed copy and database operation succeeds. Transient failures remain visible for
 retry; malformed or permanently invalid input leaves an inspectable quarantine event.
 
 ## Tenant and data model
 
-All tenant records use UUID primary keys and carry an `organization_id`; project-owned records
-also carry a `project_id`. Tenant resolution begins with the authenticated owner or bearer token
+All tenant records use UUID primary keys and carry a `domain_id`. Tenant resolution begins with
+the authenticated domain owner or domain-bound bearer token
 before an object identifier is accepted. Cross-tenant web and API lookups return `404`, and S3
 keys and AWS implementation details are never exposed in API errors.
 
 The model covers:
 
-- organizations, projects, report schedules, and retention policies;
-- domains, DNS instructions/results, inbound routes, and delivery tests;
+- domains, domain-specific report schedules and retention policies;
+- DNS instructions/results, inbound routes, and delivery tests;
 - conversations, messages, envelope/header recipients, RFC references, and attachments;
 - classifications, agent runs, and idempotent leased jobs;
 - reply drafts, immutable revisions, exact approvals, and outbound messages;
 - reports/items, notifications, ingress/delivery events, API tokens, and append-only audits.
 
 Conversation states are `OPEN`, `WAITING_EXTERNAL`, `RESOLVED`, and `QUARANTINED`. Threading is
-project-local: RFC `References` is considered first, then `In-Reply-To` with participant overlap.
+domain-local: RFC `References` is considered first, then `In-Reply-To` with participant overlap.
 Subject similarity can create a merge suggestion but never silently merges conversations. A new
 inbound message reopens a resolved/waiting conversation and invalidates any existing draft
 approval.
 
-The default abuse controls are 10 projects and 5 active domains per organization, 5 domain
+The default abuse controls are 5 active domains per user, 5 domain
 provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy verification-link resend
 attempts per hour, and a 72-hour unverified domain claim. All limits are configurable through
 environment variables.
@@ -192,15 +192,15 @@ scheduled reports use deterministic content. Draft generation reports itself una
 than taking external action.
 
 The default review frequency is hourly. Daily mode generates a report at 09:00 in the
-organization's time zone, including DST-safe schedule keys. Aging reminders default to 24 hours.
+domain's time zone, including DST-safe schedule keys. Aging reminders default to 24 hours.
 Important and suspicious classifications create deduplicated in-app and SES email notifications.
 
 ## Human-approved outbound mail
 
 Editing a reply creates a new immutable revision and invalidates any older approval. Only the
-organization owner—or a token with `approve_send` acting for that owner—can approve the exact
+domain owner—or a token with `approve_send` acting for that owner—can approve the exact
 current revision and content hash. The queued sender revalidates the approval, draft freshness,
-organization owner, and domain ownership/outbound readiness immediately before submission.
+domain owner and domain ownership/outbound readiness immediately before submission.
 
 Outbound status is tracked as:
 
@@ -295,7 +295,7 @@ python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
 [`.env.example`](.env.example) is the authoritative runtime contract. Important groups are:
 
 - Django host, CSRF, HTTPS/cookie, database, email backend, and public URL settings;
-- organization/domain/signup/verification-resend limits and `INBOUND_SERVICE_DOMAIN`;
+- domain/signup/verification-resend limits and `INBOUND_SERVICE_DOMAIN`;
 - dedicated AWS `us-east-1` credentials plus bucket, queue, topic, configuration-set, and
   receipt-rule names;
 - OpenAI API key and model names;
@@ -323,8 +323,8 @@ SQLite is the only configured application database. It uses WAL, a 20-second bus
 ## API
 
 The Django Ninja API is mounted at `/api/v1`; interactive OpenAPI documentation is available at
-`/api/v1/docs` when the application is running. It exposes tenant-scoped organizations/projects,
-domains/checks/tests, conversations/messages, classification overrides, drafts/revisions/exact
+`/api/v1/docs` when the application is running. It exposes domains/checks/tests and domain-scoped
+conversations/messages, classification overrides, drafts/revisions/exact
 approval, outbound status/resend, reports, notifications, audits, API tokens, and attachment
 download authorization.
 
@@ -336,7 +336,7 @@ Authorization: Bearer oi_<one-time-secret>
 ```
 
 Only the hash and a short lookup prefix are stored. The raw token is displayed once. Tokens are
-organization-bound, independently revocable, invalid when the owner/organization is inactive,
+domain-bound, independently revocable, invalid when the owner or domain is inactive,
 and limited to `read`, `write`, and/or `approve_send`.
 
 Conversation lists use opaque signed cursors. API failures have one stable envelope:
@@ -352,7 +352,7 @@ Conversation lists use opaque signed cursors. API failures have one stable envel
 
 ## Retention and recovery
 
-Each organization receives these default retention periods:
+Each domain receives these default retention periods:
 
 | Data | Default |
 | --- | ---: |
@@ -365,7 +365,7 @@ The S3 bucket enforces the raw/attachment and backup lifecycles. The retention c
 objects and redacts normalized database content, recipients, classifications, draft/outbound
 bodies, report/notification content, and expired metadata. Ingress bucket/key locations are
 redacted when raw-message retention expires; old ingress events and terminal jobs expire with the
-organization's metadata policy. Organization-less records use the longest configured policy or
+domain's metadata policy. Domain-less records use the longest configured policy or
 the model default so one tenant cannot shorten another tenant's retention. Signup-attempt records
 expire after the configured rate-limit window, and used or expired verification tokens are
 deleted. Active/retry jobs are never removed by age. Audit events are append-only during normal
@@ -458,7 +458,7 @@ Do not change the existing root MX records for `operationalinbox.com`.
 5. Verify HTTPS and both `/health/live` and `/health/ready`.
 6. Confirm the minute cron consumes SQS, leaves the DLQ empty, and meets the 90-second inbound
    acceptance target.
-7. Exercise the complete path: enter domain -> request magic link -> organization/project defaults
+7. Exercise the complete path: enter domain -> request magic link -> domain setup
    -> choose the safe domain setup mode -> DNS checklist -> catch-all test -> inbox -> triage ->
    report -> draft -> exact approval -> SES reply -> delivery/audit event.
 
@@ -472,7 +472,7 @@ repository never fabricates credentials or changes DNS.
 The test suite covers tenant isolation, domain-first onboarding, magic-link authentication,
 signup and provisioning limits, IDNA and claim expiry,
 MX safety, explicit receipt-rule reconciliation and the 500-recipient limit, duplicate and
-out-of-order AWS events, multi-project routing, malformed MIME, crash idempotency, sanitization,
+out-of-order AWS events, multi-domain routing, malformed MIME, crash idempotency, sanitization,
 quarantine, prompt injection, attachment authorization, retention, threading, DST scheduling,
 OpenAI failure, stale drafts, exact approval, header injection, ambiguous SES submission,
 bounce/complaint handling, and explicit resend.

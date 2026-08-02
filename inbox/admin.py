@@ -18,18 +18,16 @@ class UserAdmin(BaseUserAdmin):
     add_fieldsets = ((None, {"classes": ("wide",), "fields": ("email", "password1", "password2")}),)
 
 
-class OrganizationScopedAdmin(admin.ModelAdmin):
+class DomainScopedAdmin(admin.ModelAdmin):
     readonly_fields = ("id", "created_at", "updated_at")
 
     def get_list_filter(self, request):
-        if any(field.name == "organization" for field in self.model._meta.fields):
-            return ("organization",)
+        if any(field.name == "domain" for field in self.model._meta.fields):
+            return ("domain",)
         return ()
 
 
 for model in (
-    models.Organization,
-    models.Project,
     models.ReportSchedule,
     models.RetentionPolicy,
     models.Domain,
@@ -54,7 +52,7 @@ for model in (
     models.DeliveryEvent,
     models.APIToken,
 ):
-    admin.site.register(model, OrganizationScopedAdmin)
+    admin.site.register(model, DomainScopedAdmin)
 
 
 @admin.register(models.IngressEvent)
@@ -71,7 +69,7 @@ class IngressEventAdmin(admin.ModelAdmin):
 @admin.register(models.AuditEvent)
 class AuditEventAdmin(admin.ModelAdmin):
     list_display = ("event_type", "actor_type", "object_type", "request_id", "created_at")
-    list_filter = ("organization", "actor_type", "event_type")
+    list_filter = ("domain", "actor_type", "event_type")
     readonly_fields = [field.name for field in models.AuditEvent._meta.fields]
 
     def has_add_permission(self, request):

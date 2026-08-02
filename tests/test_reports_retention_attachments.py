@@ -34,7 +34,7 @@ from inbox.services.retention import purge_retention
 @override_settings(OPENAI_API_KEY="")
 def test_report_fallback_is_deterministic_and_deduplicated(organization, inbound_message):
     Classification.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         source=Classification.Source.OWNER,
         category=Classification.Category.ACTIONABLE,
@@ -42,8 +42,8 @@ def test_report_fallback_is_deterministic_and_deduplicated(organization, inbound
         summary="Respond to the privacy request.",
     )
     now = timezone.now()
-    first = generate_report(organization=organization, kind=Report.Kind.DAILY, now=now)
-    second = generate_report(organization=organization, kind=Report.Kind.DAILY, now=now)
+    first = generate_report(domain=organization, kind=Report.Kind.DAILY, now=now)
+    second = generate_report(domain=organization, kind=Report.Kind.DAILY, now=now)
     assert first.id == second.id
     assert first.generation_mode == Report.GenerationMode.DETERMINISTIC
     assert "Deterministic fallback" in first.content
@@ -54,7 +54,7 @@ def test_report_fallback_is_deterministic_and_deduplicated(organization, inbound
 @override_settings(OPENAI_API_KEY="")
 def test_report_fallback_includes_unclassified_messages(organization, inbound_message):
     report = generate_report(
-        organization=organization,
+        domain=organization,
         kind=Report.Kind.DAILY,
         now=timezone.now(),
     )
@@ -84,7 +84,7 @@ def test_ai_report_attaches_persisted_agent_run(organization, inbound_message):
         usage=SimpleNamespace(input_tokens=20, output_tokens=8),
     )
     report = generate_report(
-        organization=organization,
+        domain=organization,
         kind=Report.Kind.DAILY,
         now=timezone.now(),
         client=SimpleNamespace(responses=responses),
@@ -120,7 +120,7 @@ def test_attachment_authorization_clean_locked_and_expired(organization, inbound
     s3 = Mock()
     s3.generate_presigned_url.return_value = "https://signed.example/download"
     clean = Attachment.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         display_name="report.pdf",
         content_type="application/pdf",
@@ -131,17 +131,17 @@ def test_attachment_authorization_clean_locked_and_expired(organization, inbound
         purge_at=timezone.now() + timedelta(days=1),
     )
     authorized = authorized_attachment_url(
-        attachment=clean, organization=organization, s3_client=s3
+        attachment=clean, domain=organization, s3_client=s3
     )
     assert authorized.expires_in == 300
     assert s3.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 300
     clean.scan_status = Attachment.ScanStatus.QUARANTINED
     with pytest.raises(AttachmentLockedError):
-        authorized_attachment_url(attachment=clean, organization=organization, s3_client=s3)
+        authorized_attachment_url(attachment=clean, domain=organization, s3_client=s3)
     clean.scan_status = Attachment.ScanStatus.CLEAN
     clean.purge_at = timezone.now() - timedelta(seconds=1)
     with pytest.raises(AttachmentGoneError):
-        authorized_attachment_url(attachment=clean, organization=organization, s3_client=s3)
+        authorized_attachment_url(attachment=clean, domain=organization, s3_client=s3)
 
 
 @pytest.mark.django_db
@@ -159,7 +159,7 @@ def test_retention_purges_content_but_keeps_message_tombstone(organization, inbo
     inbound_message.raw_s3_key = "tenant/raw.eml"
     inbound_message.save(update_fields=("received_at", "raw_s3_key", "updated_at"))
     attachment = Attachment.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         display_name="old.txt",
         content_type="text/plain",
@@ -170,7 +170,7 @@ def test_retention_purges_content_but_keeps_message_tombstone(organization, inbo
         purge_at=old,
     )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.OWNER,
         actor_id=owner.id,
         event_type="old.event",
@@ -190,9 +190,8 @@ def test_retention_purges_content_but_keeps_message_tombstone(organization, inbo
     assert counts["raw"] == 1 and counts["attachments"] == 1
 
 
-def _ingress_event(*, suffix, organization, created_at):
+def _ingress_event(*, suffix, domain, created_at):
     event = IngressEvent.objects.create(
-        organization=organization,
         sns_message_id=f"sns-{suffix}",
         ses_message_id=f"ses-{suffix}",
         source_topic_arn="arn:aws:sns:us-east-1:123456789012:inbound",
@@ -220,32 +219,32 @@ def test_retention_redacts_ingress_location_before_expiring_event_metadata(organ
 
     recent = _ingress_event(
         suffix="recent",
-        organization=organization,
+        domain=organization,
         created_at=now - timedelta(hours=12),
     )
     raw_expired = _ingress_event(
         suffix="raw-expired",
-        organization=organization,
+        domain=organization,
         created_at=now - timedelta(days=2),
     )
     metadata_expired = _ingress_event(
         suffix="metadata-expired",
-        organization=organization,
+        domain=organization,
         created_at=now - timedelta(days=4),
     )
     global_recent = _ingress_event(
         suffix="global-recent",
-        organization=None,
+        domain=None,
         created_at=now - timedelta(days=2),
     )
     global_raw_expired = _ingress_event(
         suffix="global-raw-expired",
-        organization=None,
+        domain=None,
         created_at=now - timedelta(days=91),
     )
     global_metadata_expired = _ingress_event(
         suffix="global-metadata-expired",
-        organization=None,
+        domain=None,
         created_at=now - timedelta(days=731),
     )
 
@@ -256,18 +255,18 @@ def test_retention_redacts_ingress_location_before_expiring_event_metadata(organ
     global_recent.refresh_from_db()
     global_raw_expired.refresh_from_db()
     assert recent.source_bucket == "private-ingress"
-    assert raw_expired.source_bucket == "" and raw_expired.source_key == ""
+    assert raw_expired.source_bucket == "private-ingress"
     assert global_recent.source_bucket == "private-ingress"
     assert global_raw_expired.source_bucket == "" and global_raw_expired.source_key == ""
-    assert not IngressEvent.objects.filter(id=metadata_expired.id).exists()
+    assert IngressEvent.objects.filter(id=metadata_expired.id).exists()
     assert not IngressEvent.objects.filter(id=global_metadata_expired.id).exists()
-    assert counts["ingress_raw"] == 2
-    assert counts["ingress_metadata"] == 2
+    assert counts["ingress_raw"] == 1
+    assert counts["ingress_metadata"] == 1
 
 
-def _durable_job(*, suffix, organization, status, updated_at):
+def _durable_job(*, suffix, domain, status, updated_at):
     job = DurableJob.objects.create(
-        organization=organization,
+        domain=domain,
         kind="retention-test",
         idempotency_key=f"retention-test:{suffix}",
         status=status,
@@ -296,20 +295,20 @@ def test_retention_purges_ephemeral_auth_records_and_only_terminal_old_jobs(orga
 
     complete = _durable_job(
         suffix="complete",
-        organization=organization,
+        domain=organization,
         status=DurableJob.Status.COMPLETE,
         updated_at=old,
     )
     failed = _durable_job(
         suffix="failed",
-        organization=organization,
+        domain=organization,
         status=DurableJob.Status.FAILED,
         updated_at=old,
     )
     active_jobs = [
         _durable_job(
             suffix=status.casefold(),
-            organization=organization,
+            domain=organization,
             status=status,
             updated_at=old,
         )
@@ -321,19 +320,19 @@ def test_retention_purges_ephemeral_auth_records_and_only_terminal_old_jobs(orga
     ]
     recent_complete = _durable_job(
         suffix="recent-complete",
-        organization=organization,
+        domain=organization,
         status=DurableJob.Status.COMPLETE,
         updated_at=now - timedelta(hours=12),
     )
     global_safe = _durable_job(
         suffix="global-safe",
-        organization=None,
+        domain=None,
         status=DurableJob.Status.COMPLETE,
         updated_at=old,
     )
     global_expired = _durable_job(
         suffix="global-expired",
-        organization=None,
+        domain=None,
         status=DurableJob.Status.COMPLETE,
         updated_at=now - timedelta(days=731),
     )

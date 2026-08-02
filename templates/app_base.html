@@ -8,17 +8,16 @@
         <span>Operational Inbox</span>
       </a>
       <div class="border-b border-line bg-paper/50 px-4 py-3">
-        <label for="organization-switcher" class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Organization</label>
-        <form method="post" action="{% url 'organization_switch' %}" class="mt-1">
+        <label for="domain-switcher" class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Domain</label>
+        <form method="post" action="{% url 'domain_switch' %}" class="mt-1">
           {% csrf_token %}
           <input type="hidden" name="next" value="{{ request.get_full_path }}">
-          <select id="organization-switcher" name="organization_id" class="w-full border-0 bg-transparent p-0 text-sm font-semibold text-ink focus:outline-none" onchange="this.form.submit()">
-            {% for organization in nav_organizations %}
-              <option value="{{ organization.id }}" {% if organization.id == current_organization.id %}selected{% endif %}>{{ organization.name }}</option>
+          <select id="domain-switcher" name="domain_id" class="w-full border-0 bg-transparent p-0 text-sm font-semibold text-ink focus:outline-none" onchange="this.form.submit()">
+            {% for domain in nav_domains %}
+              <option value="{{ domain.id }}" {% if domain.id == current_domain.id %}selected{% endif %}>{{ domain.hostname }}</option>
             {% endfor %}
           </select>
         </form>
-        {% if current_project %}<p class="mt-1 truncate text-xs text-muted">{{ current_project.name }}</p>{% endif %}
       </div>
       <nav class="flex-1 overflow-y-auto py-4 text-sm" aria-label="Primary navigation">
         <a href="{% url 'dashboard' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'overview' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▦</span>Overview</a>
@@ -27,7 +26,6 @@
         <a href="{% url 'notifications' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'notifications' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◇</span>Notifications{% if nav_unread_notifications %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_unread_notifications }}</span>{% endif %}</a>
         <p class="mb-1 mt-5 px-4 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Settings</p>
         <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'domains' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◎</span>Domains</a>
-        <a href="{% url 'projects' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'projects' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">□</span>Projects</a>
         <a href="{% url 'schedules_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'schedules' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Schedules &amp; retention</a>
         <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'api_tokens' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">⌁</span>API tokens</a>
         <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'audit' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">≡</span>Audit</a>
@@ -41,7 +39,7 @@
       <header class="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-white px-4 lg:px-6">
         <button id="sidebar-toggle" type="button" class="oi-button-secondary min-h-9 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">Menu</button>
         <div class="hidden min-w-0 items-center gap-2 text-sm sm:flex">
-          <span class="truncate text-muted">{{ current_organization.name }}</span><span class="text-line-strong">/</span><span class="truncate font-semibold">{{ current_project.name|default:"All projects" }}</span>
+          <span class="truncate font-semibold">{{ current_domain.hostname }}</span>
         </div>
         <a href="{% url 'domain_create' %}" class="oi-button-primary min-h-9">Connect domain</a>
       </header>

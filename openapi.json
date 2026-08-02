@@ -101,11 +101,6 @@
             "title": "Hostname",
             "type": "string"
           },
-          "project_id": {
-            "format": "uuid",
-            "title": "Project Id",
-            "type": "string"
-          },
           "setup_mode": {
             "enum": [
               "DIRECT_MX",
@@ -116,54 +111,10 @@
           }
         },
         "required": [
-          "project_id",
           "hostname",
           "setup_mode"
         ],
         "title": "DomainInput",
-        "type": "object"
-      },
-      "OrganizationInput": {
-        "properties": {
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "project_name": {
-            "default": "Default project",
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Project Name",
-            "type": "string"
-          },
-          "timezone": {
-            "default": "UTC",
-            "maxLength": 64,
-            "title": "Timezone",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "OrganizationInput",
-        "type": "object"
-      },
-      "ProjectInput": {
-        "properties": {
-          "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name"
-        ],
-        "title": "ProjectInput",
         "type": "object"
       },
       "RevisionInput": {
@@ -236,24 +187,9 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/v1/health": {
+    "/api/v1/domains": {
       "get": {
-        "operationId": "inbox_api_api_health",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
-        "summary": "Api Health",
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/v1/organizations": {
-      "get": {
-        "operationId": "inbox_api_organizations_list",
+        "operationId": "inbox_api_domains_list",
         "parameters": [],
         "responses": {
           "200": {
@@ -268,26 +204,26 @@
             "ScopedBearer": []
           }
         ],
-        "summary": "Organizations List",
+        "summary": "Domains List",
         "tags": [
-          "Organizations"
+          "Domains"
         ]
       },
       "post": {
-        "operationId": "inbox_api_organizations_create",
+        "operationId": "inbox_api_domains_create",
         "parameters": [],
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OrganizationInput"
+                "$ref": "#/components/schemas/DomainInput"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "201": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
@@ -297,7 +233,19 @@
                 }
               }
             },
-            "description": "Created"
+            "description": "OK"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
           }
         },
         "security": [
@@ -308,23 +256,57 @@
             "ScopedBearer": []
           }
         ],
-        "summary": "Organizations Create",
+        "summary": "Domains Create",
         "tags": [
-          "Organizations"
+          "Domains"
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/attachments/{attachment_id}/url": {
+    "/api/v1/domains/{domain_id}": {
+      "get": {
+        "operationId": "inbox_api_domains_detail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Detail",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/attachments/{attachment_id}/url": {
       "get": {
         "operationId": "inbox_api_attachments_url",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -358,17 +340,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/audit": {
+    "/api/v1/domains/{domain_id}/audit": {
       "get": {
         "operationId": "inbox_api_audit_list",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -418,17 +400,60 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/conversations": {
+    "/api/v1/domains/{domain_id}/check": {
+      "post": {
+        "operationId": "inbox_api_domains_check",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Check",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/conversations": {
       "get": {
         "operationId": "inbox_api_conversations_list",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -456,23 +481,6 @@
               "default": 50,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "format": "uuid",
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Project Id"
             }
           },
           {
@@ -543,17 +551,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/conversations/{conversation_id}": {
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}": {
       "get": {
         "operationId": "inbox_api_conversations_detail",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -587,17 +595,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/conversations/{conversation_id}/drafts": {
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/drafts": {
       "post": {
         "operationId": "inbox_api_drafts_generate",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -640,17 +648,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/conversations/{conversation_id}/state": {
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/state": {
       "post": {
         "operationId": "inbox_api_conversations_state",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -694,214 +702,10 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/domains": {
-      "get": {
-        "operationId": "inbox_api_domains_list",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains List",
-        "tags": [
-          "Domains"
-        ]
-      },
-      "post": {
-        "operationId": "inbox_api_domains_create",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DomainInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Accepted"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains Create",
-        "tags": [
-          "Domains"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/domains/{domain_id}": {
-      "get": {
-        "operationId": "inbox_api_domains_detail",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains Detail",
-        "tags": [
-          "Domains"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/domains/{domain_id}/check": {
-      "post": {
-        "operationId": "inbox_api_domains_check",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Accepted"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains Check",
-        "tags": [
-          "Domains"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/domains/{domain_id}/disable": {
+    "/api/v1/domains/{domain_id}/disable": {
       "post": {
         "operationId": "inbox_api_domains_disable",
         "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          },
           {
             "in": "path",
             "name": "domain_id",
@@ -941,123 +745,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/domains/{domain_id}/retry": {
-      "post": {
-        "operationId": "inbox_api_domains_retry_provisioning",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Accepted"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains Retry Provisioning",
-        "tags": [
-          "Domains"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/domains/{domain_id}/test": {
-      "post": {
-        "operationId": "inbox_api_domains_test",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Domains Test",
-        "tags": [
-          "Domains"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/drafts/{draft_id}": {
+    "/api/v1/domains/{domain_id}/drafts/{draft_id}": {
       "get": {
         "operationId": "inbox_api_drafts_detail",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1091,17 +789,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/drafts/{draft_id}/approval": {
+    "/api/v1/domains/{domain_id}/drafts/{draft_id}/approval": {
       "post": {
         "operationId": "inbox_api_drafts_approve",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1154,17 +852,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/drafts/{draft_id}/revisions": {
+    "/api/v1/domains/{domain_id}/drafts/{draft_id}/revisions": {
       "post": {
         "operationId": "inbox_api_drafts_revise",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1217,17 +915,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/messages/{message_id}/classification": {
+    "/api/v1/domains/{domain_id}/messages/{message_id}/classification": {
       "post": {
         "operationId": "inbox_api_classifications_override",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1280,17 +978,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/notifications": {
+    "/api/v1/domains/{domain_id}/notifications": {
       "get": {
         "operationId": "inbox_api_notifications_list",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1340,17 +1038,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/notifications/{notification_id}/read": {
+    "/api/v1/domains/{domain_id}/notifications/{notification_id}/read": {
       "post": {
         "operationId": "inbox_api_notifications_read",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1384,17 +1082,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/outbound/{outbound_id}": {
+    "/api/v1/domains/{domain_id}/outbound/{outbound_id}": {
       "get": {
         "operationId": "inbox_api_outbound_status",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1428,17 +1126,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/outbound/{outbound_id}/resend": {
+    "/api/v1/domains/{domain_id}/outbound/{outbound_id}/resend": {
       "post": {
         "operationId": "inbox_api_outbound_resend",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1481,102 +1179,17 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/projects": {
-      "get": {
-        "operationId": "inbox_api_projects_list",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "OK"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Projects List",
-        "tags": [
-          "Projects"
-        ]
-      },
-      "post": {
-        "operationId": "inbox_api_projects_create",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "organization_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Organization Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProjectInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Projects Create",
-        "tags": [
-          "Projects"
-        ]
-      }
-    },
-    "/api/v1/organizations/{organization_id}/reports": {
+    "/api/v1/domains/{domain_id}/reports": {
       "get": {
         "operationId": "inbox_api_reports_list",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           },
@@ -1626,17 +1239,103 @@
         ]
       }
     },
-    "/api/v1/organizations/{organization_id}/tokens": {
+    "/api/v1/domains/{domain_id}/retry": {
+      "post": {
+        "operationId": "inbox_api_domains_retry_provisioning",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Retry Provisioning",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/test": {
+      "post": {
+        "operationId": "inbox_api_domains_test",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Test",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/tokens": {
       "post": {
         "operationId": "inbox_api_tokens_create",
         "parameters": [
           {
             "in": "path",
-            "name": "organization_id",
+            "name": "domain_id",
             "required": true,
             "schema": {
               "format": "uuid",
-              "title": "Organization Id",
+              "title": "Domain Id",
               "type": "string"
             }
           }
@@ -1676,6 +1375,21 @@
         "summary": "Tokens Create",
         "tags": [
           "Tokens"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "inbox_api_api_health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Api Health",
+        "tags": [
+          "System"
         ]
       }
     }

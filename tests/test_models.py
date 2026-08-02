@@ -10,34 +10,36 @@ from inbox.models import (
     APIToken,
     AuditEvent,
     Conversation,
+    Domain,
     DraftApproval,
-    Organization,
-    Project,
     ReplyDraft,
     ReplyDraftRevision,
 )
 
 
 @pytest.mark.django_db
-def test_project_scoped_model_rejects_cross_tenant_project(owner, organization, project):
-    other = Organization.objects.create(owner=owner, name="Other", slug="other")
-    other_project = Project.objects.create(organization=other, name="Other", slug="other")
+def test_domain_scoped_models_validate_related_domain(owner, organization, project):
+    other = Domain.objects.create(
+        owner=owner,
+        hostname="other.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
     now = timezone.now()
     conversation = Conversation(
-        organization=organization,
-        project=other_project,
+        domain=other,
         subject="Mismatch",
         first_message_at=now,
         last_message_at=now,
     )
-    with pytest.raises(ValidationError, match="same organization"):
-        conversation.full_clean()
+    conversation.full_clean()
+    assert conversation.domain == other
 
 
 @pytest.mark.django_db
 def test_api_token_is_hashed_scoped_and_shown_once(owner, organization):
     token, raw = APIToken.issue(
-        organization=organization,
+        domain=organization,
         owner=owner,
         name="Automation",
         scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE],
@@ -54,7 +56,7 @@ def test_api_token_is_hashed_scoped_and_shown_once(owner, organization):
 @pytest.mark.django_db
 def test_audit_event_is_append_only(owner, organization):
     event = AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.OWNER,
         actor_id=owner.id,
         event_type="test.created",
@@ -73,13 +75,12 @@ def test_revision_is_immutable_and_approval_requires_current_exact_revision(
     owner, organization, project, conversation, inbound_message
 ):
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
     first = ReplyDraftRevision(
-        organization=organization,
+        domain=organization,
         draft=draft,
         number=1,
         subject="Re: Privacy request",
@@ -94,7 +95,7 @@ def test_revision_is_immutable_and_approval_requires_current_exact_revision(
     with pytest.raises(ValidationError, match="immutable"):
         first.save()
     approval = DraftApproval(
-        organization=organization,
+        domain=organization,
         revision=first,
         approved_by=owner,
         content_hash="not-the-hash",
@@ -106,13 +107,12 @@ def test_revision_is_immutable_and_approval_requires_current_exact_revision(
 @pytest.mark.django_db
 def test_header_injection_is_rejected(organization, project, conversation, inbound_message, owner):
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
     revision = ReplyDraftRevision(
-        organization=organization,
+        domain=organization,
         draft=draft,
         number=1,
         subject="Hello\r\nBcc: victim@example.com",

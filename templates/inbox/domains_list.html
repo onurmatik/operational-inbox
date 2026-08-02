@@ -20,7 +20,7 @@
             </span>
           </div>
           <p class="mt-2 text-sm text-muted">
-            {{ domain.project.name }} · {{ domain.get_setup_mode_display }} · inbound {{ domain.inbound_ready|yesno:"ready,not ready" }} · outbound {{ domain.outbound_ready|yesno:"ready,not ready" }}
+            {{ domain.get_setup_mode_display }} · inbound {{ domain.inbound_ready|yesno:"ready,not ready" }} · outbound {{ domain.outbound_ready|yesno:"ready,not ready" }}
           </p>
           {% if domain.status == 'ERROR' %}<p class="mt-1 text-xs text-coral-strong">Open this domain to review what happened and the available next step.</p>{% endif %}
         </div>
@@ -29,7 +29,7 @@
     {% empty %}
       <div class="p-12 text-center">
         <p class="font-semibold">No domains connected</p>
-        <p class="mt-1 text-sm text-muted">Up to {{ limit }} domains can be provisioned for this organization.</p>
+        <p class="mt-1 text-sm text-muted">Up to {{ limit }} domains can be connected to this account.</p>
         <a href="{% url 'domain_create' %}" class="oi-button-primary mt-4">Start safe setup</a>
       </div>
     {% endfor %}

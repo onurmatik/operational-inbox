@@ -76,7 +76,7 @@ class OperationalInboxEmailStack(Stack):
                 s3.LifecycleRule(
                     id="ExpireTenantRaw",
                     enabled=True,
-                    prefix="organizations/",
+                    prefix="domains/",
                     expiration=Duration.days(90),
                 ),
                 s3.LifecycleRule(
@@ -266,7 +266,7 @@ class OperationalInboxEmailStack(Stack):
                 ],
                 resources=[
                     bucket.arn_for_objects("ingress/*"),
-                    bucket.arn_for_objects("organizations/*"),
+                    bucket.arn_for_objects("domains/*"),
                     bucket.arn_for_objects("backups/*"),
                 ],
             )
@@ -284,7 +284,7 @@ class OperationalInboxEmailStack(Stack):
                 actions=["s3:ListBucket"],
                 resources=[bucket.bucket_arn],
                 conditions={
-                    "StringLike": {"s3:prefix": ["ingress/*", "organizations/*", "backups/*"]}
+                    "StringLike": {"s3:prefix": ["ingress/*", "domains/*", "backups/*"]}
                 },
             )
         )

@@ -13,9 +13,7 @@ from inbox.models import (
     DomainDNSRecord,
     DurableJob,
     Notification,
-    Organization,
     OutboundMessage,
-    Project,
     ReplyDraft,
     Report,
 )
@@ -26,8 +24,7 @@ from inbox.services.drafts import revise_draft
 def test_domain_retry_api_starts_one_recoverable_attempt(client, owner, organization, project):
     client.force_login(owner)
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="api-retry.example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.ERROR,
@@ -35,7 +32,7 @@ def test_domain_retry_api_starts_one_recoverable_attempt(client, owner, organiza
         error_message="Setup failed.",
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
-    url = f"/api/v1/organizations/{organization.id}/domains/{domain.id}/retry"
+    url = f"/api/v1/domains/{domain.id}/retry"
 
     first = client.post(url, data={}, content_type="application/json")
     second = client.post(url, data={}, content_type="application/json")
@@ -59,9 +56,8 @@ def test_repeated_domain_create_returns_existing_claim(
 ):
     client.force_login(owner)
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
-    url = f"/api/v1/organizations/{organization.id}/domains"
+    url = "/api/v1/domains"
     payload = {
-        "project_id": str(project.id),
         "hostname": "idempotent.example.org",
         "setup_mode": "DIRECT_MX",
     }
@@ -97,19 +93,8 @@ def test_cross_tenant_domain_conflict_is_enumeration_safe(
     client, monkeypatch, owner, organization, project
 ):
     other_owner = type(owner).objects.create_user(email="other-owner@example.org")
-    other_organization = Organization.objects.create(
+    other_domain = Domain.objects.create(
         owner=other_owner,
-        name="Other",
-        slug="other",
-    )
-    other_project = Project.objects.create(
-        organization=other_organization,
-        name="Default",
-        slug="default",
-    )
-    Domain.objects.create(
-        organization=other_organization,
-        project=other_project,
         hostname="claimed-elsewhere.example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PENDING_DNS,
@@ -119,9 +104,8 @@ def test_cross_tenant_domain_conflict_is_enumeration_safe(
     client.force_login(owner)
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     response = client.post(
-        f"/api/v1/organizations/{organization.id}/domains",
+        "/api/v1/domains",
         data={
-            "project_id": str(project.id),
             "hostname": "claimed-elsewhere.example.org",
             "setup_mode": "DIRECT_MX",
         },
@@ -130,7 +114,7 @@ def test_cross_tenant_domain_conflict_is_enumeration_safe(
 
     assert response.status_code == 409
     assert response.json()["code"] == "domain_claim_conflict"
-    assert str(other_organization.id) not in response.content.decode()
+    assert str(other_domain.id) not in response.content.decode()
 
 
 @pytest.mark.django_db
@@ -138,10 +122,9 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
     client, owner, organization, project, conversation, inbound_message
 ):
     client.force_login(owner)
-    base = f"/api/v1/organizations/{organization.id}"
+    base = f"/api/v1/domains/{organization.id}"
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="provider-details.example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.DEGRADED,
@@ -150,7 +133,6 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
     DomainDNSRecord.objects.create(
-        organization=organization,
         domain=domain,
         purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
         record_type="TXT",
@@ -158,8 +140,7 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
         value="required-provider-value",
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -170,8 +151,7 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
         body_text="Reviewable response.",
     )
     outbound = OutboundMessage.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         revision=revision,
         status=OutboundMessage.Status.UNKNOWN,
@@ -185,7 +165,7 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
         error_message="SES acceptance could not be determined.",
     )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.AWS,
         event_type="domain.ses_identity_reinitialized",
         object_type="Domain",
@@ -197,7 +177,7 @@ def test_api_uses_product_language_without_changing_machine_readable_codes(
         },
     )
 
-    domain_payload = client.get(f"{base}/domains/{domain.id}").json()
+    domain_payload = client.get(f"/api/v1/domains/{domain.id}").json()
     outbound_payload = client.get(f"{base}/outbound/{outbound.id}").json()
     audit_payload = client.get(f"{base}/audit").json()["items"][0]
 
@@ -222,20 +202,13 @@ def test_session_api_resource_surface(
     client, monkeypatch, owner, organization, project, conversation, inbound_message
 ):
     client.force_login(owner)
-    base = f"/api/v1/organizations/{organization.id}"
-    assert client.get("/api/v1/organizations").status_code == 200
-    created_project = client.post(
-        f"{base}/projects",
-        data={"name": "Security"},
-        content_type="application/json",
-    )
-    assert created_project.status_code == 200 or created_project.status_code == 201
+    base = f"/api/v1/domains/{organization.id}"
+    assert client.get("/api/v1/domains").status_code == 200
 
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     domain_response = client.post(
-        f"{base}/domains",
+        "/api/v1/domains",
         data={
-            "project_id": str(project.id),
             "hostname": "inbound.example.org",
             "setup_mode": "PROVIDER_FORWARD",
         },
@@ -243,14 +216,15 @@ def test_session_api_resource_surface(
     )
     assert domain_response.status_code == 202
     domain_id = domain_response.json()["id"]
-    assert client.get(f"{base}/domains/{domain_id}").status_code == 200
+    domain_base = f"/api/v1/domains/{domain_id}"
+    assert client.get(domain_base).status_code == 200
     premature_check = client.post(
-        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+        f"{domain_base}/check", data={}, content_type="application/json"
     )
     assert premature_check.status_code == 409
     assert premature_check.json()["code"] == "dns_instructions_not_ready"
     premature_test = client.post(
-        f"{base}/domains/{domain_id}/test", data={}, content_type="application/json"
+        f"{domain_base}/test", data={}, content_type="application/json"
     )
     assert premature_test.status_code == 409
     assert premature_test.json()["code"] == "domain_not_ready_for_test"
@@ -260,7 +234,6 @@ def test_session_api_resource_surface(
     domain.ownership_verified = True
     domain.save(update_fields=("status", "ownership_verified", "updated_at"))
     DomainDNSRecord.objects.create(
-        organization=organization,
         domain=domain,
         purpose=DomainDNSRecord.Purpose.OWNERSHIP,
         record_type="TXT",
@@ -269,7 +242,7 @@ def test_session_api_resource_surface(
         status=DomainDNSRecord.Status.VALID,
     )
     first_check = client.post(
-        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+        f"{domain_base}/check", data={}, content_type="application/json"
     )
     assert first_check.status_code == 202
     first_check_id = first_check.json()["job_id"]
@@ -279,7 +252,7 @@ def test_session_api_resource_surface(
         due_at=retry_due_at,
     )
     repeated_check = client.post(
-        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+        f"{domain_base}/check", data={}, content_type="application/json"
     )
     assert repeated_check.status_code == 202
     assert repeated_check.json()["job_id"] == first_check_id
@@ -287,13 +260,13 @@ def test_session_api_resource_surface(
     assert expedited.due_at < retry_due_at
     DurableJob.objects.filter(id=first_check_id).update(status=DurableJob.Status.COMPLETE)
     completed_check = client.post(
-        f"{base}/domains/{domain_id}/check", data={}, content_type="application/json"
+        f"{domain_base}/check", data={}, content_type="application/json"
     )
     assert completed_check.status_code == 202
     assert completed_check.json()["job_id"] != first_check_id
     monkeypatch.setattr("inbox.services.receipt_rules.reconcile_receipt_rule", lambda: None)
     test_delivery = client.post(
-        f"{base}/domains/{domain_id}/test", data={}, content_type="application/json"
+        f"{domain_base}/test", data={}, content_type="application/json"
     )
     assert test_delivery.status_code == 201
     assert test_delivery.json()["address"].endswith("@inbound.example.org")
@@ -322,8 +295,7 @@ def test_session_api_resource_surface(
     )
     assert override.status_code == 201
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -344,7 +316,7 @@ def test_session_api_resource_surface(
     }
 
     report = Report.objects.create(
-        organization=organization,
+        domain=organization,
         kind=Report.Kind.HOURLY,
         schedule_key="api-hour",
         period_start=timezone.now() - timedelta(hours=1),
@@ -354,7 +326,7 @@ def test_session_api_resource_surface(
         content="Review complete.",
     )
     notification = Notification.objects.create(
-        organization=organization,
+        domain=organization,
         channel=Notification.Channel.IN_APP,
         kind="api",
         dedupe_key="api-notification",
@@ -362,7 +334,7 @@ def test_session_api_resource_surface(
         body="Review this.",
     )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=organization,
         actor_type=AuditEvent.ActorType.SYSTEM,
         event_type="api.test",
         object_type="Report",
@@ -387,15 +359,15 @@ def test_session_api_resource_surface(
     assert token.status_code == 201
     assert token.json()["token"].startswith("oi_")
     assert AuditEvent.objects.filter(
-        organization=organization,
+        domain=organization,
         event_type="conversation.state_changed",
     ).exists()
     assert AuditEvent.objects.filter(
-        organization=organization,
+        domain=organization,
         event_type="classification.overridden",
     ).exists()
     assert AuditEvent.objects.filter(
-        organization=organization,
+        domain=organization,
         event_type="api_token.created",
     ).exists()
 
@@ -404,7 +376,7 @@ def test_session_api_resource_surface(
 def test_api_attachment_url_contract(client, monkeypatch, owner, organization, inbound_message):
     client.force_login(owner)
     attachment = Attachment.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         display_name="clean.txt",
         content_type="text/plain",
@@ -418,7 +390,7 @@ def test_api_attachment_url_contract(client, monkeypatch, owner, organization, i
     s3.generate_presigned_url.return_value = "https://signed.example/clean"
     monkeypatch.setattr("inbox.services.attachments.boto3.client", lambda *args, **kwargs: s3)
     response = client.get(
-        f"/api/v1/organizations/{organization.id}/attachments/{attachment.id}/url"
+        f"/api/v1/domains/{organization.id}/attachments/{attachment.id}/url"
     )
     assert response.status_code == 200
     assert response.json() == {"url": "https://signed.example/clean", "expires_in": 300}
@@ -434,13 +406,12 @@ def test_api_opaque_cursor_and_invalid_cursor_contract(
     for index in range(3):
         at = timezone.now() - timedelta(minutes=index + 1)
         Conversation.objects.create(
-            organization=organization,
-            project=project,
+            domain=project,
             subject=f"Conversation {index}",
             first_message_at=at,
             last_message_at=at,
         )
-    base = f"/api/v1/organizations/{organization.id}/conversations"
+    base = f"/api/v1/domains/{organization.id}/conversations"
     first = client.get(base, {"limit": 2})
     assert first.status_code == 200
     cursor = first.json()["next_cursor"]

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import importlib
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
 import dns.resolver
 import pytest
-from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.test import override_settings
@@ -17,9 +15,6 @@ from inbox.models import (
     AuditEvent,
     Domain,
     DomainDNSRecord,
-    DurableJob,
-    Organization,
-    Project,
 )
 from inbox.services.domains import (
     application_ownership_record_name,
@@ -79,8 +74,7 @@ def test_existing_mx_never_changes_setup_automatically(monkeypatch, organization
         lambda hostname: [MXObservation(10, "mx1.privateemail.com")],
     )
     domain = create_domain(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="example.org",
         setup_mode=Domain.SetupMode.DIRECT_MX,
     )
@@ -90,19 +84,17 @@ def test_existing_mx_never_changes_setup_automatically(monkeypatch, organization
 
 
 @pytest.mark.django_db
-@override_settings(MAX_DOMAINS_PER_ORGANIZATION=1)
+@override_settings(MAX_DOMAINS_PER_USER=2)
 def test_domain_limit_is_enforced(monkeypatch, organization, project):
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     create_domain(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="one.example",
         setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
     )
-    with pytest.raises(ValidationError, match="at most 1"):
+    with pytest.raises(ValidationError, match="at most 2"):
         create_domain(
-            organization=organization,
-            project=project,
+            owner=project.owner,
             hostname="two.example",
             setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
         )
@@ -117,9 +109,10 @@ def test_domain_limit_is_enforced(monkeypatch, organization, project):
     AWS_SES_RECEIPT_RULE="allowlist",
 )
 def test_receipt_allowlist_only_adopts_verified_direct_domains(organization, project):
+    project.setup_mode = Domain.SetupMode.PROVIDER_FORWARD
+    project.save(update_fields=("setup_mode", "updated_at"))
     common = {
-        "organization": organization,
-        "project": project,
+        "owner": project.owner,
         "claim_expires_at": timezone.now() + timedelta(days=1),
         "status": Domain.Status.PENDING_TEST,
     }
@@ -159,14 +152,11 @@ def test_receipt_allowlist_only_adopts_verified_direct_domains(organization, pro
 @pytest.mark.django_db
 @override_settings(INBOUND_SERVICE_DOMAIN="inbound.operationalinbox.com")
 def test_receipt_allowlist_rejects_recipient_501(owner):
-    organization = Organization.objects.create(owner=owner, name="Large", slug="large")
-    project = Project.objects.create(organization=organization, name="All", slug="all")
     expiry = timezone.now() + timedelta(days=1)
     Domain.objects.bulk_create(
         [
             Domain(
-                organization=organization,
-                project=project,
+                owner=owner,
                 hostname=f"d{index}.example",
                 setup_mode=Domain.SetupMode.DIRECT_MX,
                 ownership_verified=True,
@@ -200,8 +190,7 @@ def test_dns_drift_retries_receipt_rule_after_transient_failure():
 def test_existing_ses_identity_requires_a_fresh_application_ownership_proof(organization, project):
     expiry = timezone.now() + timedelta(days=1)
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="existing.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -278,8 +267,7 @@ def test_existing_ses_identity_requires_a_fresh_application_ownership_proof(orga
 @pytest.mark.django_db
 def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="failed-existing.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -380,8 +368,7 @@ def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organizati
 @pytest.mark.django_db
 def test_new_ses_identity_records_managed_origin_and_separate_dns_proofs(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="new-identity.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -419,8 +406,7 @@ def test_new_ses_identity_records_managed_origin_and_separate_dns_proofs(organiz
 @pytest.mark.django_db
 def test_direct_receiving_waits_for_ses_identity_success(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="ses-pending.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PENDING_DNS,
@@ -465,46 +451,9 @@ def test_direct_receiving_waits_for_ses_identity_success(organization, project):
 
 
 @pytest.mark.django_db
-def test_existing_identity_recovery_migration_is_idempotent(organization, project):
-    domain = Domain.objects.create(
-        organization=organization,
-        project=project,
-        hostname="legacy-collision.example",
-        setup_mode=Domain.SetupMode.DIRECT_MX,
-        status=Domain.Status.ERROR,
-        error_code="ses_identity_collision",
-        error_message="Manual review required.",
-        claim_expires_at=timezone.now() + timedelta(days=1),
-    )
-    migration = importlib.import_module("inbox.migrations.0006_recover_existing_ses_identities")
-
-    migration.prepare_existing_identities(apps, None)
-    migration.prepare_existing_identities(apps, None)
-    domain.refresh_from_db()
-
-    assert domain.status == Domain.Status.PROVISIONING
-    assert domain.error_code == ""
-    assert (
-        DurableJob.objects.filter(
-            idempotency_key=f"provision-domain:{domain.id}:existing-identity-recovery"
-        ).count()
-        == 1
-    )
-    assert (
-        AuditEvent.objects.filter(
-            event_type="domain.provision_recovery_scheduled",
-            object_id=domain.id,
-            request_id="migration:0006",
-        ).count()
-        == 1
-    )
-
-
-@pytest.mark.django_db
 def test_provisioning_cannot_resurrect_a_domain_disabled_during_aws_calls(organization, project):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname="disabled-during-provision.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.PROVISIONING,
@@ -544,8 +493,7 @@ def test_provisioning_cannot_resurrect_a_domain_disabled_during_aws_calls(organi
 )
 def test_replayed_provisioning_never_regresses_an_advanced_domain(organization, project, status):
     domain = Domain.objects.create(
-        organization=organization,
-        project=project,
+        owner=project.owner,
         hostname=f"replayed-{status.casefold().replace('_', '-')}.example",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=status,

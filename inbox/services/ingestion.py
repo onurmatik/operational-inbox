@@ -31,7 +31,6 @@ from inbox.models import (
     MessageRecipient,
     MessageReference,
     OutboundMessage,
-    Project,
     ReplyDraft,
     RetentionPolicy,
 )
@@ -56,8 +55,8 @@ class PermanentIngressError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class RoutedProject:
-    project: Project
+class RoutedDomain:
+    domain: Domain
     recipients: tuple[str, ...]
     routes: tuple[InboundRoute, ...]
 
@@ -129,11 +128,11 @@ def quarantine_invalid_sqs_body(body: str, error: PermanentIngressError) -> Ingr
     return event
 
 
-def _route_projects(recipients: list[str]) -> list[RoutedProject]:
+def _route_domains(recipients: list[str]) -> list[RoutedDomain]:
     normalized = {address.strip().casefold() for address in recipients if "@" in address}
     grouped_recipients: dict[uuid.UUID, set[str]] = defaultdict(set)
     grouped_routes: dict[uuid.UUID, dict[uuid.UUID, InboundRoute]] = defaultdict(dict)
-    projects: dict[uuid.UUID, Project] = {}
+    domains: dict[uuid.UUID, Domain] = {}
 
     for route in InboundRoute.objects.filter(
         address__in=normalized,
@@ -143,11 +142,11 @@ def _route_projects(recipients: list[str]) -> list[RoutedProject]:
             Domain.Status.READY,
             Domain.Status.DEGRADED,
         ],
-    ).select_related("domain__project", "domain__organization"):
-        project = route.domain.project
-        projects[project.id] = project
-        grouped_recipients[project.id].add(route.address.casefold())
-        grouped_routes[project.id][route.id] = route
+    ).select_related("domain"):
+        domain = route.domain
+        domains[domain.id] = domain
+        grouped_recipients[domain.id].add(route.address.casefold())
+        grouped_routes[domain.id][route.id] = route
 
     recipient_domains = {address.rsplit("@", 1)[1] for address in normalized}
     direct_domains = Domain.objects.filter(
@@ -159,21 +158,20 @@ def _route_projects(recipients: list[str]) -> list[RoutedProject]:
             Domain.Status.READY,
             Domain.Status.DEGRADED,
         ],
-    ).select_related("project", "organization")
+    ).select_related("owner")
     for domain in direct_domains:
-        project = domain.project
-        projects[project.id] = project
-        grouped_recipients[project.id].update(
+        domains[domain.id] = domain
+        grouped_recipients[domain.id].update(
             address for address in normalized if address.endswith(f"@{domain.hostname}")
         )
 
     return [
-        RoutedProject(
-            project=projects[project_id],
-            recipients=tuple(sorted(grouped_recipients[project_id])),
-            routes=tuple(grouped_routes[project_id].values()),
+        RoutedDomain(
+            domain=domains[domain_id],
+            recipients=tuple(sorted(grouped_recipients[domain_id])),
+            routes=tuple(grouped_routes[domain_id].values()),
         )
-        for project_id in sorted(projects, key=str)
+        for domain_id in sorted(domains, key=str)
     ]
 
 
@@ -188,11 +186,11 @@ def _copy_objects(
     s3_client: Any,
     source_bucket: str,
     source_key: str,
-    project: Project,
+    domain: Domain,
     message_id: uuid.UUID,
     parsed: ParsedMIME,
 ) -> tuple[str, list[tuple[str, int]]]:
-    prefix = f"organizations/{project.organization_id}/projects/{project.id}/messages/{message_id}"
+    prefix = f"domains/{domain.id}/messages/{message_id}"
     raw_key = f"{prefix}/raw/message.eml"
     s3_client.copy_object(
         Bucket=settings.AWS_INGRESS_BUCKET,
@@ -216,31 +214,29 @@ def _copy_objects(
     return raw_key, attachment_keys
 
 
-def _store_project_message(
+def _store_domain_message(
     *,
-    routed: RoutedProject,
+    routed: RoutedDomain,
     parsed: ParsedMIME,
     mail: dict[str, Any],
     receipt: dict[str, Any],
     raw_key: str,
     attachment_keys: list[tuple[str, int]],
 ) -> Message:
-    project = routed.project
-    organization = project.organization
+    domain = routed.domain
     provider_message_id = str(mail["messageId"])
     existing = Message.objects.filter(
-        project=project, provider_message_id=provider_message_id
+        domain=domain, provider_message_id=provider_message_id
     ).first()
     if existing:
         return existing
     received_at = _parse_timestamp(mail.get("timestamp")) or timezone.now()
     conversation = match_conversation(
-        project=project, parsed=parsed, envelope_recipients=list(routed.recipients)
+        domain=domain, parsed=parsed, envelope_recipients=list(routed.recipients)
     )
     if conversation is None:
         conversation = Conversation.objects.create(
-            organization=organization,
-            project=project,
+            domain=domain,
             subject=parsed.subject,
             normalized_subject=normalize_subject(parsed.subject),
             status=(
@@ -252,7 +248,7 @@ def _store_project_message(
             last_message_at=received_at,
             last_inbound_at=received_at,
         )
-        suggestion = merge_suggestion(project, parsed.subject, conversation)
+        suggestion = merge_suggestion(domain, parsed.subject, conversation)
         if suggestion:
             conversation.merge_suggestion = suggestion
             conversation.save(update_fields=("merge_suggestion", "updated_at"))
@@ -285,11 +281,10 @@ def _store_project_message(
 
     virus_verdict = _verdict(receipt, "virusVerdict")
     spam_verdict = _verdict(receipt, "spamVerdict")
-    message_id = uuid.uuid5(MESSAGE_NAMESPACE, f"{project.id}:{provider_message_id}")
+    message_id = uuid.uuid5(MESSAGE_NAMESPACE, f"{domain.id}:{provider_message_id}")
     message = Message.objects.create(
         id=message_id,
-        organization=organization,
-        project=project,
+        domain=domain,
         conversation=conversation,
         direction=Message.Direction.INBOUND,
         provider_message_id=provider_message_id,
@@ -319,7 +314,7 @@ def _store_project_message(
     recipient_rows: dict[tuple[str, str], MessageRecipient] = {}
     for address in routed.recipients:
         recipient_rows[(MessageRecipient.Kind.ENVELOPE, address)] = MessageRecipient(
-            organization=organization,
+            domain=domain,
             message=message,
             kind=MessageRecipient.Kind.ENVELOPE,
             address=address,
@@ -333,7 +328,7 @@ def _store_project_message(
             recipient_rows.setdefault(
                 (kind, address),
                 MessageRecipient(
-                    organization=organization,
+                    domain=domain,
                     message=message,
                     kind=kind,
                     address=address,
@@ -345,7 +340,7 @@ def _store_project_message(
     if parsed.rfc_message_id:
         reference_rows.append(
             MessageReference(
-                organization=organization,
+                domain=domain,
                 message=message,
                 kind=MessageReference.Kind.MESSAGE_ID,
                 position=0,
@@ -354,7 +349,7 @@ def _store_project_message(
         )
     reference_rows.extend(
         MessageReference(
-            organization=organization,
+            domain=domain,
             message=message,
             kind=MessageReference.Kind.REFERENCE,
             position=index,
@@ -364,7 +359,7 @@ def _store_project_message(
     )
     reference_rows.extend(
         MessageReference(
-            organization=organization,
+            domain=domain,
             message=message,
             kind=MessageReference.Kind.IN_REPLY_TO,
             position=index,
@@ -374,12 +369,12 @@ def _store_project_message(
     )
     MessageReference.objects.bulk_create(reference_rows, ignore_conflicts=True)
 
-    retention, _ = RetentionPolicy.objects.get_or_create(organization=organization)
+    retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
     purge_at = received_at + timedelta(days=retention.attachment_days)
     Attachment.objects.bulk_create(
         [
             Attachment(
-                organization=organization,
+                domain=domain,
                 message=message,
                 display_name=parsed.attachments[index].filename,
                 content_type=parsed.attachments[index].content_type,
@@ -400,8 +395,7 @@ def _store_project_message(
         address.casefold() for address in (*parsed.to_addresses, *parsed.cc_addresses)
     }
     for test in DomainTest.objects.filter(
-        organization=organization,
-        domain__project=project,
+        domain=domain,
         status=DomainTest.Status.PENDING,
         expires_at__gt=timezone.now(),
     ).select_related("domain"):
@@ -426,7 +420,7 @@ def _store_project_message(
             test.save(update_fields=("status", "received_message", "updated_at"))
             apply_domain_readiness(test.domain)
             AuditEvent.objects.create(
-                organization=organization,
+                domain=domain,
                 actor_type=AuditEvent.ActorType.SYSTEM,
                 event_type="domain.test_received",
                 object_type="DomainTest",
@@ -435,7 +429,7 @@ def _store_project_message(
                 metadata={},
             )
     AuditEvent.objects.create(
-        organization=organization,
+        domain=domain,
         actor_type=AuditEvent.ActorType.AWS,
         event_type="message.ingested",
         object_type="Message",
@@ -511,8 +505,8 @@ def process_received_notification(
     event.attempts += 1
     event.save(update_fields=("status", "attempts", "updated_at"))
 
-    routed_projects = _route_projects(recipients)
-    if not routed_projects:
+    routed_domains = _route_domains(recipients)
+    if not routed_domains:
         event.status = IngressEvent.Status.QUARANTINED
         event.error_code = "unroutable_recipient"
         event.error_message = "No active tenant route matched the SES envelope recipients."
@@ -537,21 +531,19 @@ def process_received_notification(
         )
         return True
 
-    organizations: set[uuid.UUID] = set()
-    for routed in routed_projects:
-        organizations.add(routed.project.organization_id)
-        message_id = uuid.uuid5(MESSAGE_NAMESPACE, f"{routed.project.id}:{mail['messageId']}")
+    for routed in routed_domains:
+        message_id = uuid.uuid5(MESSAGE_NAMESPACE, f"{routed.domain.id}:{mail['messageId']}")
         raw_key, attachment_keys = _copy_objects(
             s3_client=s3,
             source_bucket=source_bucket,
             source_key=source_key,
-            project=routed.project,
+            domain=routed.domain,
             message_id=message_id,
             parsed=parsed,
         )
         try:
             with transaction.atomic():
-                _store_project_message(
+                _store_domain_message(
                     routed=routed,
                     parsed=parsed,
                     mail=mail,
@@ -561,18 +553,16 @@ def process_received_notification(
                 )
         except IntegrityError:
             if not Message.objects.filter(
-                project=routed.project, provider_message_id=str(mail["messageId"])
+                domain=routed.domain, provider_message_id=str(mail["messageId"])
             ).exists():
                 raise
 
-    event.organization_id = next(iter(organizations)) if len(organizations) == 1 else None
     event.status = IngressEvent.Status.PROCESSED
     event.processed_at = timezone.now()
     event.error_code = ""
     event.error_message = ""
     event.save(
         update_fields=(
-            "organization",
             "status",
             "processed_at",
             "error_code",
@@ -623,7 +613,7 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
     event, created = DeliveryEvent.objects.get_or_create(
         provider_event_id=envelope.sns_message_id,
         defaults={
-            "organization": outbound.organization,
+            "domain": outbound.domain,
             "outbound_message": outbound,
             "provider_message_id": provider_message_id,
             "event_type": event_type,
@@ -664,7 +654,7 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
         outbound.save(update_fields=fields)
     if created:
         AuditEvent.objects.create(
-            organization=outbound.organization,
+            domain=outbound.domain,
             actor_type=AuditEvent.ActorType.AWS,
             event_type="outbound.delivery_event",
             object_type="OutboundMessage",

@@ -21,13 +21,12 @@ from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
 from django.db import connection, transaction
 from django.db.models import Count, Q
-from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
-from django.utils.text import slugify
 from django.views.decorators.cache import never_cache
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from sesame.utils import get_parameters
@@ -37,7 +36,6 @@ from inbox.forms import (
     APITokenForm,
     DomainForm,
     DraftRevisionForm,
-    ProjectForm,
     RetentionForm,
     ScheduleForm,
     SignupForm,
@@ -54,9 +52,7 @@ from inbox.models import (
     EmailVerificationToken,
     Message,
     Notification,
-    Organization,
     OutboundMessage,
-    Project,
     ReplyDraft,
     Report,
     ReportSchedule,
@@ -88,7 +84,7 @@ from inbox.services.jobs import (
     enqueue_job,
     retry_domain_provisioning,
 )
-from inbox.services.tenancy import current_organization, get_owned_organization, tenant_get_or_404
+from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
 
 logger = logging.getLogger(__name__)
 
@@ -123,19 +119,6 @@ def _active_domain_test_address(request: HttpRequest, domain: Domain) -> str | N
         request.session.pop(key, None)
         return None
     return address
-
-
-def _unique_slug(model, *, organization=None, value: str) -> str:
-    base = slugify(value)[:70] or "workspace"
-    candidate = base
-    index = 2
-    queryset = model.objects.all()
-    if organization is not None:
-        queryset = queryset.filter(organization=organization)
-    while queryset.filter(slug=candidate).exists():
-        candidate = f"{base[:65]}-{index}"
-        index += 1
-    return candidate
 
 
 def _safe_next(request: HttpRequest, value: str | None) -> str:
@@ -217,44 +200,7 @@ def _restore_onboarding_state(request: HttpRequest, user: User) -> None:
     request.session[PENDING_DOMAIN_SESSION_KEY] = pending_domain
 
 
-def _default_workspace_label(email: str, pending_domain: str | None) -> str:
-    email_domain = email.rpartition("@")[2]
-    return (pending_domain or email_domain or email)[:120]
-
-
-def _ensure_default_workspace(
-    user: User, pending_domain: str | None = None
-) -> tuple[Organization, Project]:
-    """Idempotently give a passwordless account a usable default tenant."""
-
-    label = _default_workspace_label(user.email, pending_domain)
-    organization = user.organizations.filter(is_active=True).order_by("created_at").first()
-    if organization is None:
-        organization = Organization.objects.create(
-            owner=user,
-            name=label,
-            slug=_unique_slug(Organization, value=label),
-            timezone=settings.TIME_ZONE,
-        )
-    project = (
-        Project.objects.filter(organization=organization, is_active=True)
-        .order_by("created_at")
-        .first()
-    )
-    if project is None:
-        project = Project.objects.create(
-            organization=organization,
-            name=label,
-            slug=_unique_slug(Project, organization=organization, value=label),
-        )
-    ReportSchedule.objects.get_or_create(organization=organization)
-    RetentionPolicy.objects.get_or_create(organization=organization)
-    return organization, project
-
-
-def _prepare_magic_link_user(
-    email: str, pending_domain: str | None
-) -> tuple[User, Organization, Project] | None:
+def _prepare_magic_link_user(email: str, pending_domain: str | None) -> User | None:
     """Create/reactivate an eligible user without reviving a verified disabled account."""
 
     with transaction.atomic():
@@ -271,8 +217,7 @@ def _prepare_magic_link_user(
             user.is_active = True
             user.set_unusable_password()
             user.save(update_fields=("is_active", "password"))
-        organization, project = _ensure_default_workspace(user, pending_domain)
-    return user, organization, project
+    return user
 
 
 def _auth_error_message(value: str) -> str:
@@ -347,14 +292,14 @@ def _signup_client_ip(request: HttpRequest) -> str:
 
 
 def _audit(
-    organization: Organization,
+    domain: Domain,
     request: HttpRequest,
     event_type: str,
     obj: Any,
     metadata: dict[str, Any] | None = None,
 ) -> None:
     AuditEvent.objects.create(
-        organization=organization,
+        domain=domain,
         actor_type=AuditEvent.ActorType.OWNER,
         actor_id=request.user.id,
         event_type=event_type,
@@ -430,11 +375,10 @@ def start_onboarding(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 @require_POST
-def organization_switch(request: HttpRequest) -> HttpResponse:
-    organization = get_owned_organization(request.user, request.POST.get("organization_id", ""))
-    request.session["organization_id"] = str(organization.id)
-    request.session.pop("project_id", None)
-    _audit(organization, request, "organization.selected", organization)
+def domain_switch(request: HttpRequest) -> HttpResponse:
+    domain = get_owned_domain(request.user, request.POST.get("domain_id", ""))
+    request.session["domain_id"] = str(domain.id)
+    _audit(domain, request, "domain.selected", domain)
     next_url = request.POST.get("next", "")
     if not url_has_allowed_host_and_scheme(
         next_url,
@@ -513,7 +457,7 @@ def signup(request: HttpRequest) -> HttpResponse:
                 _signup_context(request, form=form, sent=True, email=email),
             )
 
-        user, _, _ = prepared
+        user = prepared
         next_url = _safe_next(request, request.POST.get("next"))
         parameters = get_parameters(user, scope=MAGIC_LINK_SCOPE)
         parameters["next"] = next_url
@@ -591,13 +535,14 @@ class OperationalInboxSesameLoginView(SesameLoginView):
             if user.email_verified_at is None:
                 user.email_verified_at = timezone.now()
                 user.save(update_fields=("email_verified_at",))
-            organization, project = _ensure_default_workspace(
-                user,
-                self.request.session.get(PENDING_DOMAIN_SESSION_KEY),
-            )
         self.request.user = user
-        self.request.session["organization_id"] = str(organization.id)
-        self.request.session["project_id"] = str(project.id)
+        selected = (
+            user.domains.exclude(status=Domain.Status.DISABLED)
+            .order_by("created_at")
+            .first()
+        )
+        if selected:
+            self.request.session["domain_id"] = str(selected.id)
         return redirect(_safe_next(self.request, self.request.GET.get("next")))
 
 
@@ -685,37 +630,20 @@ def verify_email(request: HttpRequest, token: str) -> HttpResponse:
         user.is_active = True
         user.save(update_fields=("email_verified_at", "is_active"))
     login(request, user, backend="django.contrib.auth.backends.ModelBackend")
-    organization = user.organizations.first()
-    if organization:
-        request.session["organization_id"] = str(organization.id)
+    domain = user.domains.exclude(status=Domain.Status.DISABLED).first()
+    if domain:
+        request.session["domain_id"] = str(domain.id)
     messages.success(request, "Your email is verified. Welcome to Operational Inbox.")
     return redirect("dashboard")
 
 
-def _selected_project(request: HttpRequest, organization: Organization) -> Project | None:
-    selected_id = request.GET.get("project") or request.session.get("project_id")
-    selected = (
-        Project.objects.filter(organization=organization, id=selected_id, is_active=True).first()
-        if selected_id
-        else None
-    )
-    selected = selected or Project.objects.filter(organization=organization, is_active=True).first()
-    if selected:
-        request.session["project_id"] = str(selected.id)
-    return selected
-
-
 @verified_required
 def dashboard(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
-    project = _selected_project(request, organization)
-    conversations = Conversation.objects.filter(organization=organization)
-    messages_qs = Message.objects.filter(organization=organization)
-    domains = Domain.objects.filter(organization=organization)
-    if project:
-        conversations = conversations.filter(project=project)
-        messages_qs = messages_qs.filter(project=project)
-        domains = domains.filter(project=project)
+    if not request.user.domains.exclude(status=Domain.Status.DISABLED).exists():
+        return redirect("domain_create")
+    domain = current_domain(request)
+    conversations = Conversation.objects.filter(domain=domain)
+    messages_qs = Message.objects.filter(domain=domain)
     attention = (
         conversations.filter(
             Q(messages__classifications__is_current=True)
@@ -730,32 +658,28 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     )
     context = {
         "active_nav": "overview",
-        "project": project,
-        "projects": Project.objects.filter(organization=organization, is_active=True),
+        "domain": domain,
         "attention": attention,
         "metrics": {
             "open": conversations.filter(status=Conversation.Status.OPEN).count(),
             "quarantined": messages_qs.filter(is_quarantined=True).count(),
             "unclassified": messages_qs.exclude(classifications__is_current=True).count(),
-            "domains_ready": domains.filter(status=Domain.Status.READY).count(),
-            "domains_total": domains.exclude(status=Domain.Status.DISABLED).count(),
+            "domains_ready": int(domain.status == Domain.Status.READY),
+            "domains_total": 1,
         },
-        "domains": domains.order_by("hostname")[:4],
-        "reports": Report.objects.filter(organization=organization)[:4],
-        "audit_events": AuditEvent.objects.filter(organization=organization)[:6],
+        "domains": [domain],
+        "reports": Report.objects.filter(domain=domain)[:4],
+        "audit_events": AuditEvent.objects.filter(domain=domain)[:6],
     }
     return render(request, "inbox/dashboard.html", context)
 
 
 @verified_required
 def inbox_list(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
-    project = _selected_project(request, organization)
-    conversations = Conversation.objects.filter(organization=organization).annotate(
+    domain = current_domain(request)
+    conversations = Conversation.objects.filter(domain=domain).annotate(
         message_count=Count("messages")
     )
-    if project:
-        conversations = conversations.filter(project=project)
     query = request.GET.get("q", "").strip()
     if query:
         conversations = conversations.filter(
@@ -777,7 +701,7 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
         conversations = conversations.filter(messages__is_suspicious=True).distinct()
     elif security == "quarantined":
         conversations = conversations.filter(messages__is_quarantined=True).distinct()
-    ordered_conversations = conversations.select_related("project").order_by("-last_message_at")
+    ordered_conversations = conversations.order_by("-last_message_at")
     paginator = Paginator(ordered_conversations, 50)
     page = paginator.get_page(request.GET.get("page"))
     pagination_params = request.GET.copy()
@@ -787,8 +711,7 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
         "inbox/inbox_list.html",
         {
             "active_nav": "inbox",
-            "project": project,
-            "projects": Project.objects.filter(organization=organization, is_active=True),
+            "domain": domain,
             "conversations": page.object_list,
             "page_obj": page,
             "pagination_query": pagination_params.urlencode(),
@@ -806,10 +729,10 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    conversation = tenant_get_or_404(
-        Conversation.objects.select_related("project"),
-        organization=organization,
+    domain = current_domain(request)
+    conversation = domain_get_or_404(
+        Conversation.objects,
+        domain=domain,
         id=conversation_id,
     )
     draft = (
@@ -843,9 +766,9 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @verified_required
 @require_POST
 def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    conversation = tenant_get_or_404(
-        Conversation.objects, organization=organization, id=conversation_id
+    domain = current_domain(request)
+    conversation = domain_get_or_404(
+        Conversation.objects, domain=domain, id=conversation_id
     )
     status = request.POST.get("status", "")
     if status not in Conversation.Status.values or status == Conversation.Status.QUARANTINED:
@@ -857,7 +780,7 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
         )
         conversation.save(update_fields=("status", "resolved_at", "updated_at"))
         _audit(
-            organization, request, "conversation.status_changed", conversation, {"status": status}
+            domain, request, "conversation.status_changed", conversation, {"status": status}
         )
         messages.success(request, "Conversation status updated.")
     return redirect("conversation_detail", conversation_id=conversation.id)
@@ -866,9 +789,9 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @verified_required
 @require_POST
 def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    conversation = tenant_get_or_404(
-        Conversation.objects, organization=organization, id=conversation_id
+    domain = current_domain(request)
+    conversation = domain_get_or_404(
+        Conversation.objects, domain=domain, id=conversation_id
     )
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
     if message is None:
@@ -882,7 +805,7 @@ def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResp
                 "A draft could not be generated. The message remains available and unmodified.",
             )
         else:
-            _audit(organization, request, "draft.generated", draft)
+            _audit(domain, request, "draft.generated", draft)
             messages.success(request, "Draft generated for human review.")
     return redirect("conversation_detail", conversation_id=conversation.id)
 
@@ -890,9 +813,9 @@ def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResp
 @verified_required
 @require_POST
 def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    draft = tenant_get_or_404(
-        ReplyDraft.objects.select_related("conversation"), organization=organization, id=draft_id
+    domain = current_domain(request)
+    draft = domain_get_or_404(
+        ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
     )
     form = DraftRevisionForm(request.POST)
     if form.is_valid():
@@ -901,7 +824,7 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
         except ValidationError as exc:
             messages.error(request, "; ".join(exc.messages))
         else:
-            _audit(organization, request, "draft.revised", revision, {"number": revision.number})
+            _audit(domain, request, "draft.revised", revision, {"number": revision.number})
             messages.success(request, "A new immutable draft revision was created.")
     else:
         messages.error(request, "Correct the draft fields and try again.")
@@ -911,9 +834,9 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @verified_required
 @require_POST
 def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    draft = tenant_get_or_404(
-        ReplyDraft.objects.select_related("conversation"), organization=organization, id=draft_id
+    domain = current_domain(request)
+    draft = domain_get_or_404(
+        ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
     )
     try:
         outbound = approve_exact_revision(
@@ -929,9 +852,9 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
             kind="send_outbound",
             idempotency_key=f"outbound:{outbound.id}",
             payload={"outbound_id": str(outbound.id)},
-            organization=organization,
+            domain=domain,
         )
-        _audit(organization, request, "draft.approved_exact_revision", outbound)
+        _audit(domain, request, "draft.approved_exact_revision", outbound)
         messages.success(request, "The exact revision was approved and queued for sending.")
     return redirect("conversation_detail", conversation_id=draft.conversation_id)
 
@@ -939,10 +862,10 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @verified_required
 @require_POST
 def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    original = tenant_get_or_404(
+    domain = current_domain(request)
+    original = domain_get_or_404(
         OutboundMessage.objects.select_related("conversation", "revision"),
-        organization=organization,
+        domain=domain,
         id=outbound_id,
     )
     try:
@@ -954,23 +877,22 @@ def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpRespons
             kind="send_outbound",
             idempotency_key=f"outbound:{resend.id}",
             payload={"outbound_id": str(resend.id)},
-            organization=organization,
+            domain=domain,
         )
-        _audit(organization, request, "outbound.explicit_resend", resend)
+        _audit(domain, request, "outbound.explicit_resend", resend)
         messages.success(request, "A distinct resend attempt was queued.")
     return redirect("conversation_detail", conversation_id=original.conversation_id)
 
 
 @verified_required
 def domains_list(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
     return render(
         request,
         "inbox/domains_list.html",
         {
             "active_nav": "domains",
-            "domains": Domain.objects.filter(organization=organization).select_related("project"),
-            "limit": settings.MAX_DOMAINS_PER_ORGANIZATION,
+            "domains": Domain.objects.filter(owner=request.user),
+            "limit": settings.MAX_DOMAINS_PER_USER,
         },
     )
 
@@ -1025,10 +947,6 @@ def domain_mx_inspect(request: HttpRequest) -> JsonResponse:
 
 @verified_required
 def domain_create_view(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
-    project = _selected_project(request, organization)
-    if project is None:
-        raise Http404
     pending_domain = request.session.get(PENDING_DOMAIN_SESSION_KEY, "")
     form = DomainForm(
         request.POST or None,
@@ -1037,23 +955,21 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     if request.method == "POST" and form.is_valid():
         try:
             domain = create_domain(
-                organization=organization,
-                project=project,
+                owner=request.user,
                 hostname=form.cleaned_data["hostname"],
                 setup_mode=form.cleaned_data["setup_mode"],
             )
         except DomainClaimConflict as exc:
             if exc.existing_domain is not None:
                 same_configuration = (
-                    exc.existing_domain.project_id == project.id
-                    and exc.existing_domain.setup_mode == form.cleaned_data["setup_mode"]
+                    exc.existing_domain.setup_mode == form.cleaned_data["setup_mode"]
                 )
                 if same_configuration:
                     if exc.existing_domain.status == Domain.Status.PROVISIONING:
                         existing, job, started = retry_domain_provisioning(exc.existing_domain)
                         if started:
                             _audit(
-                                organization,
+                                exc.existing_domain,
                                 request,
                                 "domain.provision_job_repaired",
                                 existing,
@@ -1066,8 +982,8 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
                 else:
                     messages.warning(
                         request,
-                        "This domain already has a different active setup. The existing "
-                        "project and routing mode were kept unchanged.",
+                        "This domain already has a different active routing mode. "
+                        "The existing setup was kept unchanged.",
                     )
                 return redirect("domain_detail", domain_id=exc.existing_domain.id)
             form.add_error(
@@ -1081,9 +997,10 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
                 kind="provision_domain",
                 idempotency_key=f"provision-domain:{domain.id}",
                 payload={"domain_id": str(domain.id)},
-                organization=organization,
+                domain=domain,
             )
-            _audit(organization, request, "domain.claim_created", domain)
+            request.session["domain_id"] = str(domain.id)
+            _audit(domain, request, "domain.claim_created", domain)
             request.session.pop(PENDING_DOMAIN_SESSION_KEY, None)
             messages.success(
                 request,
@@ -1093,18 +1010,15 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     return render(
         request,
         "inbox/domain_create.html",
-        {"active_nav": "domains", "form": form, "project": project},
+        {"active_nav": "domains", "form": form},
     )
 
 
 @verified_required
 def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    domain = tenant_get_or_404(
-        Domain.objects.select_related("project").prefetch_related("dns_records", "inbound_routes"),
-        organization=organization,
-        id=domain_id,
-    )
+    domain = get_owned_domain(request.user, domain_id)
+    request.session["domain_id"] = str(domain.id)
+    domain = Domain.objects.prefetch_related("dns_records", "inbound_routes").get(id=domain.id)
     return render(
         request,
         "inbox/domain_detail.html",
@@ -1120,8 +1034,7 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 @verified_required
 @require_POST
 def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    domain = tenant_get_or_404(Domain.objects, organization=organization, id=domain_id)
+    domain = get_owned_domain(request.user, domain_id)
     try:
         domain, job, started = retry_domain_provisioning(domain)
     except ValidationError as exc:
@@ -1129,7 +1042,7 @@ def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> Htt
     else:
         if started:
             _audit(
-                organization,
+                domain,
                 request,
                 "domain.provision_retry_requested",
                 domain,
@@ -1148,8 +1061,7 @@ def domain_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID) -> Htt
 @verified_required
 @require_POST
 def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    domain = tenant_get_or_404(Domain.objects, organization=organization, id=domain_id)
+    domain = get_owned_domain(request.user, domain_id)
     try:
         test, address = create_domain_test(domain)
     except ValidationError as exc:
@@ -1166,7 +1078,7 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
             "address": address,
             "expires_at": test.expires_at.timestamp(),
         }
-        _audit(organization, request, "domain.test_created", domain)
+        _audit(domain, request, "domain.test_created", domain)
         messages.success(
             request,
             "Test address generated. Send a real email to it within 24 hours.",
@@ -1177,8 +1089,7 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
 @verified_required
 @require_POST
 def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    domain = tenant_get_or_404(Domain.objects, organization=organization, id=domain_id)
+    domain = get_owned_domain(request.user, domain_id)
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
     domain.outbound_ready = False
@@ -1188,59 +1099,29 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
         kind="reconcile_receipt_rule",
         idempotency_key=f"receipt-rule:disable:{domain.id}",
         payload={},
-        organization=organization,
+        domain=domain,
     )
-    _audit(organization, request, "domain.disabled", domain)
+    _audit(domain, request, "domain.disabled", domain)
     messages.success(request, "The domain and its inbound routes were disabled.")
     return redirect("domains")
 
 
 @verified_required
-def projects(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
-    form = ProjectForm(request.POST or None)
-    if request.method == "POST" and form.is_valid():
-        if (
-            Project.objects.filter(organization=organization, is_active=True).count()
-            >= settings.MAX_PROJECTS_PER_ORGANIZATION
-        ):
-            form.add_error(None, "The organization has reached its project limit.")
-        else:
-            project = form.save(commit=False)
-            project.organization = organization
-            project.slug = _unique_slug(Project, organization=organization, value=project.name)
-            project.save()
-            _audit(organization, request, "project.created", project)
-            messages.success(request, "Project created.")
-            return redirect("projects")
-    return render(
-        request,
-        "inbox/projects.html",
-        {
-            "active_nav": "projects",
-            "form": form,
-            "projects": Project.objects.filter(organization=organization).order_by("name"),
-            "limit": settings.MAX_PROJECTS_PER_ORGANIZATION,
-        },
-    )
-
-
-@verified_required
 def reports_list(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
+    domain = current_domain(request)
     return render(
         request,
         "inbox/reports.html",
-        {"active_nav": "reports", "reports": Report.objects.filter(organization=organization)},
+        {"active_nav": "reports", "reports": Report.objects.filter(domain=domain)},
     )
 
 
 @verified_required
 def notifications_list(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
+    domain = current_domain(request)
     if request.method == "POST":
         Notification.objects.filter(
-            organization=organization,
+            domain=domain,
             channel=Notification.Channel.IN_APP,
             read_at__isnull=True,
         ).update(status=Notification.Status.READ, read_at=timezone.now())
@@ -1251,7 +1132,7 @@ def notifications_list(request: HttpRequest) -> HttpResponse:
         {
             "active_nav": "notifications",
             "notifications": Notification.objects.filter(
-                organization=organization, channel=Notification.Channel.IN_APP
+                domain=domain, channel=Notification.Channel.IN_APP
             ),
         },
     )
@@ -1259,27 +1140,27 @@ def notifications_list(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def schedules_settings(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
-    schedule, _ = ReportSchedule.objects.get_or_create(organization=organization)
-    retention, _ = RetentionPolicy.objects.get_or_create(organization=organization)
+    domain = current_domain(request)
+    schedule, _ = ReportSchedule.objects.get_or_create(domain=domain)
+    retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
     schedule_form = ScheduleForm(
         request.POST or None,
         instance=schedule,
-        organization=organization,
+        domain=domain,
         prefix="schedule",
     )
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
     if request.method == "POST":
         if request.POST.get("form") == "schedule" and schedule_form.is_valid():
             schedule_form.save()
-            organization.timezone = schedule_form.cleaned_data["timezone"]
-            organization.save(update_fields=("timezone", "updated_at"))
-            _audit(organization, request, "schedule.updated", schedule)
+            domain.timezone = schedule_form.cleaned_data["timezone"]
+            domain.save(update_fields=("timezone", "updated_at"))
+            _audit(domain, request, "schedule.updated", schedule)
             messages.success(request, "Review schedule updated.")
             return redirect("schedules_settings")
         if request.POST.get("form") == "retention" and retention_form.is_valid():
             retention_form.save()
-            _audit(organization, request, "retention.updated", retention)
+            _audit(domain, request, "retention.updated", retention)
             messages.success(request, "Retention policy updated.")
             return redirect("schedules_settings")
     return render(
@@ -1295,17 +1176,17 @@ def schedules_settings(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def api_tokens(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
+    domain = current_domain(request)
     form = APITokenForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
         token, raw = APIToken.issue(
-            organization=organization,
+            domain=domain,
             owner=request.user,
             name=form.cleaned_data["name"],
             scopes=form.cleaned_data["scopes"],
         )
         request.session["new_api_token"] = raw
-        _audit(organization, request, "api_token.created", token, {"scopes": token.scopes})
+        _audit(domain, request, "api_token.created", token, {"scopes": token.scopes})
         return redirect("api_tokens")
     new_token = request.session.pop("new_api_token", None)
     return render(
@@ -1314,7 +1195,7 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
         {
             "active_nav": "api_tokens",
             "form": form,
-            "tokens": APIToken.objects.filter(organization=organization).order_by("-created_at"),
+            "tokens": APIToken.objects.filter(domain=domain).order_by("-created_at"),
             "new_token": new_token,
         },
     )
@@ -1323,34 +1204,34 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
 @verified_required
 @require_POST
 def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    token = tenant_get_or_404(APIToken.objects, organization=organization, id=token_id)
+    domain = current_domain(request)
+    token = domain_get_or_404(APIToken.objects, domain=domain, id=token_id)
     token.revoked_at = timezone.now()
     token.save(update_fields=("revoked_at", "updated_at"))
-    _audit(organization, request, "api_token.revoked", token)
+    _audit(domain, request, "api_token.revoked", token)
     messages.success(request, "API token revoked.")
     return redirect("api_tokens")
 
 
 @verified_required
 def audit_log(request: HttpRequest) -> HttpResponse:
-    organization = current_organization(request)
+    domain = current_domain(request)
     return render(
         request,
         "inbox/audit.html",
         {
             "active_nav": "audit",
-            "audit_events": AuditEvent.objects.filter(organization=organization)[:250],
+            "audit_events": AuditEvent.objects.filter(domain=domain)[:250],
         },
     )
 
 
 @verified_required
 def attachment_download(request: HttpRequest, attachment_id: uuid.UUID) -> HttpResponse:
-    organization = current_organization(request)
-    attachment = tenant_get_or_404(Attachment.objects, organization=organization, id=attachment_id)
+    domain = current_domain(request)
+    attachment = domain_get_or_404(Attachment.objects, domain=domain, id=attachment_id)
     try:
-        authorized = authorized_attachment_url(attachment=attachment, organization=organization)
+        authorized = authorized_attachment_url(attachment=attachment, domain=domain)
     except AttachmentGoneError as exc:
         return render(
             request, "inbox/attachment_unavailable.html", {"reason": str(exc)}, status=410
@@ -1359,5 +1240,5 @@ def attachment_download(request: HttpRequest, attachment_id: uuid.UUID) -> HttpR
         return render(
             request, "inbox/attachment_unavailable.html", {"reason": str(exc)}, status=423
         )
-    _audit(organization, request, "attachment.download_authorized", attachment)
+    _audit(domain, request, "attachment.download_authorized", attachment)
     return redirect(authorized.url)

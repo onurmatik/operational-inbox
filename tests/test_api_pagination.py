@@ -6,17 +6,17 @@ import pytest
 from django.utils import timezone
 from freezegun import freeze_time
 
-from inbox.models import AuditEvent, Notification, Organization, Report, User
+from inbox.models import AuditEvent, Domain, Notification, Report, User
 
 
-def _create_items(resource: str, organization: Organization, count: int) -> list[str]:
+def _create_items(resource: str, organization: Domain, count: int) -> list[str]:
     ids: list[str] = []
     with freeze_time("2026-08-01 10:00:00"):
         for index in range(count):
             item: Report | Notification | AuditEvent
             if resource == "reports":
                 item = Report.objects.create(
-                    organization=organization,
+                    domain=organization,
                     kind=Report.Kind.HOURLY,
                     schedule_key=f"pagination-{organization.id}-{index}",
                     period_start=timezone.now() - timedelta(hours=1),
@@ -26,7 +26,7 @@ def _create_items(resource: str, organization: Organization, count: int) -> list
                 )
             elif resource == "notifications":
                 item = Notification.objects.create(
-                    organization=organization,
+                    domain=organization,
                     channel=Notification.Channel.IN_APP,
                     kind="pagination",
                     dedupe_key=f"pagination-{organization.id}-{index}",
@@ -34,7 +34,7 @@ def _create_items(resource: str, organization: Organization, count: int) -> list
                 )
             else:
                 item = AuditEvent.objects.create(
-                    organization=organization,
+                    domain=organization,
                     actor_type=AuditEvent.ActorType.SYSTEM,
                     event_type=f"pagination.{index}",
                     object_type="PaginationTest",
@@ -49,7 +49,7 @@ def _create_items(resource: str, organization: Organization, count: int) -> list
 def test_collection_cursor_is_stable_and_tenant_scoped(
     client,
     owner: User,
-    organization: Organization,
+    organization: Domain,
     resource: str,
 ):
     other_owner = User.objects.create_user(
@@ -57,17 +57,19 @@ def test_collection_cursor_is_stable_and_tenant_scoped(
         password="Correct-Horse-Battery-456",
         email_verified_at=timezone.now(),
     )
-    other_organization = Organization.objects.create(
+    other_organization = Domain.objects.create(
         owner=other_owner,
-        name=f"Other {resource}",
-        slug=f"other-{resource}",
+        hostname=f"other-{resource}.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now() + timedelta(days=1),
     )
     own_ids = _create_items(resource, organization, 5)
     other_ids = _create_items(resource, other_organization, 2)
     expected_ids = sorted(own_ids, reverse=True)
 
     client.force_login(owner)
-    base = f"/api/v1/organizations/{organization.id}/{resource}"
+    base = f"/api/v1/domains/{organization.id}/{resource}"
     received_ids: list[str] = []
     cursor = None
     for page_number in range(3):
@@ -84,7 +86,7 @@ def test_collection_cursor_is_stable_and_tenant_scoped(
     assert received_ids == expected_ids
     assert not set(received_ids) & set(other_ids)
     assert (
-        client.get(f"/api/v1/organizations/{other_organization.id}/{resource}").status_code == 404
+        client.get(f"/api/v1/domains/{other_organization.id}/{resource}").status_code == 404
     )
 
 
@@ -93,12 +95,12 @@ def test_collection_cursor_is_stable_and_tenant_scoped(
 def test_collection_invalid_cursor_uses_api_error_contract(
     client,
     owner: User,
-    organization: Organization,
+    organization: Domain,
     resource: str,
 ):
     client.force_login(owner)
     response = client.get(
-        f"/api/v1/organizations/{organization.id}/{resource}",
+        f"/api/v1/domains/{organization.id}/{resource}",
         {"cursor": "not-a-valid-cursor"},
     )
 
@@ -114,7 +116,7 @@ def test_collection_cursor_is_bound_to_its_resource(client, owner, organization)
     client.force_login(owner)
     _create_items("reports", organization, 2)
     _create_items("notifications", organization, 2)
-    base = f"/api/v1/organizations/{organization.id}"
+    base = f"/api/v1/domains/{organization.id}"
     report_cursor = client.get(f"{base}/reports", {"limit": 1}).json()["next_cursor"]
 
     response = client.get(f"{base}/notifications", {"cursor": report_cursor})
@@ -127,7 +129,7 @@ def test_collection_cursor_is_bound_to_its_resource(client, owner, organization)
 def test_collection_limit_is_bounded(client, owner, organization):
     client.force_login(owner)
     _create_items("reports", organization, 101)
-    base = f"/api/v1/organizations/{organization.id}/reports"
+    base = f"/api/v1/domains/{organization.id}/reports"
 
     maximum = client.get(base, {"limit": 1000})
     minimum = client.get(base, {"limit": 0})

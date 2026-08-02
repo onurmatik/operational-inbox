@@ -7,9 +7,8 @@ from django.utils import timezone
 
 from inbox.models import (
     Conversation,
+    Domain,
     Message,
-    Organization,
-    Project,
     ReportSchedule,
     RetentionPolicy,
     User,
@@ -27,28 +26,40 @@ def owner(db) -> User:
 
 
 @pytest.fixture
-def organization(owner: User) -> Organization:
-    organization = Organization.objects.create(
-        owner=owner, name="Example Operations", slug="example", timezone="Europe/Istanbul"
+def domain(owner: User) -> Domain:
+    domain = Domain.objects.create(
+        owner=owner,
+        hostname="example.com",
+        timezone="Europe/Istanbul",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        ownership_verified=True,
+        inbound_ready=True,
+        outbound_ready=True,
+        claim_expires_at=timezone.now() + timedelta(days=3),
     )
-    ReportSchedule.objects.create(organization=organization)
-    RetentionPolicy.objects.create(organization=organization)
-    return organization
+    ReportSchedule.objects.create(domain=domain)
+    RetentionPolicy.objects.create(domain=domain)
+    return domain
 
 
 @pytest.fixture
-def project(organization: Organization) -> Project:
-    return Project.objects.create(
-        organization=organization, name="Primary Operations", slug="primary"
-    )
+def organization(domain: Domain) -> Domain:
+    """Compatibility fixture name while individual behavior tests migrate to domain terminology."""
+    return domain
 
 
 @pytest.fixture
-def conversation(project: Project) -> Conversation:
+def project(domain: Domain) -> Domain:
+    """Compatibility fixture name while individual behavior tests migrate to domain terminology."""
+    return domain
+
+
+@pytest.fixture
+def conversation(domain: Domain) -> Conversation:
     now = timezone.now()
     return Conversation.objects.create(
-        organization=project.organization,
-        project=project,
+        domain=domain,
         subject="Privacy request",
         normalized_subject="privacy request",
         first_message_at=now,
@@ -61,8 +72,7 @@ def conversation(project: Project) -> Conversation:
 def inbound_message(conversation: Conversation) -> Message:
     now = timezone.now()
     return Message.objects.create(
-        organization=conversation.organization,
-        project=conversation.project,
+        domain=conversation.domain,
         conversation=conversation,
         direction=Message.Direction.INBOUND,
         provider_message_id="ses-message-1",

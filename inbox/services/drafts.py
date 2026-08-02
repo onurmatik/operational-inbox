@@ -28,13 +28,12 @@ def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
     output = generate_draft_output(message, client=client)
     with transaction.atomic():
         draft = ReplyDraft.objects.create(
-            organization=message.organization,
-            project=message.project,
+            domain=message.domain,
             conversation=message.conversation,
             context_message=message,
         )
         revision = ReplyDraftRevision(
-            organization=message.organization,
+            domain=message.domain,
             draft=draft,
             number=1,
             subject=output.subject,
@@ -55,8 +54,8 @@ def revise_draft(
     locked = (
         ReplyDraft.objects.select_for_update().select_related("current_revision").get(id=draft.id)
     )
-    if locked.organization.owner_id != owner.id:
-        raise ValidationError("Only the organization owner can edit a draft.")
+    if locked.domain.owner_id != owner.id:
+        raise ValidationError("Only the domain owner can edit a draft.")
     current_revision = locked.current_revision
     if current_revision is None:
         next_number = 1
@@ -66,7 +65,7 @@ def revise_draft(
             invalidated_at=timezone.now(), invalidated_reason="superseded_by_edit"
         )
     revision = ReplyDraftRevision(
-        organization=locked.organization,
+        domain=locked.domain,
         draft=locked,
         number=next_number,
         subject=subject,
@@ -86,7 +85,7 @@ def approve_exact_revision(
 ) -> OutboundMessage:
     locked = (
         ReplyDraft.objects.select_for_update()
-        .select_related("organization", "current_revision", "context_message", "conversation")
+        .select_related("domain", "current_revision", "context_message", "conversation")
         .get(id=draft.id)
     )
     revision = locked.current_revision
@@ -98,8 +97,8 @@ def approve_exact_revision(
         raise ValidationError(
             {"content_hash": "The draft changed. Review the exact content again."}
         )
-    if locked.organization.owner_id != owner.id:
-        raise ValidationError("Only the organization owner can approve a reply.")
+    if locked.domain.owner_id != owner.id:
+        raise ValidationError("Only the domain owner can approve a reply.")
     approval = DraftApproval.objects.filter(revision=revision).first()
     if approval is not None:
         if (
@@ -113,7 +112,7 @@ def approve_exact_revision(
             return existing_outbound
     else:
         approval = DraftApproval(
-            organization=locked.organization,
+            domain=locked.domain,
             revision=revision,
             approved_by=owner,
             content_hash=content_hash,
@@ -125,18 +124,10 @@ def approve_exact_revision(
     if domain is None:
         raise ValidationError("The original routing recipient is unavailable.")
     local_part, recipient_domain = domain.address.rsplit("@", 1)
-    sending_domain = Domain.objects.filter(
-        organization=locked.organization,
-        project=locked.project,
-        hostname=recipient_domain,
-    ).first()
+    sending_domain = Domain.objects.filter(id=locked.domain_id, hostname=recipient_domain).first()
     if sending_domain is None:
         route = (
-            InboundRoute.objects.filter(
-                organization=locked.organization,
-                address=domain.address,
-                domain__project=locked.project,
-            )
+            InboundRoute.objects.filter(domain=locked.domain, address=domain.address)
             .select_related("domain")
             .first()
         )
@@ -146,8 +137,7 @@ def approve_exact_revision(
         raise ValidationError("Outbound sending is not ready for this domain.")
     from_address = f"{local_part}@{sending_domain.hostname}"
     outbound = OutboundMessage(
-        organization=locked.organization,
-        project=locked.project,
+        domain=locked.domain,
         conversation=locked.conversation,
         revision=revision,
         from_address=from_address,
@@ -164,14 +154,13 @@ def approve_exact_revision(
 
 @transaction.atomic
 def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessage:
-    if original.organization.owner_id != owner.id:
-        raise ValidationError("Only the organization owner can resend a message.")
+    if original.domain.owner_id != owner.id:
+        raise ValidationError("Only the domain owner can resend a message.")
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
         raise ValidationError("Only failed or unknown sends can be resent explicitly.")
     attempt = original.revision.outbound_messages.count() + 1
     resend = OutboundMessage(
-        organization=original.organization,
-        project=original.project,
+        domain=original.domain,
         conversation=original.conversation,
         revision=original.revision,
         parent=original,

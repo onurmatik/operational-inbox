@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -109,17 +108,24 @@ def test_draft_generation_persists_agent_run_telemetry(inbound_message):
 
 
 def ready_sending_domain(organization, project):
-    return Domain.objects.create(
-        organization=organization,
-        project=project,
-        hostname="example.org",
-        setup_mode=Domain.SetupMode.DIRECT_MX,
-        status=Domain.Status.READY,
-        ownership_verified=True,
-        inbound_ready=True,
-        outbound_ready=True,
-        claim_expires_at=timezone.now() + timedelta(days=1),
+    project.hostname = "example.org"
+    project.setup_mode = Domain.SetupMode.DIRECT_MX
+    project.status = Domain.Status.READY
+    project.ownership_verified = True
+    project.inbound_ready = True
+    project.outbound_ready = True
+    project.save(
+        update_fields=(
+            "hostname",
+            "setup_mode",
+            "status",
+            "ownership_verified",
+            "inbound_ready",
+            "outbound_ready",
+            "updated_at",
+        )
     )
+    return project
 
 
 @pytest.mark.django_db
@@ -128,15 +134,14 @@ def test_exact_revision_approval_and_edit_invalidation(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -178,15 +183,14 @@ def test_duplicate_exact_approval_is_idempotent(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -219,15 +223,14 @@ def test_ambiguous_ses_timeout_is_unknown_and_requires_explicit_resend(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -262,15 +265,14 @@ def test_successful_ses_acceptance_creates_outbound_timeline_message(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -299,15 +301,14 @@ def test_delivery_event_during_send_is_not_overwritten_by_acceptance(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )
@@ -342,15 +343,14 @@ def test_inbound_arriving_during_send_keeps_conversation_open(
 ):
     ready_sending_domain(organization, project)
     MessageRecipient.objects.create(
-        organization=organization,
+        domain=organization,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
         is_routing_recipient=True,
     )
     draft = ReplyDraft.objects.create(
-        organization=organization,
-        project=project,
+        domain=project,
         conversation=conversation,
         context_message=inbound_message,
     )

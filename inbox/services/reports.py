@@ -9,19 +9,19 @@ from django.db import transaction
 from django.db.models import Prefetch, Q
 from django.utils import timezone
 
-from inbox.models import AgentRun, Classification, Message, Organization, Report, ReportItem
+from inbox.models import AgentRun, Classification, Domain, Message, Report, ReportItem
 from inbox.services.ai import AIProcessingError, generate_report_output
 
 
-def organization_zone(organization: Organization) -> ZoneInfo:
+def domain_zone(domain: Domain) -> ZoneInfo:
     try:
-        return ZoneInfo(organization.timezone)
+        return ZoneInfo(domain.timezone)
     except ZoneInfoNotFoundError:
         return ZoneInfo("UTC")
 
 
-def schedule_key(organization: Organization, kind: str, now: datetime) -> str:
-    local = now.astimezone(organization_zone(organization))
+def schedule_key(domain: Domain, kind: str, now: datetime) -> str:
+    local = now.astimezone(domain_zone(domain))
     if kind == Report.Kind.HOURLY:
         return f"{local:%Y-%m-%dT%H}:00:{local.utcoffset()}"
     return f"{local:%Y-%m-%d}:daily"
@@ -68,12 +68,12 @@ class ReportCandidate:
 
 
 def _report_candidates(
-    organization: Organization, start: datetime, end: datetime
+    domain: Domain, start: datetime, end: datetime
 ) -> list[ReportCandidate]:
-    aging_cutoff = end - timedelta(hours=organization.report_schedule.aging_reminder_hours)
+    aging_cutoff = end - timedelta(hours=domain.report_schedule.aging_reminder_hours)
     messages = list(
         Message.objects.filter(
-            organization=organization,
+            domain=domain,
             direction=Message.Direction.INBOUND,
             normalized_purged_at__isnull=True,
         )
@@ -84,7 +84,7 @@ def _report_candidates(
                 conversation__last_message_at__lte=aging_cutoff,
             )
         )
-        .select_related("conversation", "project")
+        .select_related("conversation", "domain")
         .prefetch_related(
             Prefetch(
                 "classifications",
@@ -133,15 +133,15 @@ def _fallback_content(candidates: list[ReportCandidate]) -> tuple[str, str]:
 
 
 def generate_report(
-    *, organization: Organization, kind: str, now: datetime | None = None, client=None
+    *, domain: Domain, kind: str, now: datetime | None = None, client=None
 ) -> Report:
     now = now or timezone.now()
-    key = schedule_key(organization, kind, now)
-    existing = Report.objects.filter(organization=organization, kind=kind, schedule_key=key).first()
+    key = schedule_key(domain, kind, now)
+    existing = Report.objects.filter(domain=domain, kind=kind, schedule_key=key).first()
     if existing:
         return existing
     start, end = report_period(kind, now)
-    candidates = _report_candidates(organization, start, end)
+    candidates = _report_candidates(domain, start, end)
     title, content = _fallback_content(candidates)
     mode = Report.GenerationMode.DETERMINISTIC
     ai_items: dict[str, tuple[int, str]] = {}
@@ -159,14 +159,14 @@ def generate_report(
         )
         try:
             output, agent_run = generate_report_output(
-                organization=organization,
+                domain=domain,
                 schedule_key=key,
                 input_text=input_text,
                 client=client,
             )
         except AIProcessingError:
             agent_run = AgentRun.objects.filter(
-                organization=organization,
+                domain=domain,
                 kind=AgentRun.Kind.REPORT,
                 schedule_key=key,
             ).first()
@@ -179,7 +179,7 @@ def generate_report(
             }
     with transaction.atomic():
         report, created = Report.objects.get_or_create(
-            organization=organization,
+            domain=domain,
             kind=kind,
             schedule_key=key,
             defaults={
@@ -204,7 +204,7 @@ def generate_report(
             rank += 1
             ai_item = ai_items.get(str(conversation.id))
             ReportItem.objects.create(
-                organization=organization,
+                domain=domain,
                 report=report,
                 conversation=conversation,
                 classification=candidate.classification,
@@ -214,9 +214,9 @@ def generate_report(
     return report
 
 
-def daily_report_due(organization: Organization, now: datetime) -> bool:
-    schedule = organization.report_schedule
-    local = now.astimezone(organization_zone(organization))
+def daily_report_due(domain: Domain, now: datetime) -> bool:
+    schedule = domain.report_schedule
+    local = now.astimezone(domain_zone(domain))
     if not schedule.is_enabled or schedule.last_daily_report_local_date == local.date():
         return False
     scheduled = datetime.combine(local.date(), schedule.daily_report_time, tzinfo=local.tzinfo)

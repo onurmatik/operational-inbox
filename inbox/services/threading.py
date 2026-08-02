@@ -5,7 +5,7 @@ import re
 
 from django.db.models import QuerySet
 
-from inbox.models import Conversation, Message, MessageReference, Project
+from inbox.models import Conversation, Domain, Message, MessageReference
 from inbox.services.mime import ParsedMIME
 
 PREFIX_RE = re.compile(r"^(?:(?:re|fw|fwd)\s*:\s*)+", re.IGNORECASE)
@@ -29,17 +29,17 @@ def _conversation_participants(conversation: Conversation) -> set[str]:
     return {address.casefold() for address in senders | recipients if address}
 
 
-def _candidate_messages(project: Project, ids: list[str]) -> QuerySet[Message]:
+def _candidate_messages(domain: Domain, ids: list[str]) -> QuerySet[Message]:
     hashes = [reference_hash(value) for value in ids]
     return (
-        Message.objects.filter(project=project, references__value_hash__in=hashes)
+        Message.objects.filter(domain=domain, references__value_hash__in=hashes)
         .select_related("conversation")
         .distinct()
     )
 
 
 def match_conversation(
-    *, project: Project, parsed: ParsedMIME, envelope_recipients: list[str]
+    *, domain: Domain, parsed: ParsedMIME, envelope_recipients: list[str]
 ) -> Conversation | None:
     incoming_participants = {
         parsed.from_address.casefold(),
@@ -51,7 +51,7 @@ def match_conversation(
         by_message_id = {
             reference.value_hash: reference.message
             for reference in MessageReference.objects.filter(
-                message__project=project,
+                message__domain=domain,
                 kind=MessageReference.Kind.MESSAGE_ID,
                 value_hash__in=[reference_hash(item) for item in identifiers],
             ).select_related("message__conversation")
@@ -65,12 +65,12 @@ def match_conversation(
     return None
 
 
-def merge_suggestion(project: Project, subject: str, exclude: Conversation) -> Conversation | None:
+def merge_suggestion(domain: Domain, subject: str, exclude: Conversation) -> Conversation | None:
     normalized = normalize_subject(subject)
     if not normalized:
         return None
     return (
-        Conversation.objects.filter(project=project, normalized_subject=normalized)
+        Conversation.objects.filter(domain=domain, normalized_subject=normalized)
         .exclude(id=exclude.id)
         .order_by("-last_message_at")
         .first()

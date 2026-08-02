@@ -5,7 +5,7 @@ from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from inbox.models import APIToken, Organization, Project, User
+from inbox.models import APIToken, Domain, User
 
 
 def signup_payload(suffix: str) -> dict[str, str]:
@@ -66,14 +66,18 @@ def test_cross_tenant_web_object_returns_404(client, owner, organization, projec
         password="Different-Strong-Password-123",
         email_verified_at=timezone.now(),
     )
-    other_org = Organization.objects.create(owner=other_owner, name="Other", slug="other")
-    other_project = Project.objects.create(organization=other_org, name="Other", slug="other")
+    other_domain = Domain.objects.create(
+        owner=other_owner,
+        hostname="other.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now(),
+    )
     from inbox.models import Conversation
 
     now = timezone.now()
     hidden = Conversation.objects.create(
-        organization=other_org,
-        project=other_project,
+        domain=other_domain,
         subject="Hidden",
         first_message_at=now,
         last_message_at=now,
@@ -85,20 +89,20 @@ def test_cross_tenant_web_object_returns_404(client, owner, organization, projec
 @pytest.mark.django_db
 def test_api_bearer_scope_and_cross_tenant_404(client, owner, organization, project):
     _, raw = APIToken.issue(
-        organization=organization,
+        domain=organization,
         owner=owner,
         name="Read only",
         scopes=[APIToken.Scope.READ],
     )
     response = client.get(
-        f"/api/v1/organizations/{organization.id}/projects",
+        "/api/v1/domains",
         headers={"Authorization": f"Bearer {raw}"},
     )
     assert response.status_code == 200
-    assert response.json()["items"][0]["id"] == str(project.id)
+    assert response.json()["items"][0]["id"] == str(organization.id)
     forbidden = client.post(
-        f"/api/v1/organizations/{organization.id}/projects",
-        data={"name": "No write"},
+        "/api/v1/domains",
+        data={"hostname": "forbidden.example", "setup_mode": "DIRECT_MX"},
         content_type="application/json",
         headers={"Authorization": f"Bearer {raw}"},
     )
@@ -108,7 +112,7 @@ def test_api_bearer_scope_and_cross_tenant_404(client, owner, organization, proj
 
     other_id = "11111111-1111-4111-8111-111111111111"
     hidden = client.get(
-        f"/api/v1/organizations/{other_id}/projects",
+        f"/api/v1/domains/{other_id}",
         headers={"Authorization": f"Bearer {raw}"},
     )
     assert hidden.status_code == 404

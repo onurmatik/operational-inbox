@@ -50,13 +50,13 @@ def test_threading_requires_reference_and_participant_overlap(
     project, conversation, inbound_message
 ):
     MessageReference.objects.create(
-        organization=project.organization,
+        domain=project,
         message=inbound_message,
         kind=MessageReference.Kind.MESSAGE_ID,
         value_hash=reference_hash(inbound_message.rfc_message_id),
     )
     MessageRecipient.objects.create(
-        organization=project.organization,
+        domain=project,
         message=inbound_message,
         kind=MessageRecipient.Kind.ENVELOPE,
         address="privacy@example.org",
@@ -70,7 +70,7 @@ def test_threading_requires_reference_and_participant_overlap(
     reply["In-Reply-To"] = inbound_message.rfc_message_id
     reply.set_content("Following up")
     matched = match_conversation(
-        project=project,
+        domain=project,
         parsed=parse_mime(reply.as_bytes()),
         envelope_recipients=["privacy@example.org"],
     )
@@ -85,7 +85,7 @@ def test_threading_requires_reference_and_participant_overlap(
     outsider.set_content("Not a participant")
     assert (
         match_conversation(
-            project=project,
+            domain=project,
             parsed=parse_mime(outsider.as_bytes()),
             envelope_recipients=["legal@different.test"],
         )

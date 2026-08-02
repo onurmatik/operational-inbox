@@ -3,7 +3,7 @@
 {% block content %}
   <nav class="mb-4 text-xs text-muted">
     <a href="{% url 'inbox' %}" class="hover:text-forest">Inbox</a>
-    <span class="mx-2">/</span>{{ conversation.project.name }}
+    <span class="mx-2">/</span>{{ conversation.domain.hostname }}
   </nav>
 
   <div class="flex flex-col gap-4 border-b border-line pb-6 xl:flex-row xl:items-start xl:justify-between">

@@ -5,14 +5,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import Q
 from django.http import Http404, HttpRequest
 from django.utils import timezone
-from django.utils.text import slugify
 from ninja import NinjaAPI, Schema, Status
 from ninja.errors import AuthenticationError, AuthorizationError, HttpError
 from ninja.errors import ValidationError as NinjaValidationError
@@ -29,13 +27,9 @@ from inbox.models import (
     DurableJob,
     Message,
     Notification,
-    Organization,
     OutboundMessage,
-    Project,
     ReplyDraft,
     Report,
-    ReportSchedule,
-    RetentionPolicy,
 )
 from inbox.services.attachments import (
     AttachmentGoneError,
@@ -77,18 +71,7 @@ class ErrorSchema(Schema):
     request_id: str
 
 
-class OrganizationInput(Schema):
-    name: str = Field(min_length=1, max_length=120)
-    timezone: str = Field(default="UTC", max_length=64)
-    project_name: str = Field(default="Default project", min_length=1, max_length=120)
-
-
-class ProjectInput(Schema):
-    name: str = Field(min_length=1, max_length=120)
-
-
 class DomainInput(Schema):
-    project_id: uuid.UUID
     hostname: str = Field(min_length=3, max_length=253)
     setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
 
@@ -128,10 +111,17 @@ class ScopedBearer(HttpBearer):
         candidates = APIToken.objects.filter(
             prefix=token[:10],
             revoked_at__isnull=True,
-            organization__is_active=True,
+            domain__status__in=[
+                Domain.Status.PROVISIONING,
+                Domain.Status.PENDING_DNS,
+                Domain.Status.PENDING_TEST,
+                Domain.Status.READY,
+                Domain.Status.ERROR,
+                Domain.Status.DEGRADED,
+            ],
             owner__is_active=True,
             owner__email_verified_at__isnull=False,
-        ).select_related("organization", "owner")
+        ).select_related("domain", "owner")
         for candidate in candidates:
             if candidate.is_active and candidate.matches(token):
                 APIToken.objects.filter(id=candidate.id).update(last_used_at=timezone.now())
@@ -254,7 +244,7 @@ def require_scope(request: HttpRequest, scope: str) -> None:
 
 def record_api_audit(
     request: HttpRequest,
-    organization: Organization,
+    domain: Domain,
     event_type: str,
     instance: Any,
     metadata: dict[str, Any] | None = None,
@@ -262,7 +252,7 @@ def record_api_audit(
     auth = request.auth
     actor = auth.owner if isinstance(auth, APIToken) else request.user
     AuditEvent.objects.create(
-        organization=organization,
+        domain=domain,
         actor_type=AuditEvent.ActorType.OWNER,
         actor_id=actor.id,
         event_type=event_type,
@@ -273,48 +263,30 @@ def record_api_audit(
     )
 
 
-def api_organization(request: HttpRequest, organization_id: uuid.UUID) -> Organization:
+def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
     auth = request.auth
     if isinstance(auth, APIToken):
-        if auth.organization_id != organization_id:
+        if auth.domain_id != domain_id:
             raise Http404
-        return auth.organization
+        return auth.domain
     try:
-        return Organization.objects.get(id=organization_id, owner=request.user, is_active=True)
-    except Organization.DoesNotExist as exc:
+        return Domain.objects.exclude(status=Domain.Status.DISABLED).get(
+            id=domain_id, owner=request.user
+        )
+    except Domain.DoesNotExist as exc:
         raise Http404 from exc
 
 
-def scoped_object(model, organization: Organization, object_id: uuid.UUID):
+def scoped_object(model, domain: Domain, object_id: uuid.UUID):
     try:
-        return model.objects.get(id=object_id, organization=organization)
+        return model.objects.get(id=object_id, domain=domain)
     except (model.DoesNotExist, ValueError) as exc:
         raise Http404 from exc
-
-
-def _org_dict(organization: Organization) -> dict[str, Any]:
-    return {
-        "id": str(organization.id),
-        "name": organization.name,
-        "slug": organization.slug,
-        "timezone": organization.timezone,
-    }
-
-
-def _project_dict(project: Project) -> dict[str, Any]:
-    return {
-        "id": str(project.id),
-        "organization_id": str(project.organization_id),
-        "name": project.name,
-        "slug": project.slug,
-        "active": project.is_active,
-    }
 
 
 def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": str(domain.id),
-        "project_id": str(domain.project_id),
         "hostname": domain.hostname,
         "setup_mode": domain.setup_mode,
         "status": domain.status,
@@ -385,7 +357,7 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
 def _conversation_dict(conversation: Conversation, *, details: bool = False) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": str(conversation.id),
-        "project_id": str(conversation.project_id),
+        "domain_id": str(conversation.domain_id),
         "subject": conversation.subject,
         "status": conversation.status,
         "last_message_at": conversation.last_message_at,
@@ -394,8 +366,7 @@ def _conversation_dict(conversation: Conversation, *, details: bool = False) -> 
         result["messages"] = [
             _message_dict(item, include_body=True)
             for item in conversation.messages.filter(
-                organization=conversation.organization,
-                project=conversation.project,
+                domain=conversation.domain,
             ).prefetch_related("recipients", "attachments")
         ]
     return result
@@ -469,125 +440,41 @@ def api_health(request: HttpRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 
-@api.get("/organizations", auth=authenticated, tags=["Organizations"])
-def organizations_list(request: HttpRequest):
+@api.get("/domains", auth=authenticated, tags=["Domains"])
+def domains_list(request: HttpRequest):
     require_scope(request, APIToken.Scope.READ)
     if isinstance(request.auth, APIToken):
-        organizations = [request.auth.organization]
+        domains = [request.auth.domain]
     else:
-        organizations = Organization.objects.filter(owner=request.user, is_active=True)
-    return {"items": [_org_dict(item) for item in organizations]}
-
-
-@api.post("/organizations", auth=authenticated, response={201: dict}, tags=["Organizations"])
-def organizations_create(request: HttpRequest, payload: OrganizationInput):
-    require_scope(request, APIToken.Scope.WRITE)
-    if isinstance(request.auth, APIToken):
-        raise APIError(
-            "session_required", "Creating organizations requires an owner session.", status=403
-        )
-    with transaction.atomic():
-        base = slugify(payload.name)[:70] or "organization"
-        slug = base
-        index = 2
-        while Organization.objects.filter(owner=request.user, slug=slug).exists():
-            slug = f"{base[:65]}-{index}"
-            index += 1
-        organization = Organization.objects.create(
-            owner=request.user, name=payload.name, slug=slug, timezone=payload.timezone
-        )
-        Project.objects.create(
-            organization=organization,
-            name=payload.project_name,
-            slug=slugify(payload.project_name)[:70] or "default",
-        )
-        ReportSchedule.objects.create(organization=organization)
-        RetentionPolicy.objects.create(organization=organization)
-    record_api_audit(request, organization, "organization.created", organization)
-    return Status(201, _org_dict(organization))
-
-
-@api.get("/organizations/{organization_id}/projects", auth=authenticated, tags=["Projects"])
-def projects_list(request: HttpRequest, organization_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
+        domains = Domain.objects.filter(owner=request.user).exclude(status=Domain.Status.DISABLED)
     return {
-        "items": [
-            _project_dict(item)
-            for item in Project.objects.filter(organization=organization).order_by("name")
-        ]
+        "items": [_domain_dict(item) for item in domains]
     }
 
 
 @api.post(
-    "/organizations/{organization_id}/projects",
-    auth=authenticated,
-    response={201: dict},
-    tags=["Projects"],
-)
-def projects_create(request: HttpRequest, organization_id: uuid.UUID, payload: ProjectInput):
-    require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    if (
-        Project.objects.filter(organization=organization, is_active=True).count()
-        >= settings.MAX_PROJECTS_PER_ORGANIZATION
-    ):
-        raise APIError(
-            "project_limit_reached",
-            "The organization has reached its project limit.",
-            status=409,
-        )
-    base = slugify(payload.name)[:70] or "project"
-    slug = base
-    index = 2
-    while Project.objects.filter(organization=organization, slug=slug).exists():
-        slug = f"{base[:65]}-{index}"
-        index += 1
-    project = Project.objects.create(organization=organization, name=payload.name, slug=slug)
-    record_api_audit(request, organization, "project.created", project)
-    return Status(201, _project_dict(project))
-
-
-@api.get("/organizations/{organization_id}/domains", auth=authenticated, tags=["Domains"])
-def domains_list(request: HttpRequest, organization_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    return {
-        "items": [
-            _domain_dict(item)
-            for item in Domain.objects.filter(organization=organization).order_by("hostname")
-        ]
-    }
-
-
-@api.post(
-    "/organizations/{organization_id}/domains",
+    "/domains",
     auth=authenticated,
     response={200: dict, 202: dict},
     tags=["Domains"],
 )
-def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: DomainInput):
+def domains_create(request: HttpRequest, payload: DomainInput):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    try:
-        project = Project.objects.get(
-            id=payload.project_id, organization=organization, is_active=True
+    if isinstance(request.auth, APIToken):
+        raise APIError(
+            "session_required",
+            "Creating domains requires an owner session.",
+            status=403,
         )
-    except Project.DoesNotExist as exc:
-        raise Http404 from exc
     try:
         domain = create_domain(
-            organization=organization,
-            project=project,
+            owner=request.user,
             hostname=payload.hostname,
             setup_mode=payload.setup_mode,
         )
     except DomainClaimConflict as exc:
         if exc.existing_domain is not None:
-            if (
-                exc.existing_domain.project_id != payload.project_id
-                or exc.existing_domain.setup_mode != payload.setup_mode
-            ):
+            if exc.existing_domain.setup_mode != payload.setup_mode:
                 raise APIError(
                     "domain_claim_conflict",
                     "The domain already has an active claim with different settings.",
@@ -598,7 +485,7 @@ def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: Do
                 if started:
                     record_api_audit(
                         request,
-                        organization,
+                        exc.existing_domain,
                         "domain.provision_job_repaired",
                         existing,
                         {"job_id": str(job.id)},
@@ -619,11 +506,11 @@ def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: Do
         kind="provision_domain",
         idempotency_key=f"provision-domain:{domain.id}",
         payload={"domain_id": str(domain.id)},
-        organization=organization,
+        domain=domain,
     )
     record_api_audit(
         request,
-        organization,
+        domain,
         "domain.created",
         domain,
         {"setup_mode": domain.setup_mode},
@@ -632,27 +519,25 @@ def domains_create(request: HttpRequest, organization_id: uuid.UUID, payload: Do
 
 
 @api.get(
-    "/organizations/{organization_id}/domains/{domain_id}", auth=authenticated, tags=["Domains"]
+    "/domains/{domain_id}", auth=authenticated, tags=["Domains"]
 )
-def domains_detail(request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID):
+def domains_detail(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    domain = scoped_object(Domain, organization, domain_id)
+    domain = api_domain(request, domain_id)
     return _domain_dict(domain, details=True)
 
 
 @api.post(
-    "/organizations/{organization_id}/domains/{domain_id}/retry",
+    "/domains/{domain_id}/retry",
     auth=authenticated,
     response={202: dict},
     tags=["Domains"],
 )
 def domains_retry_provisioning(
-    request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID
+    request: HttpRequest, domain_id: uuid.UUID
 ):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    domain = scoped_object(Domain, organization, domain_id)
+    domain = api_domain(request, domain_id)
     try:
         domain, job, started = retry_domain_provisioning(domain)
     except DjangoValidationError as exc:
@@ -664,7 +549,7 @@ def domains_retry_provisioning(
     if started:
         record_api_audit(
             request,
-            organization,
+            domain,
             "domain.provision_retry_requested",
             domain,
             {"job_id": str(job.id)},
@@ -680,15 +565,14 @@ def domains_retry_provisioning(
 
 
 @api.post(
-    "/organizations/{organization_id}/domains/{domain_id}/check",
+    "/domains/{domain_id}/check",
     auth=authenticated,
     response={202: dict},
     tags=["Domains"],
 )
-def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID):
+def domains_check(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    domain = scoped_object(Domain, organization, domain_id)
+    domain = api_domain(request, domain_id)
     if (
         domain.status
         not in {
@@ -709,7 +593,7 @@ def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: u
         kind="dns_check",
         idempotency_key=f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M}",
         payload={"domain_id": str(domain.id)},
-        organization=organization,
+        domain=domain,
     )
     if job.status == DurableJob.Status.RETRY:
         expedited = DurableJob.objects.filter(
@@ -725,22 +609,21 @@ def domains_check(request: HttpRequest, organization_id: uuid.UUID, domain_id: u
             kind="dns_check",
             idempotency_key=(f"dns-check:{domain.id}:{requested_at:%Y%m%d%H%M%S%f}"),
             payload={"domain_id": str(domain.id)},
-            organization=organization,
+            domain=domain,
         )
-    record_api_audit(request, organization, "domain.check_requested", domain)
+    record_api_audit(request, domain, "domain.check_requested", domain)
     return Status(202, {"status": "queued", "job_id": str(job.id)})
 
 
 @api.post(
-    "/organizations/{organization_id}/domains/{domain_id}/test",
+    "/domains/{domain_id}/test",
     auth=authenticated,
     response={201: dict},
     tags=["Domains"],
 )
-def domains_test(request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID):
+def domains_test(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    domain = scoped_object(Domain, organization, domain_id)
+    domain = api_domain(request, domain_id)
     try:
         test, address = create_domain_test(domain)
     except DjangoValidationError as exc:
@@ -756,7 +639,7 @@ def domains_test(request: HttpRequest, organization_id: uuid.UUID, domain_id: uu
             "The receiving route is still being activated. Try again shortly.",
             status=503,
         ) from exc
-    record_api_audit(request, organization, "domain.test_created", test)
+    record_api_audit(request, domain, "domain.test_created", test)
     return Status(
         201,
         {
@@ -769,15 +652,14 @@ def domains_test(request: HttpRequest, organization_id: uuid.UUID, domain_id: uu
 
 
 @api.post(
-    "/organizations/{organization_id}/domains/{domain_id}/disable",
+    "/domains/{domain_id}/disable",
     auth=authenticated,
     response={202: dict},
     tags=["Domains"],
 )
-def domains_disable(request: HttpRequest, organization_id: uuid.UUID, domain_id: uuid.UUID):
+def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    domain = scoped_object(Domain, organization, domain_id)
+    domain = api_domain(request, domain_id)
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
     domain.outbound_ready = False
@@ -787,30 +669,27 @@ def domains_disable(request: HttpRequest, organization_id: uuid.UUID, domain_id:
         kind="reconcile_receipt_rule",
         idempotency_key=f"receipt-rule:disable:{domain.id}",
         payload={},
-        organization=organization,
+        domain=domain,
     )
-    record_api_audit(request, organization, "domain.disabled", domain)
+    record_api_audit(request, domain, "domain.disabled", domain)
     return Status(202, {"status": domain.status, "job_id": str(job.id)})
 
 
 @api.get(
-    "/organizations/{organization_id}/conversations", auth=authenticated, tags=["Conversations"]
+    "/domains/{domain_id}/conversations", auth=authenticated, tags=["Conversations"]
 )
 def conversations_list(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     cursor: str | None = None,
     limit: int = 50,
-    project_id: uuid.UUID | None = None,
     state: str | None = None,
     classification: str | None = None,
     q: str | None = None,
 ):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    queryset = Conversation.objects.filter(organization=organization)
-    if project_id:
-        queryset = queryset.filter(project_id=project_id)
+    domain = api_domain(request, domain_id)
+    queryset = Conversation.objects.filter(domain=domain)
     if state in Conversation.Status.values:
         queryset = queryset.filter(status=state)
     if classification in Classification.Category.values:
@@ -838,33 +717,33 @@ def conversations_list(
 
 
 @api.get(
-    "/organizations/{organization_id}/conversations/{conversation_id}",
+    "/domains/{domain_id}/conversations/{conversation_id}",
     auth=authenticated,
     tags=["Conversations"],
 )
 def conversations_detail(
-    request: HttpRequest, organization_id: uuid.UUID, conversation_id: uuid.UUID
+    request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID
 ):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    conversation = scoped_object(Conversation, organization, conversation_id)
+    domain = api_domain(request, domain_id)
+    conversation = scoped_object(Conversation, domain, conversation_id)
     return _conversation_dict(conversation, details=True)
 
 
 @api.post(
-    "/organizations/{organization_id}/conversations/{conversation_id}/state",
+    "/domains/{domain_id}/conversations/{conversation_id}/state",
     auth=authenticated,
     tags=["Conversations"],
 )
 def conversations_state(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     conversation_id: uuid.UUID,
     payload: ConversationStatusInput,
 ):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    conversation = scoped_object(Conversation, organization, conversation_id)
+    domain = api_domain(request, domain_id)
+    conversation = scoped_object(Conversation, domain, conversation_id)
     conversation.status = payload.status
     conversation.resolved_at = (
         timezone.now() if payload.status == Conversation.Status.RESOLVED else None
@@ -872,7 +751,7 @@ def conversations_state(
     conversation.save(update_fields=("status", "resolved_at", "updated_at"))
     record_api_audit(
         request,
-        organization,
+        domain,
         "conversation.state_changed",
         conversation,
         {"status": conversation.status},
@@ -881,20 +760,20 @@ def conversations_state(
 
 
 @api.post(
-    "/organizations/{organization_id}/messages/{message_id}/classification",
+    "/domains/{domain_id}/messages/{message_id}/classification",
     auth=authenticated,
     response={201: dict},
     tags=["Classifications"],
 )
 def classifications_override(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     message_id: uuid.UUID,
     payload: ClassificationInput,
 ):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    message = scoped_object(Message, organization, message_id)
+    domain = api_domain(request, domain_id)
+    message = scoped_object(Message, domain, message_id)
     with transaction.atomic():
         previous = (
             Classification.objects.select_for_update()
@@ -905,7 +784,7 @@ def classifications_override(
             previous.is_current = False
             previous.save(update_fields=("is_current", "updated_at"))
         classification = Classification.objects.create(
-            organization=organization,
+            domain=domain,
             message=message,
             source=Classification.Source.OWNER,
             category=payload.category,
@@ -918,7 +797,7 @@ def classifications_override(
         )
     record_api_audit(
         request,
-        organization,
+        domain,
         "classification.overridden",
         classification,
         {"category": classification.category, "urgency": classification.urgency},
@@ -927,15 +806,15 @@ def classifications_override(
 
 
 @api.post(
-    "/organizations/{organization_id}/conversations/{conversation_id}/drafts",
+    "/domains/{domain_id}/conversations/{conversation_id}/drafts",
     auth=authenticated,
     response={201: dict},
     tags=["Drafts"],
 )
-def drafts_generate(request: HttpRequest, organization_id: uuid.UUID, conversation_id: uuid.UUID):
+def drafts_generate(request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    conversation = scoped_object(Conversation, organization, conversation_id)
+    domain = api_domain(request, domain_id)
+    conversation = scoped_object(Conversation, domain, conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
     if message is None:
         raise APIError("no_inbound_message", "No inbound message is available for drafting.")
@@ -947,7 +826,7 @@ def drafts_generate(request: HttpRequest, organization_id: uuid.UUID, conversati
             "A draft could not be generated. The message remains unchanged.",
             status=503,
         ) from exc
-    record_api_audit(request, organization, "draft.generated", draft)
+    record_api_audit(request, domain, "draft.generated", draft)
     return Status(
         201,
         {
@@ -959,14 +838,14 @@ def drafts_generate(request: HttpRequest, organization_id: uuid.UUID, conversati
 
 
 @api.get(
-    "/organizations/{organization_id}/drafts/{draft_id}",
+    "/domains/{domain_id}/drafts/{draft_id}",
     auth=authenticated,
     tags=["Drafts"],
 )
-def drafts_detail(request: HttpRequest, organization_id: uuid.UUID, draft_id: uuid.UUID):
+def drafts_detail(request: HttpRequest, domain_id: uuid.UUID, draft_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    draft = scoped_object(ReplyDraft, organization, draft_id)
+    domain = api_domain(request, domain_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
     revision = draft.current_revision
     if revision is None:
         raise Http404
@@ -985,28 +864,28 @@ def drafts_detail(request: HttpRequest, organization_id: uuid.UUID, draft_id: uu
 
 
 @api.post(
-    "/organizations/{organization_id}/drafts/{draft_id}/revisions",
+    "/domains/{domain_id}/drafts/{draft_id}/revisions",
     auth=authenticated,
     response={201: dict},
     tags=["Drafts"],
 )
 def drafts_revise(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     draft_id: uuid.UUID,
     payload: RevisionInput,
 ):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    draft = scoped_object(ReplyDraft, organization, draft_id)
-    owner = organization.owner if isinstance(request.auth, APIToken) else request.user
+    domain = api_domain(request, domain_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
+    owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         revision = revise_draft(
             draft=draft, owner=owner, subject=payload.subject, body_text=payload.body_text
         )
     except DjangoValidationError as exc:
         raise APIError("stale_draft", "; ".join(exc.messages), status=409) from exc
-    record_api_audit(request, organization, "draft.revised", revision)
+    record_api_audit(request, domain, "draft.revised", revision)
     return Status(
         201,
         {
@@ -1018,21 +897,21 @@ def drafts_revise(
 
 
 @api.post(
-    "/organizations/{organization_id}/drafts/{draft_id}/approval",
+    "/domains/{domain_id}/drafts/{draft_id}/approval",
     auth=authenticated,
     response={202: dict},
     tags=["Drafts"],
 )
 def drafts_approve(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     draft_id: uuid.UUID,
     payload: ApprovalInput,
 ):
     require_scope(request, APIToken.Scope.APPROVE_SEND)
-    organization = api_organization(request, organization_id)
-    draft = scoped_object(ReplyDraft, organization, draft_id)
-    owner = organization.owner if isinstance(request.auth, APIToken) else request.user
+    domain = api_domain(request, domain_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
+    owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         outbound = approve_exact_revision(
             draft=draft,
@@ -1046,11 +925,11 @@ def drafts_approve(
         kind="send_outbound",
         idempotency_key=f"outbound:{outbound.id}",
         payload={"outbound_id": str(outbound.id)},
-        organization=organization,
+        domain=domain,
     )
     record_api_audit(
         request,
-        organization,
+        domain,
         "draft.approved_and_queued",
         outbound,
         {"revision_id": str(payload.revision_id)},
@@ -1059,14 +938,14 @@ def drafts_approve(
 
 
 @api.get(
-    "/organizations/{organization_id}/outbound/{outbound_id}",
+    "/domains/{domain_id}/outbound/{outbound_id}",
     auth=authenticated,
     tags=["Outbound"],
 )
-def outbound_status(request: HttpRequest, organization_id: uuid.UUID, outbound_id: uuid.UUID):
+def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    outbound = scoped_object(OutboundMessage, organization, outbound_id)
+    domain = api_domain(request, domain_id)
+    outbound = scoped_object(OutboundMessage, domain, outbound_id)
     return {
         "id": str(outbound.id),
         "status": outbound.status,
@@ -1082,16 +961,16 @@ def outbound_status(request: HttpRequest, organization_id: uuid.UUID, outbound_i
 
 
 @api.post(
-    "/organizations/{organization_id}/outbound/{outbound_id}/resend",
+    "/domains/{domain_id}/outbound/{outbound_id}/resend",
     auth=authenticated,
     response={202: dict},
     tags=["Outbound"],
 )
-def outbound_resend(request: HttpRequest, organization_id: uuid.UUID, outbound_id: uuid.UUID):
+def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
     require_scope(request, APIToken.Scope.APPROVE_SEND)
-    organization = api_organization(request, organization_id)
-    original = scoped_object(OutboundMessage, organization, outbound_id)
-    owner = organization.owner if isinstance(request.auth, APIToken) else request.user
+    domain = api_domain(request, domain_id)
+    original = scoped_object(OutboundMessage, domain, outbound_id)
+    owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         resend = resend_outbound(original, owner=owner)
     except DjangoValidationError as exc:
@@ -1100,11 +979,11 @@ def outbound_resend(request: HttpRequest, organization_id: uuid.UUID, outbound_i
         kind="send_outbound",
         idempotency_key=f"outbound:{resend.id}",
         payload={"outbound_id": str(resend.id)},
-        organization=organization,
+        domain=domain,
     )
     record_api_audit(
         request,
-        organization,
+        domain,
         "outbound.resend_queued",
         resend,
         {"original_id": str(original.id)},
@@ -1112,17 +991,17 @@ def outbound_resend(request: HttpRequest, organization_id: uuid.UUID, outbound_i
     return Status(202, {"outbound_id": str(resend.id), "status": resend.status})
 
 
-@api.get("/organizations/{organization_id}/reports", auth=authenticated, tags=["Reports"])
+@api.get("/domains/{domain_id}/reports", auth=authenticated, tags=["Reports"])
 def reports_list(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     cursor: str | None = None,
     limit: int = 50,
 ):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
+    domain = api_domain(request, domain_id)
     reports, next_cursor = _paginate_queryset(
-        Report.objects.filter(organization=organization),
+        Report.objects.filter(domain=domain),
         cursor=cursor,
         limit=limit,
         timestamp_field="created_at",
@@ -1148,18 +1027,18 @@ def reports_list(
 
 
 @api.get(
-    "/organizations/{organization_id}/notifications", auth=authenticated, tags=["Notifications"]
+    "/domains/{domain_id}/notifications", auth=authenticated, tags=["Notifications"]
 )
 def notifications_list(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     cursor: str | None = None,
     limit: int = 50,
 ):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
+    domain = api_domain(request, domain_id)
     notifications, next_cursor = _paginate_queryset(
-        Notification.objects.filter(organization=organization, channel=Notification.Channel.IN_APP),
+        Notification.objects.filter(domain=domain, channel=Notification.Channel.IN_APP),
         cursor=cursor,
         limit=limit,
         timestamp_field="created_at",
@@ -1182,34 +1061,34 @@ def notifications_list(
 
 
 @api.post(
-    "/organizations/{organization_id}/notifications/{notification_id}/read",
+    "/domains/{domain_id}/notifications/{notification_id}/read",
     auth=authenticated,
     tags=["Notifications"],
 )
 def notifications_read(
-    request: HttpRequest, organization_id: uuid.UUID, notification_id: uuid.UUID
+    request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID
 ):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
-    notification = scoped_object(Notification, organization, notification_id)
+    domain = api_domain(request, domain_id)
+    notification = scoped_object(Notification, domain, notification_id)
     notification.status = Notification.Status.READ
     notification.read_at = timezone.now()
     notification.save(update_fields=("status", "read_at", "updated_at"))
-    record_api_audit(request, organization, "notification.read", notification)
+    record_api_audit(request, domain, "notification.read", notification)
     return {"status": "read"}
 
 
-@api.get("/organizations/{organization_id}/audit", auth=authenticated, tags=["Audit"])
+@api.get("/domains/{domain_id}/audit", auth=authenticated, tags=["Audit"])
 def audit_list(
     request: HttpRequest,
-    organization_id: uuid.UUID,
+    domain_id: uuid.UUID,
     cursor: str | None = None,
     limit: int = 50,
 ):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
+    domain = api_domain(request, domain_id)
     events, next_cursor = _paginate_queryset(
-        AuditEvent.objects.filter(organization=organization),
+        AuditEvent.objects.filter(domain=domain),
         cursor=cursor,
         limit=limit,
         timestamp_field="created_at",
@@ -1234,40 +1113,40 @@ def audit_list(
 
 
 @api.get(
-    "/organizations/{organization_id}/attachments/{attachment_id}/url",
+    "/domains/{domain_id}/attachments/{attachment_id}/url",
     auth=authenticated,
     tags=["Attachments"],
 )
-def attachments_url(request: HttpRequest, organization_id: uuid.UUID, attachment_id: uuid.UUID):
+def attachments_url(request: HttpRequest, domain_id: uuid.UUID, attachment_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
-    organization = api_organization(request, organization_id)
-    attachment = scoped_object(Attachment, organization, attachment_id)
+    domain = api_domain(request, domain_id)
+    attachment = scoped_object(Attachment, domain, attachment_id)
     try:
-        authorized = authorized_attachment_url(attachment=attachment, organization=organization)
+        authorized = authorized_attachment_url(attachment=attachment, domain=domain)
     except AttachmentGoneError as exc:
         raise APIError("attachment_expired", str(exc), status=410) from exc
     except AttachmentLockedError as exc:
         raise APIError("attachment_locked", str(exc), status=423) from exc
-    record_api_audit(request, organization, "attachment.url_issued", attachment)
+    record_api_audit(request, domain, "attachment.url_issued", attachment)
     return {"url": authorized.url, "expires_in": authorized.expires_in}
 
 
 @api.post(
-    "/organizations/{organization_id}/tokens",
+    "/domains/{domain_id}/tokens",
     auth=authenticated,
     response={201: dict},
     tags=["Tokens"],
 )
-def tokens_create(request: HttpRequest, organization_id: uuid.UUID, payload: TokenInput):
+def tokens_create(request: HttpRequest, domain_id: uuid.UUID, payload: TokenInput):
     require_scope(request, APIToken.Scope.WRITE)
-    organization = api_organization(request, organization_id)
+    domain = api_domain(request, domain_id)
     if isinstance(request.auth, APIToken):
         raise APIError(
             "session_required", "API tokens must be created from an owner session.", status=403
         )
     try:
         token, raw = APIToken.issue(
-            organization=organization,
+            domain=domain,
             owner=request.user,
             name=payload.name,
             scopes=list(payload.scopes),
@@ -1276,7 +1155,7 @@ def tokens_create(request: HttpRequest, organization_id: uuid.UUID, payload: Tok
         raise APIError("validation_error", "; ".join(exc.messages)) from exc
     record_api_audit(
         request,
-        organization,
+        domain,
         "api_token.created",
         token,
         {"scopes": token.scopes},

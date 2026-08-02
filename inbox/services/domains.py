@@ -21,8 +21,9 @@ from inbox.models import (
     DomainDNSRecord,
     DomainTest,
     InboundRoute,
-    Organization,
-    Project,
+    ReportSchedule,
+    RetentionPolicy,
+    User,
 )
 
 
@@ -82,28 +83,24 @@ def inspect_mx(hostname: str, resolver: dns.resolver.Resolver | None = None) -> 
     return sorted(observations, key=lambda item: (item.preference, item.exchange))
 
 
-def _assert_limits(organization: Organization) -> None:
+def _assert_limits(owner: User) -> None:
     if (
-        Domain.objects.filter(organization=organization)
+        Domain.objects.filter(owner=owner)
         .exclude(status=Domain.Status.DISABLED)
         .count()
-        >= settings.MAX_DOMAINS_PER_ORGANIZATION
+        >= settings.MAX_DOMAINS_PER_USER
     ):
         raise DomainLimitError(
-            "An organization can provision at most "
-            f"{settings.MAX_DOMAINS_PER_ORGANIZATION} domains."
+            "A user can provision at most "
+            f"{settings.MAX_DOMAINS_PER_USER} domains."
         )
     since = timezone.now() - timedelta(seconds=settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS)
-    recent = Domain.objects.filter(organization=organization, created_at__gte=since).count()
+    recent = Domain.objects.filter(owner=owner, created_at__gte=since).count()
     if recent >= settings.DOMAIN_PROVISION_RATE_LIMIT:
         raise DomainLimitError("Domain provisioning is temporarily rate limited. Try again later.")
 
 
-def create_domain(
-    *, organization: Organization, project: Project, hostname: str, setup_mode: str
-) -> Domain:
-    if project.organization_id != organization.id:
-        raise ValidationError("The project does not belong to this organization.")
+def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:
     if setup_mode not in Domain.SetupMode.values:
         raise ValidationError({"setup_mode": "Select a supported setup mode."})
     normalized = normalize_hostname(hostname)
@@ -115,14 +112,13 @@ def create_domain(
     )
     if existing is not None:
         raise DomainClaimConflict(
-            existing_domain=existing if existing.organization_id == organization.id else None
+            existing_domain=existing if existing.owner_id == owner.id else None
         )
     try:
         with transaction.atomic():
-            _assert_limits(organization)
+            _assert_limits(owner)
             domain = Domain.objects.create(
-                organization=organization,
-                project=project,
+                owner=owner,
                 hostname=normalized,
                 setup_mode=setup_mode,
                 status=Domain.Status.PROVISIONING,
@@ -133,7 +129,6 @@ def create_domain(
             )
             local_part = f"route-{secrets.token_urlsafe(24).lower()}"
             InboundRoute.objects.create(
-                organization=organization,
                 domain=domain,
                 kind=(
                     InboundRoute.Kind.FORWARDING_ALIAS
@@ -155,8 +150,10 @@ def create_domain(
         if existing is None:
             raise
         raise DomainClaimConflict(
-            existing_domain=existing if existing.organization_id == organization.id else None
+            existing_domain=existing if existing.owner_id == owner.id else None
         ) from exc
+    ReportSchedule.objects.create(domain=domain)
+    RetentionPolicy.objects.create(domain=domain)
     return domain
 
 
@@ -181,7 +178,6 @@ def _upsert_dns_instruction(
     priority: int | None = None,
 ) -> DomainDNSRecord:
     record, created = DomainDNSRecord.objects.get_or_create(
-        organization=domain.organization,
         domain=domain,
         purpose=purpose,
         record_type=record_type,
@@ -378,7 +374,7 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
         )
         if locked_domain.ses_identity_origin == Domain.SESIdentityOrigin.ADOPTION_PENDING:
             AuditEvent.objects.get_or_create(
-                organization=locked_domain.organization,
+                domain=locked_domain,
                 actor_type=AuditEvent.ActorType.SYSTEM,
                 event_type="domain.ses_identity_adoption_pending",
                 object_type="Domain",
@@ -466,7 +462,7 @@ def reconcile_ses_identity_adoption(
     domain.ses_identity_status = verification_status
     domain.save(update_fields=("ses_identity_status", "updated_at"))
     AuditEvent.objects.create(
-        organization=domain.organization,
+        domain=domain,
         actor_type=AuditEvent.ActorType.SYSTEM,
         event_type="domain.ses_identity_reinitialized",
         object_type="Domain",
@@ -527,7 +523,6 @@ def create_domain_test(
         _assert_domain_test_ready(locked_domain)
         _assert_domain_test_cooldown(locked_domain)
         test = DomainTest.objects.create(
-            organization=locked_domain.organization,
             domain=locked_domain,
             token_hash=hashlib.sha256(raw.encode()).hexdigest(),
             expires_at=timezone.now() + timedelta(hours=24),
@@ -632,7 +627,7 @@ def apply_domain_readiness(
     domain.save()
     if adoption_completed:
         AuditEvent.objects.get_or_create(
-            organization=domain.organization,
+            domain=domain,
             actor_type=AuditEvent.ActorType.SYSTEM,
             event_type="domain.ses_identity_adopted",
             object_type="Domain",

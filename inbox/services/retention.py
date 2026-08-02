@@ -15,6 +15,7 @@ from inbox.models import (
     Classification,
     Conversation,
     DeliveryEvent,
+    Domain,
     DraftApproval,
     DurableJob,
     EmailVerificationToken,
@@ -22,7 +23,6 @@ from inbox.models import (
     Message,
     MessageRecipient,
     Notification,
-    Organization,
     OutboundMessage,
     ReplyDraftRevision,
     Report,
@@ -48,9 +48,9 @@ def _default_retention_days(field_name: str) -> int:
 
 
 def _purge_ingress_events(
-    *, organization: Organization | None, raw_cutoff: Any, metadata_cutoff: Any, now: Any
+    *, raw_cutoff: Any, metadata_cutoff: Any, now: Any
 ) -> tuple[int, int]:
-    events = IngressEvent.objects.filter(organization=organization)
+    events = IngressEvent.objects.all()
     expired_metadata = events.filter(created_at__lte=metadata_cutoff)
     metadata_count = expired_metadata.count()
     expired_metadata.delete()
@@ -62,9 +62,9 @@ def _purge_ingress_events(
     return raw_count, metadata_count
 
 
-def _purge_terminal_jobs(*, organization: Organization | None, cutoff: Any) -> int:
+def _purge_terminal_jobs(*, domain: Domain | None, cutoff: Any) -> int:
     jobs = DurableJob.objects.filter(
-        organization=organization,
+        domain=domain,
         status__in=[DurableJob.Status.COMPLETE, DurableJob.Status.FAILED],
         updated_at__lte=cutoff,
     )
@@ -88,16 +88,16 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         "verification_tokens": 0,
         "terminal_jobs": 0,
     }
-    organizations = list(Organization.objects.all())
-    organization_policies: list[tuple[Organization, RetentionPolicy]] = []
-    for organization in organizations:
-        policy, _ = RetentionPolicy.objects.get_or_create(organization=organization)
-        organization_policies.append((organization, policy))
+    domains = list(Domain.objects.all())
+    domain_policies: list[tuple[Domain, RetentionPolicy]] = []
+    for domain in domains:
+        policy, _ = RetentionPolicy.objects.get_or_create(domain=domain)
+        domain_policies.append((domain, policy))
 
-    for organization, policy in organization_policies:
+    for domain, policy in domain_policies:
         attachment_cutoff = now - timedelta(days=policy.attachment_days)
         for attachment in Attachment.objects.filter(
-            organization=organization,
+            domain=domain,
             purged_at__isnull=True,
             message__received_at__lte=attachment_cutoff,
         ).iterator():
@@ -127,7 +127,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         raw_cutoff = now - timedelta(days=policy.raw_message_days)
         for message in (
             Message.objects.filter(
-                organization=organization,
+                domain=domain,
                 raw_purged_at__isnull=True,
                 received_at__lte=raw_cutoff,
             )
@@ -142,7 +142,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         normalized_cutoff = now - timedelta(days=policy.normalized_content_days)
         old_messages = list(
             Message.objects.filter(
-                organization=organization,
+                domain=domain,
                 normalized_purged_at__isnull=True,
                 received_at__lte=normalized_cutoff,
             )
@@ -174,13 +174,13 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             Classification.objects.filter(message_id__in=old_message_ids).update(
                 topic="", summary="", recommended_action=""
             )
-        Conversation.objects.filter(organization=organization).exclude(
+        Conversation.objects.filter(domain=domain).exclude(
             messages__normalized_purged_at__isnull=True
         ).update(subject="", normalized_subject="")
 
         redacted_hash = content_digest("", "")
         old_revisions = ReplyDraftRevision.objects.filter(
-            organization=organization, created_at__lte=normalized_cutoff
+            domain=domain, created_at__lte=normalized_cutoff
         )
         DraftApproval.objects.filter(
             revision__in=old_revisions, invalidated_at__isnull=True
@@ -193,7 +193,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         # revisions; all related hashes are redacted together.
         old_revisions.update(subject="", body_text="", content_hash=redacted_hash)
         old_outbound = OutboundMessage.objects.filter(
-            organization=organization, created_at__lte=normalized_cutoff
+            domain=domain, created_at__lte=normalized_cutoff
         )
         old_outbound.filter(
             status__in=[OutboundMessage.Status.QUEUED, OutboundMessage.Status.SUBMITTING]
@@ -212,41 +212,33 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         )
         report_cutoff = now - timedelta(days=policy.normalized_content_days)
         old_reports = Report.objects.filter(
-            organization=organization, period_end__lte=report_cutoff
+            domain=domain, period_end__lte=report_cutoff
         )
         ReportItem.objects.filter(report__in=old_reports).update(summary="")
         old_reports.update(title="Expired report", content="")
         Notification.objects.filter(
-            organization=organization, created_at__lte=normalized_cutoff
+            domain=domain, created_at__lte=normalized_cutoff
         ).update(title="Expired notification", body="")
         audit_cutoff = now - timedelta(days=policy.audit_metadata_days)
         deleted, _ = AuditEvent.all_objects.filter(
-            organization=organization, created_at__lte=audit_cutoff
+            domain=domain, created_at__lte=audit_cutoff
         ).delete()
         counts["audit"] += deleted
         delivery_cutoff = now - timedelta(days=policy.delivery_metadata_days)
         deleted, _ = DeliveryEvent.objects.filter(
-            organization=organization, occurred_at__lte=delivery_cutoff
+            domain=domain, occurred_at__lte=delivery_cutoff
         ).delete()
         counts["delivery"] += deleted
-        ingress_raw, ingress_metadata = _purge_ingress_events(
-            organization=organization,
-            raw_cutoff=raw_cutoff,
-            metadata_cutoff=audit_cutoff,
-            now=now,
-        )
-        counts["ingress_raw"] += ingress_raw
-        counts["ingress_metadata"] += ingress_metadata
         counts["terminal_jobs"] += _purge_terminal_jobs(
-            organization=organization,
+            domain=domain,
             cutoff=audit_cutoff,
         )
         AuditEvent.objects.create(
-            organization=organization,
+            domain=domain,
             actor_type=AuditEvent.ActorType.SYSTEM,
             event_type="retention.completed",
-            object_type="Organization",
-            object_id=organization.id,
+            object_type="Domain",
+            object_id=domain.id,
             request_id=f"retention:{now:%Y%m%d}",
             metadata={key: value for key, value in counts.items()},
         )
@@ -257,14 +249,13 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
     # tenant's operational metadata early.
     global_raw_days = max(
         [_default_retention_days("raw_message_days")]
-        + [policy.raw_message_days for _, policy in organization_policies]
+        + [policy.raw_message_days for _, policy in domain_policies]
     )
     global_metadata_days = max(
         [_default_retention_days("audit_metadata_days")]
-        + [policy.audit_metadata_days for _, policy in organization_policies]
+        + [policy.audit_metadata_days for _, policy in domain_policies]
     )
     ingress_raw, ingress_metadata = _purge_ingress_events(
-        organization=None,
         raw_cutoff=now - timedelta(days=global_raw_days),
         metadata_cutoff=now - timedelta(days=global_metadata_days),
         now=now,
@@ -272,7 +263,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
     counts["ingress_raw"] += ingress_raw
     counts["ingress_metadata"] += ingress_metadata
     counts["terminal_jobs"] += _purge_terminal_jobs(
-        organization=None,
+        domain=None,
         cutoff=now - timedelta(days=global_metadata_days),
     )
 

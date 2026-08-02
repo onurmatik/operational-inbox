@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django import forms
 from django.core.exceptions import ValidationError
 
-from inbox.models import APIToken, Domain, Project, ReportSchedule, RetentionPolicy, User
+from inbox.models import APIToken, Domain, ReportSchedule, RetentionPolicy, User
 from inbox.services.domains import normalize_hostname
 
 
@@ -69,16 +69,6 @@ class VerificationResendForm(StyledFormMixin, forms.Form):
         return User.objects.normalize_email(self.cleaned_data["email"]).casefold()
 
 
-class ProjectForm(StyledFormMixin, forms.ModelForm):
-    class Meta:
-        model = Project
-        fields = ("name",)
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._style_fields()
-
-
 class DomainForm(StyledFormMixin, forms.Form):
     hostname = forms.CharField(max_length=253)
     setup_mode = forms.ChoiceField(choices=Domain.SetupMode.choices, widget=forms.RadioSelect)
@@ -102,11 +92,11 @@ class ScheduleForm(StyledFormMixin, forms.ModelForm):
         fields = ("review_frequency", "daily_report_time", "aging_reminder_hours", "is_enabled")
         widgets = {"daily_report_time": forms.TimeInput(attrs={"type": "time"})}
 
-    def __init__(self, *args, organization=None, **kwargs):
+    def __init__(self, *args, domain=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self.organization = organization
-        if organization and not self.is_bound:
-            self.fields["timezone"].initial = organization.timezone
+        self.domain = domain
+        if domain and not self.is_bound:
+            self.fields["timezone"].initial = domain.timezone
         self._style_fields()
 
     def clean_timezone(self) -> str:

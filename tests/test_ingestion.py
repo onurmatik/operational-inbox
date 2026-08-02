@@ -8,7 +8,7 @@ import pytest
 from django.test import override_settings
 from django.utils import timezone
 
-from inbox.models import Domain, InboundRoute, IngressEvent, Message, Organization, Project, User
+from inbox.models import Domain, InboundRoute, IngressEvent, Message, User
 from inbox.services.ingestion import process_sqs_body
 from tests.test_mime_threading import raw_email
 
@@ -70,17 +70,12 @@ def sns_body(
 
 
 def create_route(organization, project, address: str) -> Domain:
-    domain = Domain.objects.create(
-        organization=organization,
-        project=project,
-        hostname=address.rsplit("@", 1)[1],
-        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
-        status=Domain.Status.PENDING_TEST,
-        ownership_verified=True,
-        claim_expires_at=timezone.now() + timedelta(days=1),
-    )
+    domain = project
+    domain.setup_mode = Domain.SetupMode.PROVIDER_FORWARD
+    domain.status = Domain.Status.PENDING_TEST
+    domain.ownership_verified = True
+    domain.save(update_fields=("setup_mode", "status", "ownership_verified", "updated_at"))
     InboundRoute.objects.create(
-        organization=organization,
         domain=domain,
         kind=InboundRoute.Kind.FORWARDING_ALIAS,
         local_part=address.split("@", 1)[0],
@@ -101,12 +96,12 @@ def test_duplicate_sns_and_ses_messages_are_idempotent(organization, project):
     s3 = FakeS3(raw_email())
     assert process_sqs_body(sns_body([address]), s3_client=s3)
     assert process_sqs_body(sns_body([address]), s3_client=s3)
-    assert Message.objects.filter(project=project).count() == 1
+    assert Message.objects.filter(domain=project).count() == 1
     assert IngressEvent.objects.count() == 1
 
     # Different SNS IDs can redeliver the same SES message without creating a duplicate.
     assert process_sqs_body(sns_body([address], sns_id="sns-2"), s3_client=s3)
-    assert Message.objects.filter(project=project).count() == 1
+    assert Message.objects.filter(domain=project).count() == 1
 
 
 @pytest.mark.django_db
@@ -119,16 +114,22 @@ def test_one_ses_message_routes_to_independent_tenant_copies(organization, proje
     address_one = "route-one@inbound.example"
     create_route(organization, project, address_one)
     owner_two = User.objects.create_user(email="two@example.com", password="Password-123456")
-    org_two = Organization.objects.create(owner=owner_two, name="Two", slug="two")
-    project_two = Project.objects.create(organization=org_two, name="Two", slug="two")
+    project_two = Domain.objects.create(
+        owner=owner_two,
+        hostname="second.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_TEST,
+        ownership_verified=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
     address_two = "route-two@second.example"
-    create_route(org_two, project_two, address_two)
+    create_route(project_two, project_two, address_two)
     s3 = FakeS3(raw_email(attachment=True))
     assert process_sqs_body(sns_body([address_one, address_two]), s3_client=s3)
-    messages = list(Message.objects.order_by("organization_id"))
+    messages = list(Message.objects.order_by("domain_id"))
     assert len(messages) == 2
     assert messages[0].raw_s3_key != messages[1].raw_s3_key
-    assert all("organizations/" in item.raw_s3_key for item in messages)
+    assert all("domains/" in item.raw_s3_key for item in messages)
     assert len(s3.copies) == 2
 
 

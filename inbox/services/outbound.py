@@ -44,11 +44,7 @@ def _authorization_error(outbound: OutboundMessage) -> str:
     if approval is None or draft.current_revision_id != outbound.revision_id or draft.is_stale:
         return "The exact-revision approval is no longer active."
     sender_domain = outbound.from_address.rsplit("@", 1)[-1].casefold()
-    domain = Domain.objects.filter(
-        organization=outbound.organization,
-        project=outbound.project,
-        hostname=sender_domain,
-    ).first()
+    domain = Domain.objects.filter(id=outbound.domain_id, hostname=sender_domain).first()
     if (
         domain is None
         or domain.status == Domain.Status.DISABLED
@@ -56,8 +52,8 @@ def _authorization_error(outbound: OutboundMessage) -> str:
         or not domain.ownership_verified
     ):
         return "Outbound sending is no longer ready for this domain."
-    if not outbound.organization.is_active or not outbound.organization.owner.is_active:
-        return "The organization owner is not active."
+    if not outbound.domain.owner.is_active:
+        return "The domain owner is not active."
     return ""
 
 
@@ -80,7 +76,7 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
     with transaction.atomic():
         locked = (
             OutboundMessage.objects.select_for_update()
-            .select_related("organization__owner", "revision__draft")
+            .select_related("domain__owner", "revision__draft")
             .get(id=outbound.id)
         )
         if locked.status != OutboundMessage.Status.QUEUED:
@@ -143,7 +139,7 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
     with transaction.atomic():
         current = (
             OutboundMessage.objects.select_for_update()
-            .select_related("organization", "conversation", "revision__draft")
+            .select_related("domain", "conversation", "revision__draft")
             .get(id=locked.id)
         )
         update_fields: set[str] = set()
@@ -181,7 +177,7 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
             update_fields.add("updated_at")
             current.save(update_fields=tuple(sorted(update_fields)))
         AuditEvent.objects.create(
-            organization=current.organization,
+            domain=current.domain,
             actor_type=AuditEvent.ActorType.SYSTEM,
             event_type="outbound.submission_finished",
             object_type="OutboundMessage",
@@ -192,10 +188,9 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
 
     if current.provider_message_id:
         Message.objects.get_or_create(
-            project=current.project,
+            domain=current.domain,
             provider_message_id=current.provider_message_id,
             defaults={
-                "organization": current.organization,
                 "conversation": current.conversation,
                 "direction": Message.Direction.OUTBOUND,
                 "rfc_message_id": current.rfc_message_id,
