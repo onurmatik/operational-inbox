@@ -137,16 +137,32 @@
           {% if domain.inbound_ready %}Ready to receive{% elif domain.status == 'PENDING_TEST' %}Waiting for a real test email{% else %}Waiting for required DNS records{% endif %}
         </p>
       </div>
-      <div class="oi-panel p-4">
+      <div
+        class="oi-panel p-4"
+        {% if domain.outbound_status == 'PROVISIONING' %}data-outbound-provisioning-poll data-detail-url="/api/v1/domains/{{ domain.id }}" aria-live="polite" aria-busy="true"{% endif %}
+      >
         <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Sending</p>
-        <p class="mt-2 font-semibold {% if domain.outbound_ready %}text-mint-strong{% else %}text-gold-strong{% endif %}">
-          {% if domain.outbound_ready %}Verified for sending{% else %}Waiting for domain and DKIM verification{% endif %}
+        <p class="mt-2 font-semibold {% if domain.outbound_status == 'READY' %}text-mint-strong{% elif domain.outbound_status == 'ERROR' or domain.outbound_status == 'DEGRADED' %}text-coral-strong{% else %}text-gold-strong{% endif %}" data-outbound-provisioning-status>
+          {% if domain.outbound_status == 'READY' %}Verified for sending{% elif domain.outbound_status == 'PROVISIONING' %}Preparing sending DNS records{% elif domain.outbound_status == 'PENDING_DNS' %}Waiting for DKIM verification{% elif domain.outbound_status == 'DEGRADED' %}Sending DNS needs attention{% elif domain.outbound_status == 'ERROR' %}Sending setup paused{% else %}Not enabled{% endif %}
         </p>
+        {% if domain.outbound_status == 'DISABLED' and domain.inbound_ready %}
+          <p class="mt-2 text-xs text-muted">Receiving works independently. Enable this only when you want to send replies from {{ domain.hostname }}.</p>
+          <form method="post" action="{% url 'domain_enable_outbound' domain.id %}" class="mt-3" data-outbound-enable-form data-busy-label="Starting sending setup…" aria-busy="false">
+            {% csrf_token %}
+            <button class="oi-button-secondary">Enable sending</button>
+          </form>
+        {% elif domain.outbound_status == 'ERROR' and domain.inbound_ready %}
+          <p class="mt-2 text-xs text-coral-strong">{{ domain.public_outbound_error_message }}</p>
+          <form method="post" action="{% url 'domain_enable_outbound' domain.id %}" class="mt-3" data-outbound-enable-form data-busy-label="Retrying sending setup…" aria-busy="false">
+            {% csrf_token %}
+            <button class="oi-button-secondary">Retry sending setup</button>
+          </form>
+        {% endif %}
       </div>
     </section>
   {% endif %}
 
-  {% if domain.error_code %}
+  {% if domain.error_code or domain.outbound_error_code %}
     <details class="mt-5 border border-line bg-paper/60 p-4 text-sm text-muted">
       <summary class="cursor-pointer font-semibold text-ink">Support reference</summary>
       <p class="mt-2">Share domain reference <code class="font-mono">{{ domain.id }}</code> if you contact support.</p>
@@ -186,7 +202,7 @@
       {% if domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
         <section class="mt-8">
         <div class="mb-3">
-          <h2 class="font-heading text-lg font-semibold">{% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
+          <h2 class="font-heading text-lg font-semibold">{% if domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
           <p class="text-sm text-muted">Copy each record exactly into your DNS provider. Operational Inbox verifies these values but never changes DNS for you.</p>
         </div>
         <div class="oi-panel overflow-x-auto">
@@ -199,7 +215,7 @@
                 <tr>
                   <td class="px-4 py-4">
                     {{ record.get_purpose_display }}
-                    {% if record.purpose == 'SES_VERIFICATION' and record.is_required %}<span class="block text-xs text-muted">Required for direct receiving and sending</span>{% elif record.purpose == 'DKIM' or record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
+                    {% if record.purpose == 'SES_VERIFICATION' and record.is_required %}<span class="block text-xs text-muted">Required for direct receiving</span>{% elif record.purpose == 'DKIM' or record.purpose == 'SES_VERIFICATION' %}<span class="block text-xs text-muted">Required for sending</span>{% elif not record.is_required %}<span class="block text-xs text-muted">Recommended</span>{% endif %}
                   </td>
                   <td class="px-4 py-4 font-mono">{{ record.record_type }}</td>
                   <td class="px-4 py-4">
@@ -254,7 +270,7 @@
 
   <script>
     document.addEventListener("submit", (event) => {
-      const form = event.target.closest("[data-domain-test-form], [data-domain-retry-form]");
+      const form = event.target.closest("[data-domain-test-form], [data-domain-retry-form], [data-outbound-enable-form]");
       if (!form) return;
       if (form.getAttribute("aria-busy") === "true") {
         event.preventDefault();
@@ -296,6 +312,31 @@
         }
         provisioningPanel.setAttribute("aria-busy", "false");
         statusText.textContent = "Setup is still continuing in the background. You can leave this page and return later.";
+      };
+      poll();
+    });
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const provisioningPanel = document.querySelector("[data-outbound-provisioning-poll]");
+      if (!provisioningPanel) return;
+      const statusText = provisioningPanel.querySelector("[data-outbound-provisioning-status]");
+      const poll = async () => {
+        for (let attempt = 0; attempt < 72; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2000 : 5000));
+          try {
+            const domain = await window.OperationalInbox.request(provisioningPanel.dataset.detailUrl);
+            if (domain.outbound_status !== "PROVISIONING") {
+              window.location.reload();
+              return;
+            }
+          } catch (error) {
+            statusText.textContent = "Sending setup is continuing in the background. Reload to check again.";
+            provisioningPanel.setAttribute("aria-busy", "false");
+            return;
+          }
+        }
+        statusText.textContent = "Sending setup is continuing in the background. You can return later.";
+        provisioningPanel.setAttribute("aria-busy", "false");
       };
       poll();
     });

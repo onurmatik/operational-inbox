@@ -114,6 +114,7 @@ def ready_sending_domain(organization, project):
     project.ownership_verified = True
     project.inbound_ready = True
     project.outbound_ready = True
+    project.outbound_status = Domain.OutboundStatus.READY
     project.save(
         update_fields=(
             "hostname",
@@ -122,6 +123,7 @@ def ready_sending_domain(organization, project):
             "ownership_verified",
             "inbound_ready",
             "outbound_ready",
+            "outbound_status",
             "updated_at",
         )
     )

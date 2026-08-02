@@ -36,6 +36,7 @@ def domain(owner: User) -> Domain:
         ownership_verified=True,
         inbound_ready=True,
         outbound_ready=True,
+        outbound_status=Domain.OutboundStatus.READY,
         claim_expires_at=timezone.now() + timedelta(days=3),
     )
     ReportSchedule.objects.create(domain=domain)

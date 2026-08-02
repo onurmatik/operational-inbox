@@ -60,6 +60,7 @@ def _ready_outbound(owner, organization, project, conversation, inbound_message)
     project.ownership_verified = True
     project.inbound_ready = True
     project.outbound_ready = True
+    project.outbound_status = Domain.OutboundStatus.READY
     project.save(
         update_fields=(
             "hostname",
@@ -68,6 +69,7 @@ def _ready_outbound(owner, organization, project, conversation, inbound_message)
             "ownership_verified",
             "inbound_ready",
             "outbound_ready",
+            "outbound_status",
             "updated_at",
         )
     )
@@ -162,7 +164,7 @@ def test_domain_readiness_is_derived_separately(organization, project):
         domain=domain,
         purpose=DomainDNSRecord.Purpose.OWNERSHIP,
         record_type="TXT",
-        name="_amazonses.ready.example",
+        name="_operational-inbox-claim.ready.example",
         value="proof",
         status=DomainDNSRecord.Status.VALID,
     )
@@ -188,7 +190,9 @@ def test_domain_readiness_is_derived_separately(organization, project):
     )
     domain.refresh_from_db()
     assert domain.ownership_verified
-    assert domain.inbound_ready and domain.outbound_ready
+    assert domain.inbound_ready
+    assert not domain.outbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.DISABLED
     assert domain.status == Domain.Status.READY
 
     mx.status = DomainDNSRecord.Status.INVALID
@@ -200,7 +204,8 @@ def test_domain_readiness_is_derived_separately(organization, project):
     )
     degraded_domain = Domain.objects.get(pk=domain.pk)
     assert degraded_domain.status == Domain.Status.DEGRADED
-    assert not degraded_domain.inbound_ready and degraded_domain.outbound_ready
+    assert not degraded_domain.inbound_ready
+    assert not degraded_domain.outbound_ready
     assert ownership.status == DomainDNSRecord.Status.VALID
 
 
@@ -236,7 +241,7 @@ def test_delivery_test_targets_the_customer_path(organization, project, setup_mo
     assert len(test.token_hash) == 64
     with pytest.raises(ValidationError, match="generated recently"):
         create_domain_test(domain, receipt_rule_reconciler=reconciler)
-    assert reconciler.call_count == 1
+    assert reconciler.call_count == (1 if setup_mode == Domain.SetupMode.DIRECT_MX else 0)
 
 
 @pytest.mark.django_db

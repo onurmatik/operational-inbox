@@ -15,16 +15,19 @@ from inbox.models import (
     AuditEvent,
     Domain,
     DomainDNSRecord,
+    DomainTest,
 )
 from inbox.services.domains import (
     application_ownership_record_name,
     apply_domain_readiness,
     build_dns_instructions,
+    build_inbound_dns_instructions,
     create_domain,
     create_domain_test,
     inspect_mx,
     normalize_hostname,
-    provision_ses_identity,
+    provision_inbound,
+    provision_outbound_identity,
     recommended_setup,
     reconcile_ses_identity_adoption,
 )
@@ -175,11 +178,34 @@ def test_receipt_allowlist_rejects_recipient_501(owner):
     AWS_INGRESS_BUCKET="bucket",
     AWS_INBOUND_TOPIC_ARN="arn:aws:sns:us-east-1:1:inbound",
 )
-def test_dns_drift_retries_receipt_rule_after_transient_failure():
-    with patch(
-        "inbox.management.commands.check_domain_drift.reconcile_receipt_rule",
-        side_effect=[RuntimeError("temporary AWS failure"), None],
-    ) as reconcile:
+def test_dns_drift_retries_receipt_rule_after_transient_failure(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="direct-drift.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="proof",
+    )
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {"VerificationAttributes": {}}
+    with (
+        patch(
+            "inbox.management.commands.check_domain_drift.reconcile_receipt_rule",
+            side_effect=[RuntimeError("temporary AWS failure"), None],
+        ) as reconcile,
+        patch(
+            "inbox.management.commands.check_domain_drift.observed_values",
+            return_value=["proof"],
+        ),
+        patch("inbox.management.commands.check_domain_drift.boto3.client", return_value=ses),
+    ):
         with pytest.raises(RuntimeError, match="temporary AWS failure"):
             call_command("check_domain_drift")
         call_command("check_domain_drift")
@@ -213,7 +239,7 @@ def test_existing_ses_identity_requires_a_fresh_application_ownership_proof(orga
             }
         }
     }
-    provision_ses_identity(domain, ses_client=ses)
+    provision_inbound(domain, ses_client=ses)
     domain.refresh_from_db()
 
     assert domain.status == Domain.Status.PENDING_DNS
@@ -257,7 +283,8 @@ def test_existing_ses_identity_requires_a_fresh_application_ownership_proof(orga
     )
     domain.refresh_from_db()
     assert domain.ownership_verified
-    assert domain.outbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.DISABLED
+    assert not domain.outbound_ready
     assert domain.ses_identity_origin == Domain.SESIdentityOrigin.ADOPTED
     assert AuditEvent.objects.filter(
         event_type="domain.ses_identity_adopted", object_id=domain.id
@@ -293,7 +320,7 @@ def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organizati
     ses.verify_domain_identity.return_value = {"VerificationToken": "new-ses-token"}
     ses.verify_domain_dkim.return_value = {"DkimTokens": ["new-one", "new-two", "new-three"]}
 
-    provision_ses_identity(domain, ses_client=ses)
+    provision_inbound(domain, ses_client=ses)
     domain.refresh_from_db()
     ownership = domain.dns_records.get(purpose=DomainDNSRecord.Purpose.OWNERSHIP)
 
@@ -318,17 +345,13 @@ def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organizati
         ses_client=ses,
     )
 
-    assert statuses == ("PENDING", "PENDING")
+    assert statuses == ("PENDING", "FAILED")
     ses.verify_domain_identity.assert_called_once_with(Domain=domain.hostname)
-    ses.verify_domain_dkim.assert_called_once_with(Domain=domain.hostname)
+    ses.verify_domain_dkim.assert_not_called()
     ses_verification = domain.dns_records.get(purpose=DomainDNSRecord.Purpose.SES_VERIFICATION)
     assert ses_verification.value == "new-ses-token"
     assert ses_verification.status == DomainDNSRecord.Status.PENDING
-    assert set(
-        domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).values_list(
-            "name", flat=True
-        )
-    ) == {f"new-{suffix}._domainkey.{domain.hostname}" for suffix in ("one", "two", "three")}
+    assert not domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exists()
     assert AuditEvent.objects.filter(
         event_type="domain.ses_identity_reinitialized", object_id=domain.id
     ).exists()
@@ -344,12 +367,7 @@ def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organizati
 
     # A later retry also repairs an adopted identity whose pending DNS
     # instructions were lost, without requiring another ownership challenge.
-    domain.dns_records.filter(
-        purpose__in=[
-            DomainDNSRecord.Purpose.SES_VERIFICATION,
-            DomainDNSRecord.Purpose.DKIM,
-        ]
-    ).delete()
+    domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.SES_VERIFICATION).delete()
     ses.reset_mock()
     ses.verify_domain_identity.return_value = {"VerificationToken": "replacement-ses-token"}
     ses.verify_domain_dkim.return_value = {
@@ -362,7 +380,7 @@ def test_failed_existing_ses_identity_restarts_only_after_fresh_proof(organizati
         ses_client=ses,
     ) == ("PENDING", "PENDING")
     ses.verify_domain_identity.assert_called_once_with(Domain=domain.hostname)
-    ses.verify_domain_dkim.assert_called_once_with(Domain=domain.hostname)
+    ses.verify_domain_dkim.assert_not_called()
 
 
 @pytest.mark.django_db
@@ -380,7 +398,7 @@ def test_new_ses_identity_records_managed_origin_and_separate_dns_proofs(organiz
     ses.verify_domain_identity.return_value = {"VerificationToken": "ses-proof"}
     ses.verify_domain_dkim.return_value = {"DkimTokens": ["one", "two", "three"]}
 
-    provision_ses_identity(domain, ses_client=ses)
+    provision_inbound(domain, ses_client=ses)
     domain.refresh_from_db()
 
     assert domain.status == Domain.Status.PENDING_DNS
@@ -391,6 +409,10 @@ def test_new_ses_identity_records_managed_origin_and_separate_dns_proofs(organiz
     assert ownership.name == application_ownership_record_name(domain)
     assert ownership.value != ses_verification.value
     assert ses_verification.value == "ses-proof"
+    assert not domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exists()
+    assert domain.outbound_status == Domain.OutboundStatus.DISABLED
+    ses.get_identity_dkim_attributes.assert_not_called()
+    ses.verify_domain_dkim.assert_not_called()
 
     domain.dns_records.filter(is_required=True).update(status=DomainDNSRecord.Status.VALID)
     apply_domain_readiness(
@@ -401,6 +423,154 @@ def test_new_ses_identity_records_managed_origin_and_separate_dns_proofs(organiz
     domain.refresh_from_db()
     assert domain.ses_identity_status == "SUCCESS"
     assert domain.ses_identity_origin == Domain.SESIdentityOrigin.MANAGED
+
+
+@pytest.mark.django_db
+def test_provider_forward_inbound_provisioning_does_not_touch_customer_ses(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="forward-only.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    ses = Mock()
+
+    result = provision_inbound(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert result.status == Domain.Status.PENDING_DNS
+    assert domain.outbound_status == Domain.OutboundStatus.DISABLED
+    assert domain.ses_identity_status == ""
+    assert domain.ses_identity_origin == ""
+    assert list(domain.dns_records.values_list("purpose", flat=True)) == [
+        DomainDNSRecord.Purpose.OWNERSHIP
+    ]
+    assert domain.dns_records.get().name == application_ownership_record_name(domain)
+    assert not ses.mock_calls
+
+
+@pytest.mark.django_db
+def test_provider_forward_dns_check_does_not_query_customer_ses(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="forward-dns.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="fresh-proof",
+    )
+
+    with (
+        patch(
+            "inbox.management.commands.check_domain_drift.observed_values",
+            return_value=["fresh-proof"],
+        ),
+        patch(
+            "inbox.management.commands.check_domain_drift.boto3.client",
+            side_effect=AssertionError("provider-forward inbound must not query SES"),
+        ),
+    ):
+        call_command("check_domain_drift")
+
+    domain.refresh_from_db()
+    assert domain.ownership_verified
+    assert domain.status == Domain.Status.PENDING_TEST
+    assert domain.outbound_status == Domain.OutboundStatus.DISABLED
+
+
+@pytest.mark.django_db
+def test_provider_forward_outbound_enable_is_the_first_customer_ses_touch(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="forward-send.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        ownership_verified=True,
+        outbound_status=Domain.OutboundStatus.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="fresh-proof",
+        status=DomainDNSRecord.Status.VALID,
+    )
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {"VerificationAttributes": {}}
+    ses.get_identity_dkim_attributes.return_value = {"DkimAttributes": {}}
+    ses.verify_domain_identity.return_value = {"VerificationToken": "ses-proof"}
+    ses.verify_domain_dkim.return_value = {"DkimTokens": ["one", "two", "three"]}
+
+    provision_outbound_identity(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.PENDING_DNS
+    assert not domain.outbound_ready
+    assert set(domain.dns_records.values_list("purpose", flat=True)) == {
+        DomainDNSRecord.Purpose.OWNERSHIP,
+        DomainDNSRecord.Purpose.SES_VERIFICATION,
+        DomainDNSRecord.Purpose.DKIM,
+    }
+    ses.verify_domain_identity.assert_called_once_with(Domain=domain.hostname)
+    ses.verify_domain_dkim.assert_called_once_with(Domain=domain.hostname)
+
+
+@pytest.mark.django_db
+def test_direct_outbound_reuses_inbound_identity_and_adds_dkim(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="direct-send.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        ownership_verified=True,
+        outbound_status=Domain.OutboundStatus.PROVISIONING,
+        ses_identity_status="SUCCESS",
+        ses_identity_origin=Domain.SESIdentityOrigin.MANAGED,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    build_inbound_dns_instructions(
+        domain,
+        ownership_token="fresh-proof",
+        verification_token="ses-proof",
+    )
+    domain.dns_records.update(status=DomainDNSRecord.Status.VALID)
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {
+        "VerificationAttributes": {
+            domain.hostname: {
+                "VerificationStatus": "Success",
+                "VerificationToken": "ses-proof",
+            }
+        }
+    }
+    ses.get_identity_dkim_attributes.return_value = {"DkimAttributes": {}}
+    ses.verify_domain_dkim.return_value = {"DkimTokens": ["one", "two", "three"]}
+
+    provision_outbound_identity(domain, ses_client=ses)
+
+    domain.refresh_from_db()
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.PENDING_DNS
+    assert domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).count() == 3
+    assert domain.dns_records.filter(
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
+    ).count() == 1
+    ses.verify_domain_identity.assert_not_called()
+    ses.verify_domain_dkim.assert_called_once_with(Domain=domain.hostname)
 
 
 @pytest.mark.django_db
@@ -464,13 +634,13 @@ def test_provisioning_cannot_resurrect_a_domain_disabled_during_aws_calls(organi
     ses.get_identity_dkim_attributes.return_value = {"DkimAttributes": {}}
     ses.verify_domain_identity.return_value = {"VerificationToken": "proof"}
 
-    def disable_before_dkim_finishes(**kwargs):
+    def disable_before_identity_finishes(**kwargs):
         Domain.objects.filter(id=domain.id).update(status=Domain.Status.DISABLED)
-        return {"DkimTokens": ["one", "two", "three"]}
+        return {"VerificationToken": "proof"}
 
-    ses.verify_domain_dkim.side_effect = disable_before_dkim_finishes
+    ses.verify_domain_identity.side_effect = disable_before_identity_finishes
 
-    result = provision_ses_identity(domain, ses_client=ses)
+    result = provision_inbound(domain, ses_client=ses)
 
     domain.refresh_from_db()
     assert result.status == Domain.Status.DISABLED
@@ -501,9 +671,105 @@ def test_replayed_provisioning_never_regresses_an_advanced_domain(organization, 
     )
     ses = Mock()
 
-    result = provision_ses_identity(domain, ses_client=ses)
+    result = provision_inbound(domain, ses_client=ses)
 
     domain.refresh_from_db()
     assert result.status == status
     assert domain.status == status
     ses.get_identity_verification_attributes.assert_not_called()
+
+
+def _ready_direct_capability_domain(
+    project, hostname: str
+) -> tuple[Domain, DomainDNSRecord, DomainDNSRecord]:
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname=hostname,
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        outbound_ready=True,
+        outbound_status=Domain.OutboundStatus.READY,
+        ses_identity_status="SUCCESS",
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="claim",
+        status=DomainDNSRecord.Status.VALID,
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+        record_type="TXT",
+        name=f"_amazonses.{hostname}",
+        value="ses-proof",
+        status=DomainDNSRecord.Status.VALID,
+    )
+    mx = DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.MX,
+        record_type="MX",
+        name=hostname,
+        value="inbound-smtp.us-east-1.amazonaws.com",
+        priority=10,
+        status=DomainDNSRecord.Status.VALID,
+    )
+    dkim = DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.DKIM,
+        record_type="CNAME",
+        name=f"one._domainkey.{hostname}",
+        value="one.dkim.amazonses.com",
+        is_required=False,
+        status=DomainDNSRecord.Status.VALID,
+    )
+    DomainTest.objects.create(
+        domain=domain,
+        token_hash="d" * 64,
+        status=DomainTest.Status.RECEIVED,
+        expires_at=timezone.now() + timedelta(hours=1),
+    )
+    return domain, mx, dkim
+
+
+@pytest.mark.django_db
+def test_mx_drift_degrades_only_inbound(project):
+    domain, mx, _ = _ready_direct_capability_domain(project, "mx-drift.example")
+    mx.status = DomainDNSRecord.Status.MISSING
+    mx.save(update_fields=("status", "updated_at"))
+
+    apply_domain_readiness(
+        domain,
+        ses_verification_status="Success",
+        dkim_verification_status="Success",
+    )
+
+    domain.refresh_from_db()
+    assert domain.status == Domain.Status.DEGRADED
+    assert not domain.inbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.READY
+    assert domain.outbound_ready
+
+
+@pytest.mark.django_db
+def test_dkim_drift_degrades_only_outbound(project):
+    domain, _, dkim = _ready_direct_capability_domain(project, "dkim-drift.example")
+    dkim.status = DomainDNSRecord.Status.MISSING
+    dkim.save(update_fields=("status", "updated_at"))
+
+    apply_domain_readiness(
+        domain,
+        ses_verification_status="Success",
+        dkim_verification_status="Success",
+    )
+
+    domain.refresh_from_db()
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.DEGRADED
+    assert not domain.outbound_ready
+    assert domain.outbound_error_code == "outbound_dns_drift"

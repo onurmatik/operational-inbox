@@ -214,12 +214,11 @@ def _upsert_dns_instruction(
     return record
 
 
-def build_dns_instructions(
+def build_inbound_dns_instructions(
     domain: Domain,
     *,
     ownership_token: str,
-    verification_token: str,
-    dkim_tokens: list[str],
+    verification_token: str = "",
 ) -> None:
     _upsert_dns_instruction(
         domain,
@@ -248,6 +247,23 @@ def build_dns_instructions(
             priority=10,
             is_required=True,
         )
+
+
+def build_outbound_dns_instructions(
+    domain: Domain,
+    *,
+    verification_token: str,
+    dkim_tokens: list[str],
+) -> None:
+    if verification_token:
+        _upsert_dns_instruction(
+            domain,
+            purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+            record_type="TXT",
+            name=f"_amazonses.{domain.hostname}",
+            value=verification_token,
+            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+        )
     for token in dkim_tokens:
         _upsert_dns_instruction(
             domain,
@@ -264,6 +280,27 @@ def build_dns_instructions(
         ).delete()
 
 
+def build_dns_instructions(
+    domain: Domain,
+    *,
+    ownership_token: str,
+    verification_token: str,
+    dkim_tokens: list[str],
+) -> None:
+    """Build the complete legacy checklist; capability provisioning uses split helpers."""
+
+    build_inbound_dns_instructions(
+        domain,
+        ownership_token=ownership_token,
+        verification_token=verification_token,
+    )
+    build_outbound_dns_instructions(
+        domain,
+        verification_token=verification_token,
+        dkim_tokens=dkim_tokens,
+    )
+
+
 def expire_unverified_claims() -> int:
     now = timezone.now()
     expired = list(
@@ -277,6 +314,7 @@ def expire_unverified_claims() -> int:
         domain.status = Domain.Status.DISABLED
         domain.inbound_ready = False
         domain.outbound_ready = False
+        domain.outbound_status = Domain.OutboundStatus.DISABLED
         domain.error_code = "claim_expired"
         domain.error_message = "The ownership claim expired before verification."
         domain.save(
@@ -284,6 +322,7 @@ def expire_unverified_claims() -> int:
                 "status",
                 "inbound_ready",
                 "outbound_ready",
+                "outbound_status",
                 "error_code",
                 "error_message",
                 "updated_at",
@@ -293,25 +332,51 @@ def expire_unverified_claims() -> int:
     return len(expired)
 
 
-def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
+def provision_inbound(domain: Domain, *, ses_client=None) -> Domain:
+    """Prepare receiving instructions without provisioning optional sending."""
+
     if domain.status == Domain.Status.DISABLED:
         return domain
     if domain.status != Domain.Status.PROVISIONING:
         return domain
+
+    if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+        with transaction.atomic():
+            locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+            if locked_domain.status != Domain.Status.PROVISIONING:
+                return locked_domain
+            build_inbound_dns_instructions(
+                locked_domain,
+                ownership_token=(
+                    locked_domain.dns_records.filter(
+                        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+                        name=application_ownership_record_name(locked_domain),
+                    )
+                    .values_list("value", flat=True)
+                    .first()
+                    or secrets.token_urlsafe(32)
+                ),
+            )
+            locked_domain.status = Domain.Status.PENDING_DNS
+            locked_domain.error_code = ""
+            locked_domain.error_message = ""
+            locked_domain.save(
+                update_fields=("status", "error_code", "error_message", "updated_at")
+            )
+            return locked_domain
+
     client = ses_client or boto3.client("ses", region_name=settings.AWS_REGION)
     attributes = client.get_identity_verification_attributes(Identities=[domain.hostname]).get(
         "VerificationAttributes", {}
     )
     identity_attributes = attributes.get(domain.hostname, {})
-    dkim_attributes = client.get_identity_dkim_attributes(Identities=[domain.hostname]).get(
-        "DkimAttributes", {}
-    )
-    identity_dkim_attributes = dkim_attributes.get(domain.hostname, {})
-    identity_exists = domain.hostname in attributes or domain.hostname in dkim_attributes
-    may_manage_identity = domain.ses_identity_origin == Domain.SESIdentityOrigin.MANAGED
+    identity_exists = domain.hostname in attributes
+    may_manage_identity = domain.ses_identity_origin in {
+        Domain.SESIdentityOrigin.MANAGED,
+        Domain.SESIdentityOrigin.ADOPTED,
+    }
     verification_token = str(identity_attributes.get("VerificationToken", ""))
     verification_status = str(identity_attributes.get("VerificationStatus", "")).upper()
-    dkim_tokens = [str(value) for value in identity_dkim_attributes.get("DkimTokens", [])]
 
     if not identity_exists:
         # Persist intent before the AWS calls. A retry can then distinguish an
@@ -322,16 +387,13 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
         domain.save(update_fields=("ses_identity_status", "ses_identity_origin", "updated_at"))
         may_manage_identity = True
 
-    if may_manage_identity and (not verification_token or verification_status == "FAILED"):
+    if may_manage_identity and (
+        verification_status not in {"PENDING", "SUCCESS"}
+        or (verification_status == "PENDING" and not verification_token)
+    ):
         verification = client.verify_domain_identity(Domain=domain.hostname)
         verification_token = str(verification["VerificationToken"])
         verification_status = "PENDING"
-    if may_manage_identity and (
-        not dkim_tokens
-        or str(identity_dkim_attributes.get("DkimVerificationStatus", "")).upper() == "FAILED"
-    ):
-        dkim = client.verify_domain_dkim(Domain=domain.hostname)
-        dkim_tokens = [str(value) for value in dkim.get("DkimTokens", [])]
 
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
@@ -339,7 +401,7 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
             return locked_domain
         if locked_domain.status != Domain.Status.PROVISIONING:
             return locked_domain
-        build_dns_instructions(
+        build_inbound_dns_instructions(
             locked_domain,
             ownership_token=(
                 locked_domain.dns_records.filter(
@@ -351,7 +413,6 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
                 or secrets.token_urlsafe(32)
             ),
             verification_token=verification_token,
-            dkim_tokens=dkim_tokens,
         )
         locked_domain.ses_identity_status = verification_status or "PENDING"
         locked_domain.ses_identity_origin = (
@@ -380,6 +441,112 @@ def provision_ses_identity(domain: Domain, *, ses_client=None) -> Domain:
                 object_type="Domain",
                 object_id=locked_domain.id,
                 request_id=f"provision:{locked_domain.id}:existing-identity",
+                defaults={
+                    "metadata": {
+                        "ses_verification_status": locked_domain.ses_identity_status,
+                    }
+                },
+            )
+        return locked_domain
+
+
+def provision_outbound_identity(domain: Domain, *, ses_client=None) -> Domain:
+    """Prepare SES identity and DKIM records without changing inbound state."""
+
+    if domain.status == Domain.Status.DISABLED:
+        return domain
+    if domain.outbound_status != Domain.OutboundStatus.PROVISIONING:
+        return domain
+
+    client = ses_client or boto3.client("ses", region_name=settings.AWS_REGION)
+    attributes = client.get_identity_verification_attributes(Identities=[domain.hostname]).get(
+        "VerificationAttributes", {}
+    )
+    identity_attributes = attributes.get(domain.hostname, {})
+    dkim_attributes = client.get_identity_dkim_attributes(Identities=[domain.hostname]).get(
+        "DkimAttributes", {}
+    )
+    identity_dkim_attributes = dkim_attributes.get(domain.hostname, {})
+    identity_exists = domain.hostname in attributes or domain.hostname in dkim_attributes
+    has_fresh_ownership = (
+        domain.ownership_verified
+        and domain.dns_records.filter(
+            purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+            name=application_ownership_record_name(domain),
+            status=DomainDNSRecord.Status.VALID,
+        ).exists()
+    )
+    may_manage_identity = domain.ses_identity_origin in {
+        Domain.SESIdentityOrigin.MANAGED,
+        Domain.SESIdentityOrigin.ADOPTED,
+    }
+    verification_token = str(identity_attributes.get("VerificationToken", ""))
+    verification_status = str(identity_attributes.get("VerificationStatus", "")).upper()
+    dkim_status = str(identity_dkim_attributes.get("DkimVerificationStatus", "")).upper()
+    dkim_tokens = [str(value) for value in identity_dkim_attributes.get("DkimTokens", [])]
+
+    if not identity_exists:
+        domain.ses_identity_status = "PROVISIONING"
+        domain.ses_identity_origin = Domain.SESIdentityOrigin.MANAGED
+        domain.save(update_fields=("ses_identity_status", "ses_identity_origin", "updated_at"))
+        may_manage_identity = True
+    elif not domain.ses_identity_origin:
+        domain.ses_identity_origin = (
+            Domain.SESIdentityOrigin.ADOPTED
+            if has_fresh_ownership
+            else Domain.SESIdentityOrigin.ADOPTION_PENDING
+        )
+        domain.save(update_fields=("ses_identity_origin", "updated_at"))
+        may_manage_identity = has_fresh_ownership
+
+    if may_manage_identity and (
+        verification_status not in {"PENDING", "SUCCESS"}
+        or (verification_status == "PENDING" and not verification_token)
+    ):
+        verification = client.verify_domain_identity(Domain=domain.hostname)
+        verification_token = str(verification["VerificationToken"])
+        verification_status = "PENDING"
+    if may_manage_identity and (not dkim_tokens or dkim_status == "FAILED"):
+        dkim = client.verify_domain_dkim(Domain=domain.hostname)
+        dkim_tokens = [str(value) for value in dkim.get("DkimTokens", [])]
+        if not dkim_tokens:
+            raise RuntimeError("Amazon SES did not return DKIM tokens for the sending identity.")
+        dkim_status = "PENDING"
+
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        if locked_domain.status == Domain.Status.DISABLED:
+            return locked_domain
+        if locked_domain.outbound_status != Domain.OutboundStatus.PROVISIONING:
+            return locked_domain
+        build_outbound_dns_instructions(
+            locked_domain,
+            verification_token=verification_token,
+            dkim_tokens=dkim_tokens,
+        )
+        locked_domain.ses_identity_status = verification_status or "PENDING"
+        locked_domain.outbound_status = Domain.OutboundStatus.PENDING_DNS
+        locked_domain.outbound_ready = False
+        locked_domain.outbound_error_code = ""
+        locked_domain.outbound_error_message = ""
+        locked_domain.save(
+            update_fields=(
+                "ses_identity_status",
+                "outbound_status",
+                "outbound_ready",
+                "outbound_error_code",
+                "outbound_error_message",
+                "updated_at",
+            )
+        )
+        if locked_domain.ses_identity_origin == Domain.SESIdentityOrigin.ADOPTION_PENDING:
+            AuditEvent.objects.get_or_create(
+                domain=locked_domain,
+                actor_type=AuditEvent.ActorType.SYSTEM,
+                event_type="domain.ses_identity_adoption_pending",
+                object_type="Domain",
+                object_id=locked_domain.id,
+                request_id=f"outbound:{locked_domain.id}:existing-identity",
                 defaults={
                     "metadata": {
                         "ses_verification_status": locked_domain.ses_identity_status,
@@ -413,15 +580,19 @@ def reconcile_ses_identity_adoption(
 
     verification_status = str(ses_verification_status).upper()
     dkim_status = str(dkim_verification_status).upper()
+    outbound_enabled = domain.outbound_status != Domain.OutboundStatus.DISABLED
+    needs_ses_verification = domain.setup_mode == Domain.SetupMode.DIRECT_MX or outbound_enabled
     has_verification_instruction = domain.dns_records.filter(
         purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
     ).exists()
     has_dkim_instructions = domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exists()
-    restart_verification = verification_status not in {"PENDING", "SUCCESS"} or (
-        verification_status == "PENDING" and not has_verification_instruction
+    restart_verification = needs_ses_verification and (
+        verification_status not in {"PENDING", "SUCCESS"}
+        or (verification_status == "PENDING" and not has_verification_instruction)
     )
-    restart_dkim = dkim_status not in {"PENDING", "SUCCESS"} or (
-        dkim_status == "PENDING" and not has_dkim_instructions
+    restart_dkim = outbound_enabled and (
+        dkim_status not in {"PENDING", "SUCCESS"}
+        or (dkim_status == "PENDING" and not has_dkim_instructions)
     )
     if not restart_verification and not restart_dkim:
         return verification_status, dkim_status
@@ -508,13 +679,14 @@ def create_domain_test(
 ) -> tuple[DomainTest, str]:
     _assert_domain_test_ready(domain)
     _assert_domain_test_cooldown(domain)
-    if receipt_rule_reconciler is None:
-        from inbox.services.receipt_rules import reconcile_receipt_rule
+    if domain.setup_mode == Domain.SetupMode.DIRECT_MX:
+        if receipt_rule_reconciler is None:
+            from inbox.services.receipt_rules import reconcile_receipt_rule
 
-        receipt_rule_reconciler = reconcile_receipt_rule
-    # Ensure SES can actually accept the test before revealing a one-time
-    # address. Keep this network call outside the SQLite write transaction.
-    receipt_rule_reconciler()
+            receipt_rule_reconciler = reconcile_receipt_rule
+        # Direct-MX tests need a current customer-domain recipient rule.
+        # Provider-forward tests use the deployment-managed service-domain rule.
+        receipt_rule_reconciler()
 
     raw = secrets.token_urlsafe(24).lower()
     local_part = f"test-{raw}"
@@ -567,6 +739,7 @@ def apply_domain_readiness(
         if ses_verification_status is not None
         else domain.ses_identity_status
     ).upper()
+    observed_dkim_status = str(dkim_verification_status or "").upper()
     ses_receiving_ready = (
         domain.setup_mode != Domain.SetupMode.DIRECT_MX or observed_ses_status == "SUCCESS"
     )
@@ -585,15 +758,58 @@ def apply_domain_readiness(
 
     if ses_verification_status is not None:
         domain.ses_identity_status = ses_verification_status.upper()
-    if ses_verification_status is not None or dkim_verification_status is not None:
-        domain.outbound_ready = (
+
+    dkim_records = [item for item in records if item.purpose == DomainDNSRecord.Purpose.DKIM]
+    dkim_dns_ready = bool(dkim_records) and all(
+        item.status == DomainDNSRecord.Status.VALID for item in dkim_records
+    )
+    outbound_observed = ses_verification_status is not None and dkim_verification_status is not None
+    if domain.outbound_status == Domain.OutboundStatus.DISABLED:
+        domain.outbound_ready = False
+        domain.outbound_error_code = ""
+        domain.outbound_error_message = ""
+    elif domain.outbound_status not in {
+        Domain.OutboundStatus.PROVISIONING,
+        Domain.OutboundStatus.ERROR,
+    }:
+        outbound_ready = (
             ownership_dns
-            and str(ses_verification_status).upper() == "SUCCESS"
-            and str(dkim_verification_status).upper() == "SUCCESS"
+            and dkim_dns_ready
+            and outbound_observed
+            and observed_ses_status == "SUCCESS"
+            and observed_dkim_status == "SUCCESS"
         )
+        if outbound_ready:
+            domain.outbound_ready = True
+            domain.outbound_status = Domain.OutboundStatus.READY
+            domain.outbound_error_code = ""
+            domain.outbound_error_message = ""
+        elif outbound_observed or not ownership_dns or not dkim_dns_ready:
+            was_ready = domain.outbound_status in {
+                Domain.OutboundStatus.READY,
+                Domain.OutboundStatus.DEGRADED,
+            }
+            domain.outbound_ready = False
+            domain.outbound_status = (
+                Domain.OutboundStatus.DEGRADED if was_ready else Domain.OutboundStatus.PENDING_DNS
+            )
+            if was_ready:
+                if not ownership_dns or not dkim_dns_ready:
+                    domain.outbound_error_code = "outbound_dns_drift"
+                    domain.outbound_error_message = (
+                        "A required ownership or DKIM DNS record no longer matches."
+                    )
+                else:
+                    domain.outbound_error_code = "outbound_identity_not_ready"
+                    domain.outbound_error_message = (
+                        "Amazon SES no longer reports this sending identity and DKIM as verified."
+                    )
+            else:
+                domain.outbound_error_code = ""
+                domain.outbound_error_message = ""
     elif not ownership_dns:
         # Never preserve send authorization after current DNS ownership proof
-        # disappears, even when SES observations are temporarily unavailable.
+        # disappears, even when provisioning observations are unavailable.
         domain.outbound_ready = False
 
     domain.inbound_ready = (

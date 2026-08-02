@@ -126,8 +126,10 @@ environment variables.
 
 Domain states progress through
 `PROVISIONING -> PENDING_DNS -> PENDING_TEST -> READY`. Provisioning failures use `ERROR`,
-configuration drift uses `DEGRADED`, and removal uses `DISABLED`. Inbound and outbound readiness
-are stored and evaluated separately.
+configuration drift uses `DEGRADED`, and removal uses `DISABLED`. This state machine is receiving-
+only. Sending has its own explicit lifecycle:
+`DISABLED -> PROVISIONING -> PENDING_DNS -> READY`, with capability-local `ERROR` and `DEGRADED`
+states. A sending failure never disables an otherwise ready inbound route.
 
 Operational Inbox checks current MX records before presenting setup guidance. If MX records
 already exist, it recommends the forwarding path and never tells the owner to replace those
@@ -136,15 +138,24 @@ records blindly.
 ### Direct MX
 
 Use this when the selected customer domain or subdomain can be dedicated to SES receiving. The
-owner publishes the exact SES verification and MX records shown by the application. After
-ownership is verified, the domain is added to the explicit SES receipt-rule recipient allowlist.
+owner publishes the application ownership TXT, SES `_amazonses` verification TXT, and MX records
+shown by the application. DKIM is not provisioned during receiving setup. After ownership is
+verified, the domain is added to the explicit SES receipt-rule recipient allowlist.
 
 ### Provider catch-all forwarding
 
 Use this when an existing provider must keep handling the domain's MX. The owner keeps all
 current MX records and configures the provider catch-all to forward unmatched mail to a unique,
 high-entropy address at `inbound.operationalinbox.com`. The forwarding alias is tenant-specific;
-it is not a shared catch-all address.
+it is not a shared catch-all address. Receiving-only setup publishes just the application ownership
+TXT and does not create or inspect a customer-domain SES identity.
+
+### Optional outbound sending
+
+Sending is enabled only after the receiving test succeeds and the owner explicitly requests it.
+That action provisions SES identity verification and DKIM records without changing the receiving
+state. Direct-MX domains reuse their receiving identity; provider-forward domains touch a
+customer-domain SES identity for the first time at this step.
 
 For both modes, the delivery test targets `test-<token>@<customer-domain>`. Direct mode therefore
 tests the customer's SES MX path, while forwarding mode tests the existing provider and its
@@ -160,8 +171,8 @@ The rule never uses an empty recipient condition because that would accept every
 identity in a shared AWS account. Pre-existing SES identities are not adopted automatically, and
 the rule enforces SES's 500-recipient condition limit.
 
-DNS remains customer-managed. `check_domain_drift` only reads DNS and SES state; it never writes
-customer records.
+DNS remains customer-managed. `check_domain_drift` only reads DNS and relevant SES state; it never
+writes customer records. Provider-forward domains with sending disabled are not queried in SES.
 
 ## Message and agent safety
 
@@ -460,7 +471,8 @@ Do not change the existing root MX records for `operationalinbox.com`.
    acceptance target.
 7. Exercise the complete path: enter domain -> request magic link -> domain setup
    -> choose the safe domain setup mode -> DNS checklist -> catch-all test -> inbox -> triage ->
-   report -> draft -> exact approval -> SES reply -> delivery/audit event.
+   report -> draft -> optionally enable sending and publish DKIM -> exact approval -> SES reply ->
+   delivery/audit event.
 
 Before the first live deploy, create the empty private GitHub repository
 `onurmatik/operational-inbox`, commit and push this project to `main`, deploy the CDK stack, and

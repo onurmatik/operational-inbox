@@ -96,11 +96,22 @@ class Command(BaseCommand):
         )
         verification: dict[str, str] = {}
         dkim: dict[str, str] = {}
-        if domains:
+        verification_domains = [
+            domain
+            for domain in domains
+            if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+            or domain.outbound_status != Domain.OutboundStatus.DISABLED
+        ]
+        dkim_domains = [
+            domain for domain in domains if domain.outbound_status != Domain.OutboundStatus.DISABLED
+        ]
+        if verification_domains:
             try:
                 ses = boto3.client("ses", region_name=settings.AWS_REGION)
-                for start in range(0, len(domains), 100):
-                    identities = [item.hostname for item in domains[start : start + 100]]
+                for start in range(0, len(verification_domains), 100):
+                    identities = [
+                        item.hostname for item in verification_domains[start : start + 100]
+                    ]
                     verification.update(
                         {
                             key: str(value.get("VerificationStatus", "UNKNOWN"))
@@ -111,6 +122,8 @@ class Command(BaseCommand):
                             .items()
                         }
                     )
+                for start in range(0, len(dkim_domains), 100):
+                    identities = [item.hostname for item in dkim_domains[start : start + 100]]
                     dkim.update(
                         {
                             key: str(value.get("DkimVerificationStatus", "UNKNOWN"))
@@ -121,7 +134,7 @@ class Command(BaseCommand):
                             .items()
                         }
                     )
-                for domain in domains:
+                for domain in verification_domains:
                     adoption_statuses = reconcile_ses_identity_adoption(
                         domain,
                         ses_verification_status=verification.get(domain.hostname, ""),
@@ -148,7 +161,11 @@ class Command(BaseCommand):
                 and domain.status == Domain.Status.DEGRADED
             ):
                 create_domain_drift_notifications(domain)
-        if settings.AWS_INGRESS_BUCKET and settings.AWS_INBOUND_TOPIC_ARN:
+        if (
+            settings.AWS_INGRESS_BUCKET
+            and settings.AWS_INBOUND_TOPIC_ARN
+            and any(domain.setup_mode == Domain.SetupMode.DIRECT_MX for domain in domains)
+        ):
             # This is intentionally unconditional and idempotent. A previous AWS
             # failure must not strand an already-committed ownership transition,
             # and a fresh CDK rule set must receive the service-domain allowlist.

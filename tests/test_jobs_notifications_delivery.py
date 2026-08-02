@@ -7,10 +7,18 @@ import pytest
 from django.test import override_settings
 from django.utils import timezone
 
-from inbox.models import AuditEvent, Classification, Domain, DurableJob, Notification
+from inbox.models import (
+    AuditEvent,
+    Classification,
+    Domain,
+    DurableJob,
+    InboundRoute,
+    Notification,
+)
 from inbox.services.ingestion import process_sqs_body
 from inbox.services.jobs import (
     enqueue_job,
+    request_outbound_provisioning,
     retry_domain_provisioning,
     run_due_jobs,
     schedule_work,
@@ -72,7 +80,7 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
     job.max_attempts = 1
     job.save(update_fields=("max_attempts", "updated_at"))
     monkeypatch.setattr(
-        "inbox.services.jobs.provision_ses_identity",
+        "inbox.services.jobs.provision_inbound",
         lambda candidate: (_ for _ in ()).throw(RuntimeError("secret AWS detail")),
     )
     counts = run_due_jobs(limit=1)
@@ -84,6 +92,78 @@ def test_terminal_domain_provision_failure_is_actionable_and_sanitized(
     assert "Operational Inbox could not finish preparing this domain" in domain.public_error_message
     assert "SES" not in domain.public_error_message
     assert AuditEvent.objects.filter(event_type="domain.provision_failed").exists()
+
+
+@pytest.mark.django_db
+def test_terminal_outbound_failure_preserves_ready_inbound(monkeypatch, project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="send-failure.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        ownership_verified=True,
+        outbound_status=Domain.OutboundStatus.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    route = InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        local_part="route-send-failure",
+        address="route-send-failure@inbound.example.net",
+    )
+    job = enqueue_job(
+        kind="provision_outbound",
+        idempotency_key=f"provision-outbound:{domain.id}",
+        payload={"domain_id": str(domain.id)},
+        domain=domain,
+    )
+    job.max_attempts = 1
+    job.save(update_fields=("max_attempts", "updated_at"))
+    monkeypatch.setattr(
+        "inbox.services.jobs.provision_outbound_identity",
+        lambda candidate: (_ for _ in ()).throw(RuntimeError("secret AWS detail")),
+    )
+
+    counts = run_due_jobs(limit=1)
+
+    domain.refresh_from_db()
+    route.refresh_from_db()
+    assert counts["failed"] == 1
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert route.is_active
+    assert domain.error_code == ""
+    assert domain.outbound_status == Domain.OutboundStatus.ERROR
+    assert not domain.outbound_ready
+    assert domain.outbound_error_code == "outbound_provision_failed"
+    assert "secret AWS detail" not in domain.outbound_error_message
+    assert "SES" not in domain.public_outbound_error_message
+    assert AuditEvent.objects.filter(event_type="domain.outbound_provision_failed").exists()
+
+
+@pytest.mark.django_db
+def test_outbound_enable_is_idempotent_and_does_not_change_inbound(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="enable-send.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        ownership_verified=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+
+    first_domain, first_job, started = request_outbound_provisioning(domain)
+    second_domain, second_job, repeated_started = request_outbound_provisioning(first_domain)
+
+    assert started is True
+    assert repeated_started is False
+    assert second_job.id == first_job.id
+    assert second_domain.status == Domain.Status.READY
+    assert second_domain.inbound_ready
+    assert second_domain.outbound_status == Domain.OutboundStatus.PROVISIONING
+    assert not second_domain.outbound_ready
 
 
 @pytest.mark.django_db

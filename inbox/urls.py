@@ -57,6 +57,11 @@ urlpatterns = [
         name="domain_create_test",
     ),
     path(
+        "app/domains/<uuid:domain_id>/outbound/enable/",
+        views.domain_enable_outbound,
+        name="domain_enable_outbound",
+    ),
+    path(
         "app/domains/<uuid:domain_id>/disable/",
         views.domain_disable,
         name="domain_disable",

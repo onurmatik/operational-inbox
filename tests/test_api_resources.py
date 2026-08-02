@@ -51,6 +51,59 @@ def test_domain_retry_api_starts_one_recoverable_attempt(client, owner, organiza
 
 
 @pytest.mark.django_db
+def test_outbound_enable_api_is_idempotent_and_reports_separate_state(client, owner, project):
+    client.force_login(owner)
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="api-enable-send.example.org",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        ownership_verified=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    url = f"/api/v1/domains/{domain.id}/outbound/enable"
+
+    first = client.post(url, data={}, content_type="application/json")
+    second = client.post(url, data={}, content_type="application/json")
+    detail = client.get(f"/api/v1/domains/{domain.id}").json()
+
+    assert first.status_code == 202
+    assert first.json()["started"] is True
+    assert first.json()["outbound_status"] == Domain.OutboundStatus.PROVISIONING
+    assert second.status_code == 202
+    assert second.json()["started"] is False
+    assert second.json()["job_id"] == first.json()["job_id"]
+    assert detail["status"] == Domain.Status.READY
+    assert detail["inbound_ready"] is True
+    assert detail["outbound_ready"] is False
+    assert detail["outbound_status"] == Domain.OutboundStatus.PROVISIONING
+    assert detail["error"] is None
+    assert detail["outbound_error"] is None
+
+
+@pytest.mark.django_db
+def test_outbound_enable_api_requires_verified_receiving(client, owner, project):
+    client.force_login(owner)
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="api-receiving-pending.example.org",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_TEST,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+
+    response = client.post(
+        f"/api/v1/domains/{domain.id}/outbound/enable",
+        data={},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "outbound_enable_not_allowed"
+
+
+@pytest.mark.django_db
 def test_repeated_domain_create_returns_existing_claim(
     client, monkeypatch, owner, organization, project
 ):
@@ -218,14 +271,10 @@ def test_session_api_resource_surface(
     domain_id = domain_response.json()["id"]
     domain_base = f"/api/v1/domains/{domain_id}"
     assert client.get(domain_base).status_code == 200
-    premature_check = client.post(
-        f"{domain_base}/check", data={}, content_type="application/json"
-    )
+    premature_check = client.post(f"{domain_base}/check", data={}, content_type="application/json")
     assert premature_check.status_code == 409
     assert premature_check.json()["code"] == "dns_instructions_not_ready"
-    premature_test = client.post(
-        f"{domain_base}/test", data={}, content_type="application/json"
-    )
+    premature_test = client.post(f"{domain_base}/test", data={}, content_type="application/json")
     assert premature_test.status_code == 409
     assert premature_test.json()["code"] == "domain_not_ready_for_test"
 
@@ -241,9 +290,7 @@ def test_session_api_resource_surface(
         value="ownership-proof",
         status=DomainDNSRecord.Status.VALID,
     )
-    first_check = client.post(
-        f"{domain_base}/check", data={}, content_type="application/json"
-    )
+    first_check = client.post(f"{domain_base}/check", data={}, content_type="application/json")
     assert first_check.status_code == 202
     first_check_id = first_check.json()["job_id"]
     retry_due_at = timezone.now() + timedelta(hours=1)
@@ -251,23 +298,17 @@ def test_session_api_resource_surface(
         status=DurableJob.Status.RETRY,
         due_at=retry_due_at,
     )
-    repeated_check = client.post(
-        f"{domain_base}/check", data={}, content_type="application/json"
-    )
+    repeated_check = client.post(f"{domain_base}/check", data={}, content_type="application/json")
     assert repeated_check.status_code == 202
     assert repeated_check.json()["job_id"] == first_check_id
     expedited = DurableJob.objects.get(id=first_check_id)
     assert expedited.due_at < retry_due_at
     DurableJob.objects.filter(id=first_check_id).update(status=DurableJob.Status.COMPLETE)
-    completed_check = client.post(
-        f"{domain_base}/check", data={}, content_type="application/json"
-    )
+    completed_check = client.post(f"{domain_base}/check", data={}, content_type="application/json")
     assert completed_check.status_code == 202
     assert completed_check.json()["job_id"] != first_check_id
     monkeypatch.setattr("inbox.services.receipt_rules.reconcile_receipt_rule", lambda: None)
-    test_delivery = client.post(
-        f"{domain_base}/test", data={}, content_type="application/json"
-    )
+    test_delivery = client.post(f"{domain_base}/test", data={}, content_type="application/json")
     assert test_delivery.status_code == 201
     assert test_delivery.json()["address"].endswith("@inbound.example.org")
 
@@ -389,9 +430,7 @@ def test_api_attachment_url_contract(client, monkeypatch, owner, organization, i
     s3 = Mock()
     s3.generate_presigned_url.return_value = "https://signed.example/clean"
     monkeypatch.setattr("inbox.services.attachments.boto3.client", lambda *args, **kwargs: s3)
-    response = client.get(
-        f"/api/v1/domains/{organization.id}/attachments/{attachment.id}/url"
-    )
+    response = client.get(f"/api/v1/domains/{organization.id}/attachments/{attachment.id}/url")
     assert response.status_code == 200
     assert response.json() == {"url": "https://signed.example/clean", "expires_in": 300}
 

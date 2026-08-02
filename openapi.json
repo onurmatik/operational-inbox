@@ -1082,6 +1082,49 @@
         ]
       }
     },
+    "/api/v1/domains/{domain_id}/outbound/enable": {
+      "post": {
+        "operationId": "inbox_api_domains_enable_outbound",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Enable Outbound",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
     "/api/v1/domains/{domain_id}/outbound/{outbound_id}": {
       "get": {
         "operationId": "inbox_api_outbound_status",

@@ -82,6 +82,7 @@ from inbox.services.drafts import (
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
     enqueue_job,
+    request_outbound_provisioning,
     retry_domain_provisioning,
 )
 from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
@@ -1088,12 +1089,51 @@ def domain_create_test(request: HttpRequest, domain_id: uuid.UUID) -> HttpRespon
 
 @verified_required
 @require_POST
+def domain_enable_outbound(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    domain = get_owned_domain(request.user, domain_id)
+    try:
+        domain, job, started = request_outbound_provisioning(domain)
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        if started:
+            _audit(
+                domain,
+                request,
+                "domain.outbound_provision_requested",
+                domain,
+                {"job_id": str(job.id)},
+            )
+            messages.success(
+                request,
+                "Sending setup started. We'll prepare the DKIM records for this domain.",
+            )
+        else:
+            messages.info(request, "Sending setup is already in progress.")
+    return redirect("domain_detail", domain_id=domain.id)
+
+
+@verified_required
+@require_POST
 def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
     domain.outbound_ready = False
-    domain.save(update_fields=("status", "inbound_ready", "outbound_ready", "updated_at"))
+    domain.outbound_status = Domain.OutboundStatus.DISABLED
+    domain.outbound_error_code = ""
+    domain.outbound_error_message = ""
+    domain.save(
+        update_fields=(
+            "status",
+            "inbound_ready",
+            "outbound_ready",
+            "outbound_status",
+            "outbound_error_code",
+            "outbound_error_message",
+            "updated_at",
+        )
+    )
     domain.inbound_routes.update(is_active=False)
     enqueue_job(
         kind="reconcile_receipt_rule",

@@ -43,7 +43,11 @@ from inbox.services.drafts import (
     resend_outbound,
     revise_draft,
 )
-from inbox.services.jobs import enqueue_job, retry_domain_provisioning
+from inbox.services.jobs import (
+    enqueue_job,
+    request_outbound_provisioning,
+    retry_domain_provisioning,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -292,10 +296,19 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
         "status": domain.status,
         "inbound_ready": domain.inbound_ready,
         "outbound_ready": domain.outbound_ready,
+        "outbound_status": domain.outbound_status,
         "last_checked_at": domain.last_checked_at,
         "error": (
             {"code": domain.error_code, "message": domain.public_error_message}
             if domain.error_code
+            else None
+        ),
+        "outbound_error": (
+            {
+                "code": domain.outbound_error_code,
+                "message": domain.public_outbound_error_message,
+            }
+            if domain.outbound_error_code
             else None
         ),
     }
@@ -565,6 +578,41 @@ def domains_retry_provisioning(
 
 
 @api.post(
+    "/domains/{domain_id}/outbound/enable",
+    auth=authenticated,
+    response={202: dict},
+    tags=["Domains"],
+)
+def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    try:
+        domain, job, started = request_outbound_provisioning(domain)
+    except DjangoValidationError as exc:
+        raise APIError(
+            "outbound_enable_not_allowed",
+            "; ".join(exc.messages),
+            status=409,
+        ) from exc
+    if started:
+        record_api_audit(
+            request,
+            domain,
+            "domain.outbound_provision_requested",
+            domain,
+            {"job_id": str(job.id)},
+        )
+    return Status(
+        202,
+        {
+            "outbound_status": domain.outbound_status,
+            "job_id": str(job.id),
+            "started": started,
+        },
+    )
+
+
+@api.post(
     "/domains/{domain_id}/check",
     auth=authenticated,
     response={202: dict},
@@ -663,7 +711,20 @@ def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
     domain.outbound_ready = False
-    domain.save(update_fields=("status", "inbound_ready", "outbound_ready", "updated_at"))
+    domain.outbound_status = Domain.OutboundStatus.DISABLED
+    domain.outbound_error_code = ""
+    domain.outbound_error_message = ""
+    domain.save(
+        update_fields=(
+            "status",
+            "inbound_ready",
+            "outbound_ready",
+            "outbound_status",
+            "outbound_error_code",
+            "outbound_error_message",
+            "updated_at",
+        )
+    )
     domain.inbound_routes.update(is_active=False)
     job = enqueue_job(
         kind="reconcile_receipt_rule",

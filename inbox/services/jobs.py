@@ -18,7 +18,11 @@ from inbox.models import (
     Report,
 )
 from inbox.services.ai import classify_message
-from inbox.services.domains import expire_unverified_claims, provision_ses_identity
+from inbox.services.domains import (
+    expire_unverified_claims,
+    provision_inbound,
+    provision_outbound_identity,
+)
 from inbox.services.notifications import (
     create_aging_notifications,
     create_classification_notifications,
@@ -90,14 +94,12 @@ def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]
         elif can_retry_domain_provisioning(locked_domain):
             locked_domain.status = Domain.Status.PROVISIONING
             locked_domain.inbound_ready = False
-            locked_domain.outbound_ready = False
             locked_domain.error_code = ""
             locked_domain.error_message = ""
             locked_domain.save(
                 update_fields=(
                     "status",
                     "inbound_ready",
-                    "outbound_ready",
                     "error_code",
                     "error_message",
                     "updated_at",
@@ -115,6 +117,68 @@ def retry_domain_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]
         return locked_domain, job, True
 
 
+def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, bool]:
+    """Enable or retry sending without changing the receiving lifecycle."""
+
+    with transaction.atomic():
+        locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        generation = locked_domain.updated_at.strftime("%Y%m%d%H%M%S%f")
+        if (
+            locked_domain.status
+            in {
+                Domain.Status.PROVISIONING,
+                Domain.Status.ERROR,
+                Domain.Status.DISABLED,
+            }
+            or not locked_domain.inbound_ready
+        ):
+            raise ValidationError(
+                "Verify receiving with a real test email before enabling sending for this domain."
+            )
+        if locked_domain.outbound_status == Domain.OutboundStatus.PROVISIONING:
+            active_job = (
+                DurableJob.objects.filter(
+                    kind="provision_outbound",
+                    payload__domain_id=str(locked_domain.id),
+                    status__in=[
+                        DurableJob.Status.PENDING,
+                        DurableJob.Status.LEASED,
+                        DurableJob.Status.RETRY,
+                    ],
+                )
+                .order_by("created_at")
+                .first()
+            )
+            if active_job is not None:
+                return locked_domain, active_job, False
+        elif locked_domain.outbound_status not in {
+            Domain.OutboundStatus.DISABLED,
+            Domain.OutboundStatus.ERROR,
+        }:
+            raise ValidationError("Sending is already enabled for this domain.")
+
+        locked_domain.outbound_status = Domain.OutboundStatus.PROVISIONING
+        locked_domain.outbound_ready = False
+        locked_domain.outbound_error_code = ""
+        locked_domain.outbound_error_message = ""
+        locked_domain.save(
+            update_fields=(
+                "outbound_status",
+                "outbound_ready",
+                "outbound_error_code",
+                "outbound_error_message",
+                "updated_at",
+            )
+        )
+        job = enqueue_job(
+            kind="provision_outbound",
+            idempotency_key=f"provision-outbound:{locked_domain.id}:{generation}",
+            payload={"domain_id": str(locked_domain.id)},
+            domain=locked_domain,
+        )
+        return locked_domain, job, True
+
+
 def schedule_work(now=None) -> int:
     now = now or timezone.now()
     count = 0
@@ -124,6 +188,18 @@ def schedule_work(now=None) -> int:
     # active jobs are returned unchanged, so this scan is idempotent.
     for domain in Domain.objects.filter(status=Domain.Status.PROVISIONING):
         _, _, started = retry_domain_provisioning(domain)
+        count += int(started)
+    for domain in Domain.objects.filter(
+        outbound_status=Domain.OutboundStatus.PROVISIONING,
+        inbound_ready=True,
+        status__in=[
+            Domain.Status.PENDING_DNS,
+            Domain.Status.PENDING_TEST,
+            Domain.Status.READY,
+            Domain.Status.DEGRADED,
+        ],
+    ):
+        _, _, started = request_outbound_provisioning(domain)
         count += int(started)
     for message in Message.objects.filter(
         direction=Message.Direction.INBOUND,
@@ -240,7 +316,9 @@ def _handle(job: DurableJob) -> None:
         ):
             raise RuntimeError("Notification delivery failed.")
     elif job.kind == "provision_domain":
-        provision_ses_identity(Domain.objects.get(id=job.payload["domain_id"]))
+        provision_inbound(Domain.objects.get(id=job.payload["domain_id"]))
+    elif job.kind == "provision_outbound":
+        provision_outbound_identity(Domain.objects.get(id=job.payload["domain_id"]))
     elif job.kind == "dns_check":
         from django.core.management import call_command
 
@@ -252,7 +330,7 @@ def _handle(job: DurableJob) -> None:
 
 
 def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
-    if job.kind != "provision_domain":
+    if job.kind not in {"provision_domain", "provision_outbound"}:
         return
     domain = (
         Domain.objects.filter(id=job.payload.get("domain_id"))
@@ -260,6 +338,41 @@ def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
         .first()
     )
     if domain is None:
+        return
+    if job.kind == "provision_outbound":
+        domain.outbound_status = (
+            Domain.OutboundStatus.ERROR if terminal else Domain.OutboundStatus.PROVISIONING
+        )
+        domain.outbound_ready = False
+        domain.outbound_error_code = (
+            "outbound_provision_failed" if terminal else "outbound_provision_retry"
+        )
+        domain.outbound_error_message = (
+            "Sending identity provisioning failed after repeated attempts. "
+            "Contact support to retry."
+            if terminal
+            else "Sending identity provisioning is temporarily unavailable and will retry "
+            "automatically."
+        )
+        domain.save(
+            update_fields=(
+                "outbound_status",
+                "outbound_ready",
+                "outbound_error_code",
+                "outbound_error_message",
+                "updated_at",
+            )
+        )
+        if terminal:
+            AuditEvent.objects.create(
+                domain=domain,
+                actor_type=AuditEvent.ActorType.SYSTEM,
+                event_type="domain.outbound_provision_failed",
+                object_type="Domain",
+                object_id=domain.id,
+                request_id=f"job:{job.id}",
+                metadata={"attempts": job.attempts},
+            )
         return
     domain.status = Domain.Status.ERROR if terminal else Domain.Status.PROVISIONING
     domain.error_code = "domain_provision_failed" if terminal else "domain_provision_retry"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import importlib
 from datetime import timedelta
 
 import pytest
+from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
@@ -11,6 +13,7 @@ from inbox.models import (
     AuditEvent,
     Conversation,
     Domain,
+    DomainDNSRecord,
     DraftApproval,
     ReplyDraft,
     ReplyDraftRevision,
@@ -121,3 +124,54 @@ def test_header_injection_is_rejected(organization, project, conversation, inbou
     )
     with pytest.raises(ValidationError, match="line breaks"):
         revision.full_clean()
+
+
+@pytest.mark.django_db
+def test_outbound_split_backfill_does_not_treat_legacy_dkim_as_user_intent(project):
+    pending = Domain.objects.create(
+        owner=project.owner,
+        hostname="legacy-pending.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    ready = Domain.objects.create(
+        owner=project.owner,
+        hostname="legacy-ready.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        outbound_ready=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    for domain in (pending, ready):
+        DomainDNSRecord.objects.create(
+            domain=domain,
+            purpose=DomainDNSRecord.Purpose.DKIM,
+            record_type="CNAME",
+            name=f"one._domainkey.{domain.hostname}",
+            value="one.dkim.amazonses.com",
+            is_required=False,
+        )
+    DomainDNSRecord.objects.create(
+        domain=pending,
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION,
+        record_type="TXT",
+        name=f"_amazonses.{pending.hostname}",
+        value="legacy-proof",
+        is_required=False,
+    )
+    migration = importlib.import_module("inbox.migrations.0002_split_outbound_provisioning")
+
+    migration.backfill_outbound_status(apps, None)
+
+    pending.refresh_from_db()
+    ready.refresh_from_db()
+    assert pending.outbound_status == Domain.OutboundStatus.DISABLED
+    assert not pending.dns_records.filter(
+        purpose__in=[
+            DomainDNSRecord.Purpose.DKIM,
+            DomainDNSRecord.Purpose.SES_VERIFICATION,
+        ]
+    ).exists()
+    assert ready.outbound_status == Domain.OutboundStatus.READY
+    assert ready.dns_records.filter(purpose=DomainDNSRecord.Purpose.DKIM).exists()

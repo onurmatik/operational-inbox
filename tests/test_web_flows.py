@@ -25,7 +25,11 @@ from inbox.models import (
     ReplyDraft,
     Report,
 )
-from inbox.services.domains import MXObservation, build_dns_instructions
+from inbox.services.domains import (
+    MXObservation,
+    build_dns_instructions,
+    build_inbound_dns_instructions,
+)
 from inbox.services.drafts import revise_draft
 
 
@@ -204,11 +208,10 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
         hostname="dns.example.org",
         status=Domain.Status.PENDING_DNS,
     )
-    build_dns_instructions(
+    build_inbound_dns_instructions(
         domain,
         ownership_token="ownership-proof",
         verification_token="ses-proof",
-        dkim_tokens=["dkim-one"],
     )
 
     response = client.get(reverse("domain_detail", args=[domain.id]))
@@ -223,13 +226,83 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     assert b"_amazonses.dns.example.org" in response.content
     assert b"ses-proof" in response.content
     assert b"inbound-smtp.us-east-1.amazonaws.com" in response.content
-    assert b"dkim-one._domainkey.dns.example.org" in response.content
-    assert b"dkim-one.dkim.amazonses.com" in response.content
+    assert b"._domainkey.dns.example.org" not in response.content
+    assert b"dkim.amazonses.com" not in response.content
     assert b"Operational Inbox verification" in response.content
     assert b"SES verification" not in response.content
     assert b"Amazon SES" not in response.content
-    assert b"Required for sending" in response.content
+    assert b"Required for direct receiving" in response.content
+    assert b"Not enabled" in response.content
     assert b"Generate test address" not in response.content
+
+
+@pytest.mark.django_db
+def test_provider_forward_inbound_detail_shows_only_claim_and_private_route(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="forward-only.example.org",
+        status=Domain.Status.PENDING_DNS,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    build_inbound_dns_instructions(domain, ownership_token="fresh-claim")
+    route = domain.inbound_routes.get()
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert route.address.encode() in response.content
+    assert b"_operational-inbox-claim.forward-only.example.org" in response.content
+    assert b"_amazonses.forward-only.example.org" not in response.content
+    assert b"inbound-smtp.us-east-1.amazonaws.com" not in response.content
+    assert b"._domainkey.forward-only.example.org" not in response.content
+    assert b"Amazon SES" not in response.content
+
+
+@pytest.mark.django_db
+def test_ready_inbound_can_enable_sending_without_changing_receiving(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="enable-sending.example.org",
+        status=Domain.Status.READY,
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+    )
+    domain.inbound_ready = True
+    domain.ownership_verified = True
+    domain.save(update_fields=("inbound_ready", "ownership_verified", "updated_at"))
+    build_inbound_dns_instructions(domain, ownership_token="fresh-claim")
+    domain.dns_records.update(status=DomainDNSRecord.Status.VALID)
+    url = reverse("domain_enable_outbound", args=[domain.id])
+
+    detail = client.get(reverse("domain_detail", args=[domain.id]))
+    get_response = client.get(url)
+    enabled = client.post(url, follow=True)
+
+    domain.refresh_from_db()
+    assert b"Not enabled" in detail.content
+    assert b"Enable sending" in detail.content
+    assert get_response.status_code == 405
+    assert enabled.status_code == 200
+    assert b"Preparing sending DNS records" in enabled.content
+    assert domain.status == Domain.Status.READY
+    assert domain.inbound_ready
+    assert domain.outbound_status == Domain.OutboundStatus.PROVISIONING
+    assert (
+        DurableJob.objects.filter(
+            kind="provision_outbound", payload__domain_id=str(domain.id)
+        ).count()
+        == 1
+    )
+    assert AuditEvent.objects.filter(
+        event_type="domain.outbound_provision_requested", object_id=domain.id
+    ).exists()
 
 
 @pytest.mark.django_db
@@ -420,6 +493,7 @@ def test_authenticated_application_pages_render(
         status=Domain.Status.READY,
         inbound_ready=True,
         outbound_ready=True,
+        outbound_status=Domain.OutboundStatus.READY,
         ownership_verified=True,
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
@@ -565,9 +639,7 @@ def test_attachment_web_locked_and_expired_responses(client, owner, organization
 
 
 @pytest.mark.django_db
-def test_owner_can_switch_domains(
-    client, owner, organization, project
-):
+def test_owner_can_switch_domains(client, owner, organization, project):
     second = Domain.objects.create(
         owner=owner,
         hostname="second.example",

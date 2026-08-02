@@ -20,7 +20,7 @@
             </span>
           </div>
           <p class="mt-2 text-sm text-muted">
-            {{ domain.get_setup_mode_display }} · inbound {{ domain.inbound_ready|yesno:"ready,not ready" }} · outbound {{ domain.outbound_ready|yesno:"ready,not ready" }}
+            {{ domain.get_setup_mode_display }} · receiving {{ domain.inbound_ready|yesno:"ready,not ready" }} · sending {{ domain.get_outbound_status_display|lower }}
           </p>
           {% if domain.status == 'ERROR' %}<p class="mt-1 text-xs text-coral-strong">Open this domain to review what happened and the available next step.</p>{% endif %}
         </div>

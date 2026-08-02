@@ -138,6 +138,14 @@ class Domain(UUIDTimeStampedModel):
         DEGRADED = "DEGRADED", "Degraded"
         DISABLED = "DISABLED", "Disabled"
 
+    class OutboundStatus(models.TextChoices):
+        DISABLED = "DISABLED", "Not enabled"
+        PROVISIONING = "PROVISIONING", "Provisioning"
+        PENDING_DNS = "PENDING_DNS", "Pending DNS"
+        READY = "READY", "Ready"
+        ERROR = "ERROR", "Error"
+        DEGRADED = "DEGRADED", "Degraded"
+
     class SESIdentityOrigin(models.TextChoices):
         MANAGED = "MANAGED", "Created by Operational Inbox"
         ADOPTION_PENDING = "ADOPTION_PENDING", "Existing identity; ownership pending"
@@ -153,6 +161,11 @@ class Domain(UUIDTimeStampedModel):
     ownership_verified = models.BooleanField(default=False)
     inbound_ready = models.BooleanField(default=False)
     outbound_ready = models.BooleanField(default=False)
+    outbound_status = models.CharField(
+        max_length=24,
+        choices=OutboundStatus.choices,
+        default=OutboundStatus.DISABLED,
+    )
     ses_identity_status = models.CharField(max_length=32, blank=True)
     ses_identity_origin = models.CharField(
         max_length=24, choices=SESIdentityOrigin.choices, blank=True
@@ -163,6 +176,8 @@ class Domain(UUIDTimeStampedModel):
     last_checked_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
     error_message = models.CharField(max_length=240, blank=True)
+    outbound_error_code = models.CharField(max_length=64, blank=True)
+    outbound_error_message = models.CharField(max_length=240, blank=True)
 
     class Meta:
         ordering = ("hostname",)
@@ -205,6 +220,27 @@ class Domain(UUIDTimeStampedModel):
         }.get(
             self.error_code,
             "Operational Inbox could not complete this domain setup. Contact support for help.",
+        )
+
+    @property
+    def public_outbound_error_message(self) -> str:
+        if not self.outbound_error_code:
+            return ""
+        return {
+            "outbound_dns_drift": "The DNS records required for sending no longer match.",
+            "outbound_identity_not_ready": (
+                "Operational Inbox can no longer verify this domain for sending."
+            ),
+            "outbound_provision_failed": (
+                "Operational Inbox could not finish preparing this domain for sending. "
+                "Contact support to retry."
+            ),
+            "outbound_provision_retry": (
+                "Operational Inbox is still preparing sending and will retry automatically."
+            ),
+        }.get(
+            self.outbound_error_code,
+            "Operational Inbox could not complete sending setup. Contact support for help.",
         )
 
 
