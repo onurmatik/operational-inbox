@@ -272,6 +272,18 @@ def test_magic_callback_accepts_safe_same_host_next_path(client):
 
 
 @pytest.mark.django_db
+def test_magic_sign_in_sets_maximum_persistent_session_cookie(client):
+    user = User.objects.create_user(email="persistent-session@example.com", password=None)
+    _workspace_for(user)
+
+    response = client.get(_callback_for(user))
+
+    session_cookie = response.cookies[settings.SESSION_COOKIE_NAME]
+    assert session_cookie["max-age"] == 400 * 24 * 60 * 60
+    assert settings.SESSION_EXPIRE_AT_BROWSER_CLOSE is False
+
+
+@pytest.mark.django_db
 def test_magic_callback_rejects_nested_magic_login_next_path(client):
     victim = User.objects.create_user(email="victim@example.com", password=None)
     attacker = User.objects.create_user(email="attacker@example.com", password=None)
