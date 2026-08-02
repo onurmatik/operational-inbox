@@ -105,6 +105,38 @@ def test_free_api_returns_upgrade_required(client, free_owner):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("domain_status", "inbound_ready", "outbound_status"),
+    [
+        (Domain.Status.PENDING_TEST, False, Domain.OutboundStatus.DISABLED),
+        (Domain.Status.READY, True, Domain.OutboundStatus.ERROR),
+    ],
+)
+def test_free_domain_detail_links_outbound_setup_to_upgrade(
+    client, free_owner, domain_status, inbound_ready, outbound_status
+):
+    domain = make_domain(free_owner, "outbound-upgrade.example")
+    domain.status = domain_status
+    domain.inbound_ready = inbound_ready
+    domain.outbound_status = outbound_status
+    domain.save(update_fields=("status", "inbound_ready", "outbound_status", "updated_at"))
+    client.force_login(free_owner)
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"Inbound receiving remains available on Free" not in response.content
+    assert b"Outbound sending requires" not in response.content
+    assert b"Upgrade to set up outbound sending for this domain." in response.content
+    assert (
+        f'<a href="{reverse("billing")}" class="oi-button-secondary mt-3">Set up outbound</a>'
+    ).encode() in response.content
+    assert b"Enable sending" not in response.content
+    assert b"Retry sending setup" not in response.content
+    assert reverse("domain_enable_outbound", args=[domain.id]).encode() not in response.content
+
+
+@pytest.mark.django_db
 @override_settings(
     STRIPE_SECRET_KEY="",
     STRIPE_WEBHOOK_SECRET="",
