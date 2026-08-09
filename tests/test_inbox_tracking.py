@@ -173,6 +173,16 @@ def test_quick_actions_are_idempotent_restoreable_and_preserve_return_location(
     assert AuditEvent.objects.filter(event_type="conversation.work_started").count() == 1
     assert AuditEvent.objects.filter(event_type="conversation.archived").count() == 1
 
+    archived_page = client.get(
+        reverse("inbox"),
+        {"domain": domain.id, "folder": "archive"},
+    )
+    assert archived_page.status_code == 200
+    assert b'aria-label="Unstar conversation"' in archived_page.content
+    assert b'data-icon="star-filled"' in archived_page.content
+    assert b'data-tooltip="Restore to Inbox"' in archived_page.content
+    assert b'data-icon="restore"' in archived_page.content
+
     for action in ("trash", "trash", "restore", "restore", "unstar", "unstar"):
         client.post(action_url, {"action": action, "next": next_url})
     conversation.refresh_from_db()
@@ -182,6 +192,12 @@ def test_quick_actions_are_idempotent_restoreable_and_preserve_return_location(
     assert AuditEvent.objects.filter(event_type="conversation.trashed").count() == 1
     assert AuditEvent.objects.filter(event_type="conversation.restored").count() == 1
     assert AuditEvent.objects.filter(event_type="conversation.unstarred").count() == 1
+
+    inbox_page = client.get(reverse("inbox"), {"domain": domain.id})
+    assert inbox_page.status_code == 200
+    assert b'aria-label="Work started"' in inbox_page.content
+    assert b'data-tooltip="Work started"' in inbox_page.content
+    assert b'data-icon="started"' in inbox_page.content
 
     client.post(
         reverse("conversation_status", args=[conversation.id]),
@@ -270,9 +286,15 @@ def test_inbox_rows_keep_detail_link_separate_from_post_actions(
     assert b"1 new" in response.content
     assert b"support@example.com" in response.content
     assert reverse("conversation_action", args=[conversation.id]).encode() in response.content
-    assert b">Start work<" in response.content
-    assert b">Archive<" in response.content
-    assert b">Trash<" in response.content
+    assert b'aria-label="Star conversation"' in response.content
+    assert b'data-tooltip="Start work"' in response.content
+    assert b'aria-label="Archive conversation"' in response.content
+    assert b'data-tooltip="Move to Trash"' in response.content
+    assert b'data-icon="star"' in response.content
+    assert b'data-icon="start"' in response.content
+    assert b'data-icon="archive"' in response.content
+    assert b'data-icon="trash"' in response.content
+    assert b"iconify-icon" not in response.content
 
 
 @pytest.mark.django_db

@@ -69,15 +69,43 @@
   }
 
   .oi-row-action {
-    @apply inline-flex min-h-11 items-center justify-center border border-line bg-white px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-forest transition-colors hover:border-forest hover:bg-paper sm:min-h-8;
+    @apply relative inline-flex size-11 shrink-0 items-center justify-center border border-line bg-white p-0 text-muted transition-colors hover:border-forest hover:bg-paper hover:text-forest sm:size-8;
   }
 
   .oi-row-action-danger {
-    @apply inline-flex min-h-11 items-center justify-center border border-coral-strong/30 bg-white px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-coral-strong transition-colors hover:border-coral-strong hover:bg-coral-soft sm:min-h-8;
+    @apply relative inline-flex size-11 shrink-0 items-center justify-center border border-coral-strong/30 bg-white p-0 text-coral-strong transition-colors hover:border-coral-strong hover:bg-coral-soft sm:size-8;
   }
 
   .oi-row-action-static {
-    @apply inline-flex min-h-11 items-center justify-center border border-line bg-paper px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-muted sm:min-h-8;
+    @apply relative inline-flex size-11 shrink-0 items-center justify-center border border-mint-strong/30 bg-mint-soft p-0 text-mint-strong sm:size-8;
+  }
+
+  .oi-row-action-active {
+    @apply relative inline-flex size-11 shrink-0 items-center justify-center border border-gold-strong/30 bg-gold-soft p-0 text-gold-strong transition-colors hover:border-gold-strong sm:size-8;
+  }
+
+  .oi-row-action::after,
+  .oi-row-action-danger::after,
+  .oi-row-action-static::after,
+  .oi-row-action-active::after {
+    content: attr(data-tooltip);
+    visibility: hidden;
+    @apply pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-30 -translate-x-1/2 whitespace-nowrap border border-ink bg-ink px-2 py-1 font-sans text-xs font-medium text-white opacity-0;
+    transition:
+      opacity 120ms ease-out,
+      visibility 120ms ease-out;
+  }
+
+  .oi-row-action:hover::after,
+  .oi-row-action:focus-visible::after,
+  .oi-row-action-danger:hover::after,
+  .oi-row-action-danger:focus-visible::after,
+  .oi-row-action-static:hover::after,
+  .oi-row-action-static:focus-visible::after,
+  .oi-row-action-active:hover::after,
+  .oi-row-action-active:focus-visible::after {
+    visibility: visible;
+    @apply opacity-100;
   }
 
   .oi-input {

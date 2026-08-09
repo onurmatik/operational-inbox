@@ -78,45 +78,47 @@
               {% csrf_token %}
               <input type="hidden" name="next" value="{{ request.get_full_path }}">
               <input type="hidden" name="action" value="{% if conversation.starred_at %}unstar{% else %}star{% endif %}">
-              <button class="oi-row-action">{% if conversation.starred_at %}Unstar{% else %}Star{% endif %}</button>
+              <button type="submit" class="{% if conversation.starred_at %}oi-row-action-active{% else %}oi-row-action{% endif %}" aria-label="{% if conversation.starred_at %}Unstar conversation{% else %}Star conversation{% endif %}" aria-pressed="{% if conversation.starred_at %}true{% else %}false{% endif %}" data-tooltip="{% if conversation.starred_at %}Unstar{% else %}Star{% endif %}">
+                {% if conversation.starred_at %}{% include "inbox/_action_icon.html" with icon="star-filled" %}{% else %}{% include "inbox/_action_icon.html" with icon="star" %}{% endif %}
+              </button>
             </form>
             {% if conversation.archived_at or conversation.trashed_at %}
               <form method="post" action="{% url 'conversation_action' conversation.id %}">
                 {% csrf_token %}
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
                 <input type="hidden" name="action" value="restore">
-                <button class="oi-row-action">Restore</button>
+                <button type="submit" class="oi-row-action" aria-label="Restore conversation to Inbox" data-tooltip="Restore to Inbox">{% include "inbox/_action_icon.html" with icon="restore" %}</button>
               </form>
               {% if not conversation.trashed_at %}
                 <form method="post" action="{% url 'conversation_action' conversation.id %}">
                   {% csrf_token %}
                   <input type="hidden" name="next" value="{{ request.get_full_path }}">
                   <input type="hidden" name="action" value="trash">
-                  <button class="oi-row-action-danger">Trash</button>
+                  <button type="submit" class="oi-row-action-danger" aria-label="Move conversation to Trash" data-tooltip="Move to Trash">{% include "inbox/_action_icon.html" with icon="trash" %}</button>
                 </form>
               {% endif %}
             {% else %}
               {% if conversation.work_started_at %}
-                <span class="oi-row-action-static">Started</span>
+                <span class="oi-row-action-static" tabindex="0" aria-label="Work started" data-tooltip="Work started">{% include "inbox/_action_icon.html" with icon="started" %}</span>
               {% elif conversation.status != "QUARANTINED" %}
                 <form method="post" action="{% url 'conversation_action' conversation.id %}">
                   {% csrf_token %}
                   <input type="hidden" name="next" value="{{ request.get_full_path }}">
                   <input type="hidden" name="action" value="start">
-                  <button class="oi-row-action">Start work</button>
+                  <button type="submit" class="oi-row-action" aria-label="Start work on conversation" data-tooltip="Start work">{% include "inbox/_action_icon.html" with icon="start" %}</button>
                 </form>
               {% endif %}
               <form method="post" action="{% url 'conversation_action' conversation.id %}">
                 {% csrf_token %}
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
                 <input type="hidden" name="action" value="archive">
-                <button class="oi-row-action">Archive</button>
+                <button type="submit" class="oi-row-action" aria-label="Archive conversation" data-tooltip="Archive">{% include "inbox/_action_icon.html" with icon="archive" %}</button>
               </form>
               <form method="post" action="{% url 'conversation_action' conversation.id %}">
                 {% csrf_token %}
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
                 <input type="hidden" name="action" value="trash">
-                <button class="oi-row-action-danger">Trash</button>
+                <button type="submit" class="oi-row-action-danger" aria-label="Move conversation to Trash" data-tooltip="Move to Trash">{% include "inbox/_action_icon.html" with icon="trash" %}</button>
               </form>
             {% endif %}
           </div>
