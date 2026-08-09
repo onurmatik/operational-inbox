@@ -297,14 +297,18 @@ def record_api_audit(
 ) -> None:
     auth = request.auth
     is_token = isinstance(auth, APIToken)
+    oauth_client_id = getattr(request, "mcp_oauth_client_id", None)
+    is_agent = is_token or oauth_client_id is not None
     actor = auth.owner if is_token else request.user
     audit_metadata = dict(metadata or {})
     if is_token:
         audit_metadata["api_token_id"] = str(auth.id)
         audit_metadata["api_token_name"] = auth.name
+    elif oauth_client_id is not None:
+        audit_metadata["oauth_client_id"] = oauth_client_id
     AuditEvent.objects.create(
         domain=domain,
-        actor_type=AuditEvent.ActorType.AGENT if is_token else AuditEvent.ActorType.OWNER,
+        actor_type=AuditEvent.ActorType.AGENT if is_agent else AuditEvent.ActorType.OWNER,
         actor_id=auth.id if is_token else actor.id,
         event_type=event_type,
         object_type=instance.__class__.__name__,

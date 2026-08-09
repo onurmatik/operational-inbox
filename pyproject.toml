@@ -10,6 +10,7 @@ dependencies = [
   "cryptography>=43,<47",
   "django>=5.2,<5.3",
   "django-ninja>=1.4,<2",
+  "django-oauth-toolkit>=3.4,<3.5",
   "django-sesame>=3.2.3,<3.3",
   "dnspython>=2.7,<3",
   "gunicorn>=23,<24",
@@ -57,7 +58,7 @@ exclude_also = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-extend-exclude = ["inbox/migrations"]
+extend-exclude = ["inbox/migrations", "oauth_server/migrations"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "DJ", "RUF", "S"]

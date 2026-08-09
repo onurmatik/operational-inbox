@@ -126,6 +126,8 @@ def test_deploy_contract_uses_ephemeral_github_app_auth_and_fixed_mail_backend()
     assert "safe.directory=" in source
     assert "DJANGO_EMAIL_BACKEND=ses" in source
     assert '"DJANGO_EMAIL_BACKEND",' not in source
+    assert '"OPENAI_APPS_CHALLENGE_TOKEN",' in source
+    assert '"OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED",' in source
 
 
 @pytest.mark.django_db

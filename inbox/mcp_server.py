@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Literal, cast
+from dataclasses import dataclass
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -35,11 +36,24 @@ from inbox.api import (
     outbound_status,
 )
 from inbox.models import APIToken
+from oauth_server.auth import OAuthAccess, verify_oauth_access_token
 
 logger = logging.getLogger(__name__)
+ResponseT = TypeVar("ResponseT", bound=HttpResponse)
 
 MCP_PROTOCOL_VERSION = "2025-11-25"
 MCP_SERVER_INFO = {"name": "operational-inbox", "version": "0.1.0"}
+
+
+@dataclass(frozen=True)
+class MCPAuthentication:
+    api_token: APIToken | None = None
+    oauth_access: OAuthAccess | None = None
+
+    def has_scope(self, scope: str) -> bool:
+        if self.api_token is not None:
+            return self.api_token.has_scope(scope)
+        return self.oauth_access is not None and self.oauth_access.has_scope(scope)
 
 
 def _object_schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -537,14 +551,17 @@ def _jsonrpc_error(request_id: Any, code: int, message: str) -> JsonResponse:
 
 
 def _trusted_origins() -> set[str]:
-    origins = {value.rstrip("/") for value in settings.CSRF_TRUSTED_ORIGINS}
+    origins = {
+        value.rstrip("/")
+        for value in [*settings.CSRF_TRUSTED_ORIGINS, *settings.MCP_ALLOWED_ORIGINS]
+    }
     parsed = urlsplit(settings.PUBLIC_BASE_URL)
     if parsed.scheme and parsed.netloc:
         origins.add(f"{parsed.scheme}://{parsed.netloc}")
     return origins
 
 
-def _apply_cors(request: HttpRequest, response: HttpResponse) -> HttpResponse:
+def _apply_cors(request: HttpRequest, response: ResponseT) -> ResponseT:
     origin = request.headers.get("Origin")
     if origin and origin.rstrip("/") in _trusted_origins():
         response["Access-Control-Allow-Origin"] = origin
@@ -552,27 +569,87 @@ def _apply_cors(request: HttpRequest, response: HttpResponse) -> HttpResponse:
         response["Access-Control-Allow-Headers"] = (
             "Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id"
         )
-        response["Access-Control-Expose-Headers"] = "MCP-Protocol-Version, MCP-Session-Id"
+        response["Access-Control-Expose-Headers"] = (
+            "MCP-Protocol-Version, MCP-Session-Id, WWW-Authenticate"
+        )
         response["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     return response
 
 
-def _authenticate(request: HttpRequest) -> bool:
+def _authenticate(request: HttpRequest) -> MCPAuthentication | None:
     authorization = request.headers.get("Authorization", "")
     scheme, separator, raw_token = authorization.partition(" ")
     if not separator or scheme.casefold() != "bearer" or not raw_token:
-        return False
-    token = bearer_auth.authenticate(request, raw_token.strip())
-    if token is None:
-        return False
-    request.auth = token  # type: ignore[attr-defined]
-    request.user = token.owner
-    return True
+        return None
+    raw_token = raw_token.strip()
+    token = bearer_auth.authenticate(request, raw_token)
+    if token is not None:
+        request.auth = token  # type: ignore[attr-defined]
+        request.user = token.owner
+        return MCPAuthentication(api_token=token)
+    if not settings.OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED:
+        return None
+    oauth_access = verify_oauth_access_token(raw_token)
+    if oauth_access is None:
+        return None
+    request.auth = None  # type: ignore[attr-defined]
+    request.user = oauth_access.user
+    request.mcp_oauth_client_id = oauth_access.client_id  # type: ignore[attr-defined]
+    return MCPAuthentication(oauth_access=oauth_access)
 
 
-def _authorized_tools(request: HttpRequest) -> list[dict[str, Any]]:
-    token = cast(APIToken, request.__dict__["auth"])
-    return [tool for tool in MCP_TOOLS if token.has_scope(MCP_TOOL_SCOPES[str(tool["name"])])]
+def _security_schemes() -> list[dict[str, Any]]:
+    return [{"type": "oauth2", "scopes": list(settings.MCP_REQUIRED_SCOPES)}]
+
+
+def _discoverable_tools() -> list[dict[str, Any]]:
+    security_schemes = _security_schemes()
+    return [
+        {
+            **tool,
+            "securitySchemes": security_schemes,
+            "_meta": {"securitySchemes": security_schemes},
+        }
+        for tool in MCP_TOOLS
+    ]
+
+
+def _oauth_challenge(*, error: str, description: str) -> str:
+    metadata_url = f"{settings.OAUTH_ISSUER}/.well-known/oauth-protected-resource/mcp"
+    scope = " ".join(settings.MCP_REQUIRED_SCOPES)
+    parameters = [
+        f'error="{_quote_auth_parameter(error)}"',
+        f'error_description="{_quote_auth_parameter(description)}"',
+        f'resource_metadata="{metadata_url}"',
+        f'scope="{_quote_auth_parameter(scope)}"',
+    ]
+    return f"Bearer {', '.join(parameters)}"
+
+
+def _quote_auth_parameter(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _authentication_error(
+    request: HttpRequest,
+    request_id: Any,
+    *,
+    status: int,
+    error: str,
+    description: str,
+) -> JsonResponse:
+    challenge = _oauth_challenge(error=error, description=description)
+    result = {
+        "content": [{"type": "text", "text": description}],
+        "_meta": {"mcp/www_authenticate": [challenge]},
+        "isError": True,
+    }
+    response = _jsonrpc_response(request_id, result)
+    response.status_code = status
+    response["WWW-Authenticate"] = challenge
+    response["Cache-Control"] = "no-store"
+    response["Pragma"] = "no-cache"
+    return _apply_cors(request, response)
 
 
 @csrf_exempt
@@ -585,19 +662,6 @@ def mcp_endpoint(request: HttpRequest) -> HttpResponse:
     if request.method != "POST":
         response = HttpResponse(status=405)
         response["Allow"] = "POST, OPTIONS"
-        return _apply_cors(request, response)
-    if not _authenticate(request):
-        response = JsonResponse(
-            {
-                "code": "authentication_required",
-                "message": "A valid Operational Inbox bearer token is required.",
-                "request_id": getattr(request, "request_id", "mcp"),
-            },
-            status=401,
-        )
-        response["WWW-Authenticate"] = (
-            'Bearer realm="Operational Inbox", scope="read write approve_send"'
-        )
         return _apply_cors(request, response)
     try:
         payload = json.loads(request.body)
@@ -628,7 +692,7 @@ def mcp_endpoint(request: HttpRequest) -> HttpResponse:
     if method == "tools/list":
         return _apply_cors(
             request,
-            _jsonrpc_response(request_id, {"tools": _authorized_tools(request)}),
+            _jsonrpc_response(request_id, {"tools": _discoverable_tools()}),
         )
     if method != "tools/call":
         return _apply_cors(request, _jsonrpc_error(request_id, -32601, "Method not found"))
@@ -636,6 +700,25 @@ def mcp_endpoint(request: HttpRequest) -> HttpResponse:
     arguments = params.get("arguments", {})
     if not isinstance(name, str) or not isinstance(arguments, dict):
         return _apply_cors(request, _jsonrpc_error(request_id, -32602, "Invalid params"))
+    required_scope = MCP_TOOL_SCOPES.get(name)
+    if required_scope is not None:
+        authentication = _authenticate(request)
+        if authentication is None:
+            return _authentication_error(
+                request,
+                request_id,
+                status=401,
+                error="invalid_token",
+                description="Authentication required",
+            )
+        if not authentication.has_scope(required_scope) and authentication.oauth_access is not None:
+            return _authentication_error(
+                request,
+                request_id,
+                status=403,
+                error="insufficient_scope",
+                description=f"Required scope: {required_scope}",
+            )
     try:
         result = _tool_result(_dispatch_tool(request, name, arguments))
     except APIError as exc:

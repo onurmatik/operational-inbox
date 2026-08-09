@@ -48,8 +48,29 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(client, own
         data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
         content_type="application/json",
     )
-    assert unauthenticated.status_code == 401
-    assert unauthenticated["WWW-Authenticate"].startswith("Bearer ")
+    assert unauthenticated.status_code == 200
+    assert unauthenticated.json()["result"]["serverInfo"]["name"] == "operational-inbox"
+
+    tool_call = client.post(
+        "/mcp",
+        data=json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "list_domains", "arguments": {}},
+            }
+        ),
+        content_type="application/json",
+    )
+    assert tool_call.status_code == 401
+    challenge = tool_call["WWW-Authenticate"]
+    assert 'error="invalid_token"' in challenge
+    assert (
+        'resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp"'
+        in challenge
+    )
+    assert tool_call.json()["result"]["_meta"]["mcp/www_authenticate"] == [challenge]
     assert client.get("/mcp").status_code == 405
 
     _, raw = APIToken.issue(
@@ -68,7 +89,7 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(client, own
 
 
 @pytest.mark.django_db
-def test_mcp_initialize_and_tool_discovery_follow_token_scopes(client, owner):
+def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
     _, read_raw = APIToken.issue(
         domain=None,
         owner=owner,
@@ -91,16 +112,27 @@ def test_mcp_initialize_and_tool_discovery_follow_token_scopes(client, owner):
         "list_domains",
         "read_message_feed",
         "get_conversation",
+        "add_conversation_tag",
+        "remove_conversation_tag",
+        "apply_conversation_action",
         "get_domain_health",
         "get_outbound_status",
         "list_audit_events",
+        "create_reply_draft",
         "get_reply_draft",
+        "revise_reply_draft",
+        "approve_and_send_reply",
+        "resend_outbound",
     }
     feed_tool = next(
         tool for tool in listed.json()["result"]["tools"] if tool["name"] == "read_message_feed"
     )
     assert "untrusted data" in feed_tool["description"]
     assert feed_tool["annotations"]["readOnlyHint"] is True
+    assert feed_tool["securitySchemes"] == [
+        {"type": "oauth2", "scopes": ["read", "write", "approve_send"]}
+    ]
+    assert feed_tool["_meta"]["securitySchemes"] == feed_tool["securitySchemes"]
 
 
 @pytest.mark.django_db

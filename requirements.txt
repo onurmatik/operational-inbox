@@ -32,15 +32,20 @@ charset-normalizer==3.4.9
 colorama==0.4.6 ; sys_platform == 'win32'
     # via tqdm
 cryptography==46.0.7
-    # via operational-inbox
+    # via
+    #   jwcrypto
+    #   operational-inbox
 distro==1.9.0
     # via openai
 django==5.2.16
     # via
     #   django-ninja
+    #   django-oauth-toolkit
     #   django-sesame
     #   operational-inbox
 django-ninja==1.6.2
+    # via operational-inbox
+django-oauth-toolkit==3.4.0
     # via operational-inbox
 django-sesame==3.2.3
     # via operational-inbox
@@ -65,8 +70,12 @@ jmespath==1.1.0
     # via
     #   boto3
     #   botocore
+jwcrypto==1.5.8
+    # via django-oauth-toolkit
 nh3==0.3.6
     # via operational-inbox
+oauthlib==3.3.1
+    # via django-oauth-toolkit
 openai==2.52.0
     # via operational-inbox
 packaging==26.2
@@ -85,7 +94,9 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
     # via operational-inbox
 requests==2.34.2
-    # via stripe
+    # via
+    #   django-oauth-toolkit
+    #   stripe
 s3transfer==0.19.2
     # via boto3
 six==1.17.0
@@ -101,6 +112,7 @@ tqdm==4.70.0
 typing-extensions==4.16.0
     # via
     #   anyio
+    #   jwcrypto
     #   openai
     #   pydantic
     #   pydantic-core
@@ -113,6 +125,7 @@ tzdata==2026.3 ; sys_platform == 'win32'
 urllib3==2.7.0
     # via
     #   botocore
+    #   django-oauth-toolkit
     #   requests
 whitenoise==6.12.0
     # via operational-inbox

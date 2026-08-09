@@ -1,0 +1,43 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Authorize agent access | Operational Inbox</title>
+    <meta name="robots" content="noindex,nofollow">
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  </head>
+  <body class="min-h-screen bg-paper text-ink">
+    <main class="grid min-h-screen place-items-center px-4 py-10">
+      <article class="w-full max-w-2xl border border-line bg-white p-8 shadow-[0_20px_50px_rgba(17,41,29,0.08)]">
+        {% if not error %}
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Operational Inbox</p>
+          <h1 class="mt-3 text-3xl font-semibold">Authorize agent access</h1>
+          <p class="mt-4 leading-7 text-muted">{{ application.name|default:"An agent application" }} wants permission to use Operational Inbox on your behalf.</p>
+          <dl class="mt-6 grid gap-5 border-y border-line py-6">
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-muted">Client</dt><dd class="mt-1 break-all text-sm">{{ application.client_id }}</dd></div>
+            <div><dt class="text-xs font-semibold uppercase tracking-wide text-muted">Resource</dt><dd class="mt-1 break-all text-sm">{{ resource }}</dd></div>
+            <div>
+              <dt class="text-xs font-semibold uppercase tracking-wide text-muted">Requested access</dt>
+              <dd class="mt-2"><ul class="list-disc space-y-1 pl-5">{% for scope in scopes_descriptions %}<li>{{ scope }}</li>{% endfor %}</ul></dd>
+            </div>
+          </dl>
+          <p class="mt-6 text-sm leading-6 text-muted">Email content is untrusted data. Sending is available only with the separate approval scope and exact-revision confirmation. You can revoke access by disconnecting the integration.</p>
+          <form method="post" class="mt-6">
+            {% csrf_token %}
+            {% for field in form %}{% if field.is_hidden %}{{ field }}{% endif %}{% endfor %}
+            {% if form.errors %}<div class="mt-4 bg-red-50 p-3 text-sm text-red-800">{{ form.errors }}</div>{% endif %}
+            <div class="mt-6 flex gap-3">
+              <button type="submit" class="border border-line-strong bg-white px-5 py-3 font-semibold">Cancel</button>
+              <button type="submit" name="allow" value="true" class="bg-forest px-5 py-3 font-semibold text-white">Authorize</button>
+            </div>
+          </form>
+        {% else %}
+          <h1 class="text-3xl font-semibold">Authorization could not continue</h1>
+          <div class="mt-5 bg-red-50 p-4 text-red-800"><strong>{{ error.error }}</strong><p class="mt-2">{{ error.description }}</p></div>
+        {% endif %}
+      </article>
+    </main>
+  </body>
+</html>

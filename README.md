@@ -382,11 +382,16 @@ The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
 the `triage-inboxes` and `reply-to-conversations` skills, and portable/Codex MCP configuration.
-The stateless Streamable HTTP endpoint is `/mcp`; it accepts client-managed Operational Inbox API
-bearer tokens and exposes only tools allowed by the token's `read`, `write`, or `approve_send`
-scopes. See
+The stateless Streamable HTTP endpoint is `/mcp`. Plugin clients connect with OAuth 2.1
+authorization code + PKCE; existing Operational Inbox API bearer tokens remain supported for
+direct integrations. Initialization and tool discovery are public, while every tool call enforces
+its `read`, `write`, or `approve_send` scope. Prompt-capable clients can begin with the public
+[`INSTALL.md`](INSTALL.md); repeat use should install the plugin through the repo marketplace.
+See
 [`docs/agentic-integration.md`](docs/agentic-integration.md) for the package
-boundary and MCP tool contract.
+boundary and MCP tool contract, and
+[`docs/public-plugin-submission.md`](docs/public-plugin-submission.md) for the OpenAI review
+checklist.
 
 ## Retention and recovery
 

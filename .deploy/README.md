@@ -21,6 +21,9 @@ tracked and WhiteNoise serves collected static files.
    `python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`.
 4. Quote values containing spaces so the StageOps cron environment remains POSIX-shell
    sourceable, for example `DEFAULT_FROM_EMAIL='Operational Inbox <notifications@operationalinbox.com>'`.
+5. OAuth defaults to the production `PUBLIC_BASE_URL`; override `MCP_RESOURCE_URL` or
+   `OAUTH_ISSUER` only when the externally visible canonical URLs differ. During OpenAI domain
+   verification, place the portal token in `OPENAI_APPS_CHALLENGE_TOKEN` and redeploy.
 
 The deployer accepts only the explicit runtime allowlist in `fabfile.py`. It never imports
 database, host, cookie, Django secret, or debug overrides from `.env-prod`. Values containing

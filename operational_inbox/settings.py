@@ -14,6 +14,10 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name: str, default: int) -> int:
+    return int(os.getenv(name, str(default)))
+
+
 def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
@@ -22,6 +26,10 @@ SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "unsafe-development-key-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
 ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1],testserver")
 CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+MCP_ALLOWED_ORIGINS = env_list(
+    "MCP_ALLOWED_ORIGINS",
+    "https://chatgpt.com,https://chat.openai.com,https://claude.ai,https://claude.com",
+)
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -30,6 +38,8 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "oauth2_provider",
+    "oauth_server.apps.OAuthServerConfig",
     "inbox.apps.InboxConfig",
 ]
 
@@ -135,6 +145,92 @@ DEFAULT_FROM_EMAIL = os.getenv(
 )
 
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", f"{PUBLIC_BASE_URL}/mcp")
+MCP_DOCUMENTATION_URL = os.getenv("MCP_DOCUMENTATION_URL", f"{PUBLIC_BASE_URL}/mcp-docs/")
+MCP_REQUIRED_SCOPES = ["read", "write", "approve_send"]
+OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED = env_bool(
+    "OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED",
+    True,
+)
+OAUTH_ISSUER = os.getenv("OAUTH_ISSUER", PUBLIC_BASE_URL).rstrip("/")
+OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS = env_int("OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS", 900)
+OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS = env_int(
+    "OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS",
+    60,
+)
+OAUTH_REFRESH_TOKEN_EXPIRE_SECONDS = env_int(
+    "OAUTH_REFRESH_TOKEN_EXPIRE_SECONDS",
+    2_592_000,
+)
+if OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED:
+    invalid_lifetimes = [
+        name
+        for name, value in {
+            "OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS": OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS,
+            "OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS": (OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS),
+            "OAUTH_REFRESH_TOKEN_EXPIRE_SECONDS": OAUTH_REFRESH_TOKEN_EXPIRE_SECONDS,
+        }.items()
+        if value < 1
+    ]
+    if invalid_lifetimes:
+        raise ImproperlyConfigured(
+            "Operational Inbox OAuth token lifetimes must be positive: "
+            + ", ".join(invalid_lifetimes)
+        )
+OAUTH_DCR_ENABLED = env_bool("OAUTH_DCR_ENABLED", True)
+OAUTH_DCR_PER_IP_HOURLY_LIMIT = env_int("OAUTH_DCR_PER_IP_HOURLY_LIMIT", 20)
+OAUTH_DCR_GLOBAL_HOURLY_LIMIT = env_int("OAUTH_DCR_GLOBAL_HOURLY_LIMIT", 200)
+OAUTH_DCR_MAX_REDIRECT_URIS = env_int("OAUTH_DCR_MAX_REDIRECT_URIS", 10)
+OAUTH_DCR_CLIENT_RETENTION_DAYS = env_int("OAUTH_DCR_CLIENT_RETENTION_DAYS", 30)
+OPENAI_APPS_CHALLENGE_TOKEN = os.getenv("OPENAI_APPS_CHALLENGE_TOKEN", "").strip()
+
+OAUTH2_PROVIDER_APPLICATION_MODEL = "oauth_server.OAuthApplication"
+OAUTH2_PROVIDER = {
+    "APPLICATION_MODEL": OAUTH2_PROVIDER_APPLICATION_MODEL,
+    "OAUTH2_VALIDATOR_CLASS": "oauth_server.validators.OperationalInboxOAuth2Validator",
+    "RESOURCE_SERVER_TOKEN_RESOURCE_VALIDATOR": (
+        "oauth_server.validators.exact_resource_validator"
+    ),
+    "SCOPES": {
+        "read": "Read authorized inboxes, conversations, drafts, and delivery status.",
+        "write": "Create drafts and apply reversible inbox organization changes.",
+        "approve_send": "Approve an exact draft revision and send or resend email.",
+    },
+    "DEFAULT_SCOPES": [],
+    "AUTHORIZATION_CODE_EXPIRE_SECONDS": OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS,
+    "ACCESS_TOKEN_EXPIRE_SECONDS": OAUTH_ACCESS_TOKEN_EXPIRE_SECONDS,
+    "REFRESH_TOKEN_EXPIRE_SECONDS": OAUTH_REFRESH_TOKEN_EXPIRE_SECONDS,
+    "REFRESH_TOKEN_GRACE_PERIOD_SECONDS": 0,
+    "REFRESH_TOKEN_REUSE_PROTECTION": True,
+    "ROTATE_REFRESH_TOKEN": True,
+    "REQUEST_APPROVAL_PROMPT": "force",
+    "ALLOWED_REDIRECT_URI_SCHEMES": ["https"],
+    "ALLOW_LOCALHOST_LOOPBACK": True,
+    "ALLOW_URI_WILDCARDS": False,
+    "PKCE_REQUIRED": True,
+    "OIDC_ENABLED": False,
+    "OIDC_ISS_ENDPOINT": OAUTH_ISSUER,
+    "DCR_ENABLED": OAUTH_DCR_ENABLED,
+    "DCR_REGISTRATION_PERMISSION_CLASSES": ("oauth_server.permissions.RateLimitedDCRPermission",),
+    "CIMD_ENABLED": False,
+    "CLEAR_EXPIRED_TOKENS_BATCH_SIZE": 500,
+    "OAUTH2_RESPONSE_TYPES_SUPPORTED": ["code"],
+    "OAUTH2_TOKEN_ENDPOINT_AUTH_METHODS_SUPPORTED": ["none"],
+    "OAUTH2_GRANT_TYPES_SUPPORTED": ["authorization_code", "refresh_token"],
+    "OAUTH2_PROTECTED_RESOURCE_IDENTIFIER": MCP_RESOURCE_URL,
+    "OAUTH2_PROTECTED_RESOURCE_AUTHORIZATION_SERVERS": [OAUTH_ISSUER],
+    "OAUTH2_PROTECTED_RESOURCE_BEARER_METHODS_SUPPORTED": ["header"],
+    "OAUTH2_PROTECTED_RESOURCE_NAME": "Operational Inbox MCP",
+    "COMPLIANT_BCP_RFC9700_IMPLICIT_GRANT": True,
+    "COMPLIANT_BCP_RFC9700_PASSWORD_GRANT": True,
+    "COMPLIANT_BCP_RFC9700_PKCE_METHOD": True,
+    "COMPLIANT_BCP_RFC9700_ACCESS_TOKEN_TRANSPORT": True,
+    "COMPLIANT_BCP_RFC9700_AUTHZ_RESPONSE_ISS": True,
+    "COMPLIANT_BCP_RFC9700_TOKEN_STORAGE": True,
+    "COMPLIANT_BCP_RFC9700_REFRESH_TOKEN": True,
+    "COMPLIANT_BCP_RFC9700_REDIRECT_URI_SCHEME": True,
+}
+
 INBOUND_SERVICE_DOMAIN = os.getenv("INBOUND_SERVICE_DOMAIN", "inbound.operationalinbox.com")
 MAX_DOMAINS_PER_USER = int(os.getenv("MAX_DOMAINS_PER_USER", "20"))
 DOMAIN_PROVISION_RATE_LIMIT = int(os.getenv("DOMAIN_PROVISION_RATE_LIMIT", "5"))

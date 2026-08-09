@@ -68,11 +68,32 @@ def test_openai_plugin_contract_matches_portable_metadata() -> None:
     assert interface["displayName"] == "Operational Inbox"
     assert interface["shortDescription"] == "Triage multi-domain mail"
     assert interface["websiteURL"] == "https://operationalinbox.com/"
+    assert interface["privacyPolicyURL"] == "https://operationalinbox.com/privacy/"
+    assert interface["termsOfServiceURL"] == "https://operationalinbox.com/terms/"
     assert interface["brandColor"] == "#1A3C2B"
     assert len(interface["defaultPrompt"]) <= 3
     for field in ("composerIcon", "logo"):
         asset_path = PLUGIN_ROOT / interface[field].removeprefix("./")
         assert asset_path.is_file()
+
+
+def test_repo_marketplace_and_mcp_registry_point_to_the_release() -> None:
+    marketplace = load_json(REPOSITORY_ROOT / ".agents" / "plugins" / "marketplace.json")
+    assert marketplace["name"] == "personal"
+    entry = next(item for item in marketplace["plugins"] if item["name"] == "operational-inbox")
+    assert entry == {
+        "name": "operational-inbox",
+        "source": {"source": "local", "path": "./plugins/operational-inbox"},
+        "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+        "category": "Productivity",
+    }
+
+    registry = load_json(REPOSITORY_ROOT / "server.json")
+    assert registry["version"] == project_version()
+    assert registry["remotes"] == [
+        {"type": "streamable-http", "url": "https://operationalinbox.com/mcp"}
+    ]
+    assert registry["icons"][0]["sizes"] == ["512x512"]
 
 
 def test_triage_inboxes_skill_preserves_agent_first_safety_boundary() -> None:

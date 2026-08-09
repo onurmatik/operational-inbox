@@ -22,9 +22,10 @@ names.
 
 ## API contract for agents
 
-Create an all-domain API token when one agent should cover the whole account, or a domain-scoped
-token for a narrower boundary. Tokens retain the existing `read`, `write`, and `approve_send`
-scopes.
+Plugin and remote-MCP clients connect through OAuth 2.1 authorization code with PKCE. The user
+signs in to Operational Inbox, reviews the requested access, and grants the `read`, `write`, and
+`approve_send` scopes. Existing `oi_...` API tokens remain available for direct API integrations;
+an all-domain token covers the account and a domain-scoped token enforces a narrower boundary.
 
 Use `GET /api/v1/feed/messages` for the account-wide inbound feed. It accepts these filters:
 
@@ -82,9 +83,10 @@ does not provide a standalone SSE stream. The endpoint supports MCP initializati
 discovery, and tool calls with JSON responses. It rejects untrusted browser origins.
 
 Agent Plugins v1 leaves remote credentials to the client. The package contains no token or literal
-authorization header. Clients provide an Operational Inbox API bearer token out of band; the MCP
-endpoint validates it through the same hashed-token path as `/api/v1`. Tool discovery returns only
-tools allowed by the token's scopes:
+authorization header. MCP initialization and tool discovery are public so a client can discover
+the OAuth security scheme. Tool calls require either an OAuth access token bound exactly to
+`https://operationalinbox.com/mcp` or a legacy Operational Inbox API bearer token. Missing and
+insufficient OAuth credentials return RFC-compatible `WWW-Authenticate` metadata challenges.
 
 | Tool | Scope | Behavior |
 | --- | --- | --- |
@@ -104,13 +106,13 @@ tools allowed by the token's scopes:
 | `resend_outbound` | `approve_send` | Explicitly create another failed/unknown send attempt. |
 
 Every tool reuses the API's owner/domain lookup, entitlement checks, scope enforcement, stable
-errors, and agent audit events. A domain-scoped token cannot address another domain. Email output is
-described as untrusted data in both the MCP server instructions and read-tool metadata.
+errors, and agent audit events. OAuth grants cover the connected owner's authorized domains; a
+legacy domain-scoped token cannot address another domain. Email output is described as untrusted
+data in both the MCP server instructions and read-tool metadata.
 
 Do not expose server-side workflow classification, aging rules, reports, notifications,
 allowed-tag catalogs, domain mutation, token creation, attachment URLs, or permanent deletion
-through MCP. A future OAuth flow must preserve the same owner/domain and scope boundaries; bearer
-tokens must never be embedded in either MCP manifest.
+through MCP. Bearer tokens must never be embedded in either MCP manifest.
 
 ## Validation
 
@@ -122,5 +124,6 @@ python3 /path/to/skill-creator/scripts/quick_validate.py \
   plugins/operational-inbox/skills/triage-inboxes
 python3 /path/to/skill-creator/scripts/quick_validate.py \
   plugins/operational-inbox/skills/reply-to-conversations
-uv run pytest tests/test_plugin_package.py tests/test_mcp_server.py --no-cov
+uv run pytest tests/test_plugin_package.py tests/test_mcp_server.py \
+  tests/test_oauth_server.py --no-cov
 ```

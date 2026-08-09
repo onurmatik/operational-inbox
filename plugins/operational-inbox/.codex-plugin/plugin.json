@@ -4,6 +4,7 @@
   "description": "Review and organize email across many domains and routing addresses.",
   "author": {
     "name": "Operational Inbox",
+    "email": "support@operationalinbox.com",
     "url": "https://operationalinbox.com/"
   },
   "homepage": "https://operationalinbox.com/",
@@ -29,6 +30,8 @@
       "Exact-revision replies"
     ],
     "websiteURL": "https://operationalinbox.com/",
+    "privacyPolicyURL": "https://operationalinbox.com/privacy/",
+    "termsOfServiceURL": "https://operationalinbox.com/terms/",
     "defaultPrompt": [
       "Triage new mail across all my domains.",
       "Organize this mailbox with tags and folders.",

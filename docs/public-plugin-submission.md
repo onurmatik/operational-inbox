@@ -1,0 +1,106 @@
+# Public plugin submission
+
+This is the source-of-truth checklist for submitting Operational Inbox to the public OpenAI
+Plugin Directory. It intentionally excludes credentials, reviewer passwords, and domain
+verification tokens.
+
+Status as of August 9, 2026: the first review scope is frozen around cross-domain inbox triage,
+reversible organization, reply drafting, exact-revision approval, and explicit resend. Domain
+configuration, API-token management, attachments, reports, and permanent deletion are not exposed
+through MCP.
+
+## Implemented in the repository
+
+- Production MCP endpoint: `https://operationalinbox.com/mcp`.
+- OAuth 2.1 discovery, public-client registration, PKCE authorization, rotating refresh tokens,
+  exact MCP resource binding, and protected tool calls.
+- Public install instructions, MCP documentation, privacy policy, terms, and support pages.
+- Public Agent Plugins 1.0 manifests and two bundled skills under
+  `plugins/operational-inbox`.
+- Production manifest URLs:
+  `https://operationalinbox.com/plugins/operational-inbox/plugin.json` and
+  `https://operationalinbox.com/plugins/operational-inbox/mcp.json`.
+- OpenAI/Codex manifest with a 512 x 512 logo, legal URLs, remote MCP server, and starter prompts.
+- MCP Registry metadata in `server.json` for optional registry publication.
+- Domain challenge endpoint backed by `OPENAI_APPS_CHALLENGE_TOKEN`.
+- Tool discovery without credentials and transport-level OAuth challenges on protected calls.
+- Email-content prompt-injection boundary, reversible organization, and exact-revision outbound
+  approval.
+
+## Before portal submission
+
+- [ ] Deploy this release and run database migrations.
+- [ ] Verify the production MCP endpoint, OAuth metadata, DCR/PKCE flow, protected resource
+  metadata, and all public/legal URLs.
+- [ ] Complete the tool annotation review and generate `chatgpt-app-submission.json` with exactly
+  five positive and three negative reviewer tests.
+- [ ] Create a dedicated, already-verified reviewer account with sample inbox data and sufficient
+  plan access. It must not require MFA, SMS, email confirmation, a private network, or payment.
+- [ ] Record a public HTTPS demo video covering read, reversible write, draft, exact approval, and
+  explicit resend behavior on supported OpenAI surfaces.
+- [ ] Confirm the OpenAI organization owner has **Apps Management: Write**, the selected project
+  uses **Global** data residency, and developer/business verification is complete.
+- [ ] Choose the initial listing countries and regions.
+
+## Production verification
+
+Run these checks after deployment:
+
+```console
+curl -i https://operationalinbox.com/.well-known/oauth-protected-resource/mcp
+curl -i https://operationalinbox.com/.well-known/oauth-authorization-server
+curl -i https://operationalinbox.com/mcp-docs/
+curl -i https://operationalinbox.com/privacy/
+curl -i https://operationalinbox.com/terms/
+curl -i https://operationalinbox.com/support/
+curl -i https://operationalinbox.com/INSTALL.md
+```
+
+The MCP resource must be byte-exact as `https://operationalinbox.com/mcp`. OAuth access tokens
+must be short-lived, bound to that resource, issued only through public clients and authorization
+code + PKCE, and returned only after explicit user consent.
+
+## Portal submission
+
+1. Open [OpenAI Plugins](https://platform.openai.com/plugins) and choose
+   **Create plugin -> With MCP -> Standard**.
+2. Enter `https://operationalinbox.com/mcp` and run **Scan Tools**.
+3. Review tool names, descriptions, input/output schemas, OAuth security schemes, server
+   instructions, and every `readOnlyHint`, `openWorldHint`, and `destructiveHint`.
+4. Copy the portal-generated domain token into the production
+   `OPENAI_APPS_CHALLENGE_TOKEN` environment variable and deploy. Verify that
+   `https://operationalinbox.com/.well-known/openai-apps-challenge` returns HTTP 200 with only the
+   exact token, then select **Verify Domain**.
+5. Upload `triage-inboxes` and `reply-to-conversations` from the packaged plugin and use the
+   listing metadata from `plugins/operational-inbox/.codex-plugin/plugin.json`.
+6. Add these starter prompts:
+   - Triage new mail across all my domains.
+   - Organize this mailbox with tags and folders.
+   - Draft a reply for the conversation I select.
+7. Import the five positive and three negative tests from `chatgpt-app-submission.json` and run all
+   eight with the reviewer account.
+8. Add reviewer login details, demo video, countries and regions, and release notes.
+9. Complete only attestations that are true for the scanned production release, submit for
+   review, and record the date and portal status below.
+
+## Initial release notes
+
+> Initial public submission of Operational Inbox. Includes OAuth-authenticated cross-domain inbox
+> triage, reversible organization, reply drafting, exact-revision approval, and explicit resend,
+> plus the Triage Inboxes and Reply to Conversations skills. Email content is treated as untrusted
+> data; trash does not permanently delete mail, and external sends require explicit approval of the
+> exact current draft.
+
+## Submission record
+
+- Submitted: not yet
+- Portal status: not submitted
+- Approved: not yet
+- Published: not yet; approval and publication are separate portal actions
+
+## Changes after approval
+
+Treat new MCP tools, material schema or behavior changes, new data collection, new side effects,
+or new outbound capabilities as a new reviewed version. Update the tool scan, listing, privacy
+disclosures, skills, reviewer tests, demo recording, and release notes before submitting that
+version.
