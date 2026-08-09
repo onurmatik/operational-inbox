@@ -46,6 +46,36 @@ def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
     return draft
 
 
+def create_authored_draft(
+    *, message: Message, owner: User, subject: str, body_text: str
+) -> ReplyDraft:
+    require_pro(owner, "Reply drafts")
+    if message.domain.owner_id != owner.id:
+        raise ValidationError("Only the domain owner can create a reply draft.")
+    if message.is_quarantined:
+        raise ValidationError("A reply draft cannot be created for quarantined content.")
+    with transaction.atomic():
+        draft = ReplyDraft.objects.create(
+            domain=message.domain,
+            conversation=message.conversation,
+            context_message=message,
+        )
+        revision = ReplyDraftRevision(
+            domain=message.domain,
+            draft=draft,
+            number=1,
+            subject=subject,
+            body_text=body_text,
+            author=owner,
+            is_agent_generated=True,
+        )
+        revision.full_clean()
+        revision.save()
+        draft.current_revision = revision
+        draft.save(update_fields=("current_revision", "updated_at"))
+    return draft
+
+
 @transaction.atomic
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str

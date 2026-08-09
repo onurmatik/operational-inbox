@@ -208,6 +208,10 @@ Optional OpenAI draft generation uses the Responses API with Pydantic Structured
 security verdicts, tags, and folders continue to work. Draft generation reports itself unavailable
 rather than taking external action.
 
+Agents connected through MCP may instead persist their own subject and body as an agent-authored
+draft. This path does not invoke the server-side draft model and still requires the exact current
+revision ID, content hash, and `approve_send` authority before an outbound message is queued.
+
 Operational Inbox does not schedule classification, aging, or report jobs and does not create
 in-app notifications. Security/quarantine and domain-health conditions create deduplicated email
 notifications. The user's agent decides concepts such as Requires reply, Aging, or project
@@ -377,11 +381,12 @@ envelope:
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
-and the `review-inboxes` skill. The package intentionally has no MCP configuration until a
-production MCP endpoint exists; the live integration contract is the all-domain feed plus scoped
-tag/folder actions. See
+the `triage-inboxes` and `reply-to-conversations` skills, and portable/Codex MCP configuration.
+The stateless Streamable HTTP endpoint is `/mcp`; it accepts client-managed Operational Inbox API
+bearer tokens and exposes only tools allowed by the token's `read`, `write`, or `approve_send`
+scopes. See
 [`docs/agentic-integration.md`](docs/agentic-integration.md) for the package
-boundary and future MCP contract.
+boundary and MCP tool contract.
 
 ## Retention and recovery
 

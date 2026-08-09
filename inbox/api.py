@@ -43,6 +43,7 @@ from inbox.services.conversations import apply_conversation_action
 from inbox.services.domains import DomainClaimConflict, create_domain, ensure_domain_test
 from inbox.services.drafts import (
     approve_exact_revision,
+    create_authored_draft,
     create_draft,
     resend_outbound,
     revise_draft,
@@ -1386,6 +1387,48 @@ def drafts_generate(request: HttpRequest, domain_id: uuid.UUID, conversation_id:
             "id": str(draft.id),
             "revision_id": str(draft.current_revision_id),
             "content_hash": draft.current_revision.content_hash,
+        },
+    )
+
+
+@api.post(
+    "/domains/{domain_id}/conversations/{conversation_id}/drafts/authored",
+    auth=authenticated,
+    response={201: dict},
+    tags=["Drafts"],
+)
+def drafts_create_authored(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    payload: RevisionInput,
+):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    conversation = scoped_object(Conversation, domain, conversation_id)
+    message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
+    if message is None:
+        raise APIError("no_inbound_message", "No inbound message is available for drafting.")
+    owner = domain.owner if isinstance(request.auth, APIToken) else request.user
+    try:
+        draft = create_authored_draft(
+            message=message,
+            owner=owner,
+            subject=payload.subject,
+            body_text=payload.body_text,
+        )
+    except DjangoValidationError as exc:
+        raise APIError("draft_unavailable", "; ".join(exc.messages), status=409) from exc
+    record_api_audit(request, domain, "draft.created", draft, {"source": "agent"})
+    revision = draft.current_revision
+    return Status(
+        201,
+        {
+            "id": str(draft.id),
+            "revision_id": str(revision.id),
+            "content_hash": revision.content_hash,
+            "subject": revision.subject,
+            "body_text": revision.body_text,
         },
     )
 

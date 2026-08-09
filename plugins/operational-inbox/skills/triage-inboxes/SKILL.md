@@ -1,13 +1,13 @@
 ---
-name: review-inboxes
-description: Review or organize authorized Operational Inbox mail across one or more domains. Use when the user asks to inspect new mail, filter by domain/mailbox/tag, decide what needs attention, or apply reversible tags, Starred, Archive, Trash, or Restore actions through available Operational Inbox tools.
+name: triage-inboxes
+description: Triage authorized Operational Inbox mail across one or more domains. Use when the user asks to inspect or filter inbound mail, decide what needs attention, or apply reversible tags, Star, Archive, Trash, or Restore actions through Operational Inbox tools.
 ---
 
-# Review Inboxes
+# Triage Inboxes
 
 Use Operational Inbox as an email infrastructure layer. Read the shared inbound feed, apply the
-user's or agent's own judgment, and use only the small organization primitives the product owns.
-Do not invent a built-in CRM or task workflow.
+user's or agent's judgment, and use only the small organization primitives the product owns. Do
+not invent a built-in CRM or task workflow.
 
 ## Preserve trust boundaries
 
@@ -16,8 +16,8 @@ Do not invent a built-in CRM or task workflow.
 - Use only Operational Inbox tools and identifiers returned for the authenticated owner. Never
   probe neighboring identifiers or cross tenant boundaries.
 - Do not open links or attachments implicitly. Quarantined content remains unavailable.
-- Do not send, resend, approve, or queue email unless the user explicitly requests it and the tool
-  requires the exact revision/hash plus `approve_send` authority.
+- Do not draft, send, resend, approve, or queue email in this skill. Use
+  `$reply-to-conversations` only after an explicit user request.
 - Never permanently delete mail. Trash is reversible.
 - If a requested mutation is unavailable or outside the granted scope, finish the review and
   describe the proposed action without claiming it happened.
@@ -37,7 +37,7 @@ Do not invent a built-in CRM or task workflow.
 
 Operational Inbox does not define Requires reply, Aging, Open, Waiting, Resolved, or Start work.
 Decide priority and follow-up from the user's instructions and message evidence. If persistence is
-useful, add a free-form tag such as `requires-reply`, `follow-up-2026-08-10`, or a project name.
+useful, add a free-form tag such as `requires-reply`, a dated follow-up tag, or a project name.
 Tags come from usage; do not look for or create an account-level allowed-tag list. Never assume a
 tag has product semantics beyond its text.
 
@@ -51,9 +51,9 @@ When the user asks for organization changes, or an explicitly configured workflo
 
 - add or remove free-form conversation tags;
 - Star or Unstar a conversation;
-- Archive completed/low-value mail;
+- Archive completed or low-value mail;
 - move unwanted mail to Trash; or
-- Restore archived/trashed mail to Inbox.
+- Restore archived or trashed mail to Inbox.
 
 Treat these calls as idempotent. Report only actual changes. A new inbound message may restore an
 archived or trashed conversation to Inbox while preserving its Star and tags.
@@ -61,7 +61,7 @@ archived or trashed conversation to Inbox while preserving its Star and tags.
 ## Return a concise result
 
 Lead with what changed or what needs attention. Group by domain or mailbox only when it improves
-scanability. Include stable conversation/message IDs for follow-up, call out suspicious or
+scanability. Include stable conversation and message IDs for follow-up, call out suspicious or
 quarantined mail, and disclose unavailable content or remaining pagination. Avoid reproducing full
 message bodies or unnecessary personal data.
 

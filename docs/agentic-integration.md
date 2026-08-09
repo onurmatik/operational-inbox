@@ -64,23 +64,53 @@ approval hash.
 
 ## Plugin package
 
-The distributable plugin root is `plugins/operational-inbox`. It currently ships manifests and the
-`review-inboxes` skill but intentionally omits `mcp.json` and `.mcp.json`: no production MCP server
-has been registered yet. The skill must report its Operational Inbox connection as unavailable
-when the corresponding tools are absent; it must not substitute Gmail, browser automation, local
-files, or another inbox source.
+The distributable plugin root is `plugins/operational-inbox`. It ships the portable Agent Plugins
+v1 manifest and `mcp.json`, an OpenAI/Codex compatibility manifest, and two skills:
 
-When the production MCP endpoint exists, expose thin tools over the API contract above:
+- `triage-inboxes` reads the cross-domain feed and applies only free-form tags or reversible Star,
+  Archive, Trash, and Restore actions.
+- `reply-to-conversations` creates agent-authored drafts, keeps revisions immutable, and approves or
+  resends only the exact content the user explicitly requested.
 
-1. list authorized domains;
-2. read the cross-domain message feed and conversation detail;
-3. filter by domain, mailbox, tag, folder, new state, and security state;
-4. add/remove tags and star/archive/trash/restore conversations with write scope;
-5. read domain health, outbound delivery state, and audit events; and
-6. keep draft approval/send behind the explicit `approve_send` scope.
+Both skills must report the Operational Inbox connection as unavailable when its tools are absent.
+They must not substitute Gmail, browser automation, local files, or another inbox source.
 
-MCP OAuth and every tool call must preserve owner/domain scoping. Do not add server-side workflow
-classification, aging rules, notifications, allowed-tag catalogs, or a placeholder MCP config.
+## MCP transport and authentication
+
+The stateless Streamable HTTP endpoint is `POST /mcp`. `GET /mcp` returns `405` because the server
+does not provide a standalone SSE stream. The endpoint supports MCP initialization, ping, tool
+discovery, and tool calls with JSON responses. It rejects untrusted browser origins.
+
+Agent Plugins v1 leaves remote credentials to the client. The package contains no token or literal
+authorization header. Clients provide an Operational Inbox API bearer token out of band; the MCP
+endpoint validates it through the same hashed-token path as `/api/v1`. Tool discovery returns only
+tools allowed by the token's scopes:
+
+| Tool | Scope | Behavior |
+| --- | --- | --- |
+| `list_domains` | `read` | List authorized active domains. |
+| `read_message_feed` | `read` | Read filtered history or poll from an opaque checkpoint. |
+| `get_conversation` | `read` | Read one conversation and its available message content. |
+| `get_domain_health` | `read` | Read stored inbound, outbound, DNS, and routing health. |
+| `get_outbound_status` | `read` | Read authoritative outbound state without retrying. |
+| `list_audit_events` | `read` | Read append-only audit history. |
+| `add_conversation_tag` | `write` | Add an idempotent usage-derived tag. |
+| `remove_conversation_tag` | `write` | Remove a specific tag association. |
+| `apply_conversation_action` | `write` | Star, Unstar, Archive, Trash, or Restore. |
+| `create_reply_draft` | `write` | Persist agent-authored subject/body without sending. |
+| `revise_reply_draft` | `write` | Create a new immutable revision and invalidate old approval. |
+| `get_reply_draft` | `read` | Read exact current content, revision ID, hash, and stale state. |
+| `approve_and_send_reply` | `approve_send` | Queue the exact current approved revision. |
+| `resend_outbound` | `approve_send` | Explicitly create another failed/unknown send attempt. |
+
+Every tool reuses the API's owner/domain lookup, entitlement checks, scope enforcement, stable
+errors, and agent audit events. A domain-scoped token cannot address another domain. Email output is
+described as untrusted data in both the MCP server instructions and read-tool metadata.
+
+Do not expose server-side workflow classification, aging rules, reports, notifications,
+allowed-tag catalogs, domain mutation, token creation, attachment URLs, or permanent deletion
+through MCP. A future OAuth flow must preserve the same owner/domain and scope boundaries; bearer
+tokens must never be embedded in either MCP manifest.
 
 ## Validation
 
@@ -89,6 +119,8 @@ Run both validators and the package contract tests before distribution:
 ```console
 python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/operational-inbox
 python3 /path/to/skill-creator/scripts/quick_validate.py \
-  plugins/operational-inbox/skills/review-inboxes
-uv run pytest tests/test_plugin_package.py --no-cov
+  plugins/operational-inbox/skills/triage-inboxes
+python3 /path/to/skill-creator/scripts/quick_validate.py \
+  plugins/operational-inbox/skills/reply-to-conversations
+uv run pytest tests/test_plugin_package.py tests/test_mcp_server.py --no-cov
 ```

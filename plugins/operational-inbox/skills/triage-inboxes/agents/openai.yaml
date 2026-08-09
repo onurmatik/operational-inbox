@@ -1,0 +1,11 @@
+interface:
+  display_name: "Triage Inboxes"
+  short_description: "Triage and organize multi-domain mail"
+  default_prompt: "Use $triage-inboxes to review new mail across my authorized domains and apply only appropriate reversible organization actions."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "operational-inbox"
+      description: "Operational Inbox mail and organization tools"
+      transport: "streamable_http"
+      url: "https://operationalinbox.com/mcp"

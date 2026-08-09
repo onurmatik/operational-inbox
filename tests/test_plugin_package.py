@@ -35,8 +35,17 @@ def test_portable_agent_plugin_v1_contract() -> None:
         "homepage",
         "keywords",
     }
-    assert (PLUGIN_ROOT / "skills" / "review-inboxes" / "SKILL.md").is_file()
-    assert not (PLUGIN_ROOT / "mcp.json").exists()
+    assert (PLUGIN_ROOT / "skills" / "triage-inboxes" / "SKILL.md").is_file()
+    assert (PLUGIN_ROOT / "skills" / "reply-to-conversations" / "SKILL.md").is_file()
+
+    mcp = load_json(PLUGIN_ROOT / "mcp.json")
+    assert mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    assert set(mcp) == {"$schema", "mcpServers"}
+    server = mcp["mcpServers"]["operational-inbox"]
+    assert server == {
+        "type": "streamable-http",
+        "url": "https://operationalinbox.com/mcp",
+    }
 
 
 def test_openai_plugin_contract_matches_portable_metadata() -> None:
@@ -46,12 +55,18 @@ def test_openai_plugin_contract_matches_portable_metadata() -> None:
     for field in ("name", "version", "description", "author", "homepage", "keywords"):
         assert openai[field] == portable[field]
     assert openai["skills"] == "./skills/"
-    assert "mcpServers" not in openai
+    assert openai["mcpServers"] == "./.mcp.json"
     assert "apps" not in openai
+
+    codex_mcp = load_json(PLUGIN_ROOT / ".mcp.json")
+    assert codex_mcp["mcpServers"]["operational-inbox"] == {
+        "type": "http",
+        "url": load_json(PLUGIN_ROOT / "mcp.json")["mcpServers"]["operational-inbox"]["url"],
+    }
 
     interface = openai["interface"]
     assert interface["displayName"] == "Operational Inbox"
-    assert interface["shortDescription"] == "Review multi-domain mail"
+    assert interface["shortDescription"] == "Triage multi-domain mail"
     assert interface["websiteURL"] == "https://operationalinbox.com/"
     assert interface["brandColor"] == "#1A3C2B"
     assert len(interface["defaultPrompt"]) <= 3
@@ -60,16 +75,29 @@ def test_openai_plugin_contract_matches_portable_metadata() -> None:
         assert asset_path.is_file()
 
 
-def test_review_inboxes_skill_preserves_agent_first_safety_boundary() -> None:
-    skill_root = PLUGIN_ROOT / "skills" / "review-inboxes"
+def test_triage_inboxes_skill_preserves_agent_first_safety_boundary() -> None:
+    skill_root = PLUGIN_ROOT / "skills" / "triage-inboxes"
     skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
 
-    assert skill.startswith("---\nname: review-inboxes\n")
+    assert skill.startswith("---\nname: triage-inboxes\n")
     assert "TODO" not in skill
     assert "all-domain inbound feed" in skill
     assert "Tags come from usage" in skill
     assert "opaque checkpoint" in skill
     assert "Never permanently delete mail" in skill
     assert "Start work" in skill
+    assert "untrusted data" in skill
+    assert "$reply-to-conversations" in skill
+    assert (skill_root / "agents" / "openai.yaml").is_file()
+
+
+def test_reply_skill_requires_explicit_exact_revision_approval() -> None:
+    skill_root = PLUGIN_ROOT / "skills" / "reply-to-conversations"
+    skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+
+    assert skill.startswith("---\nname: reply-to-conversations\n")
+    assert "explicit user request" in skill
+    assert "exact revision ID and content hash" in skill
+    assert "Never retry automatically" in skill
     assert "untrusted data" in skill
     assert (skill_root / "agents" / "openai.yaml").is_file()

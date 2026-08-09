@@ -15,22 +15,24 @@
     "tags"
   ],
   "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Operational Inbox",
-    "shortDescription": "Review multi-domain mail",
-    "longDescription": "Review authorized mail across domains and routing addresses, use agent-defined workflow tags, and apply only requested reversible organization actions.",
+    "shortDescription": "Triage multi-domain mail",
+    "longDescription": "Triage authorized mail across domains and routing addresses, use agent-defined workflow tags, apply reversible organization actions, and keep outbound approval separate.",
     "developerName": "Operational Inbox",
     "category": "Productivity",
     "capabilities": [
-      "Cross-domain inbox review",
+      "Cross-domain inbox triage",
       "Usage-derived tags",
-      "Reversible inbox organization"
+      "Reversible inbox organization",
+      "Exact-revision replies"
     ],
     "websiteURL": "https://operationalinbox.com/",
     "defaultPrompt": [
-      "Review new mail across all my domains.",
-      "Show mail for this mailbox and tag.",
-      "Tag and archive the conversations I select."
+      "Triage new mail across all my domains.",
+      "Organize this mailbox with tags and folders.",
+      "Draft a reply for the conversation I select."
     ],
     "brandColor": "#1A3C2B",
     "composerIcon": "./assets/logo.png",

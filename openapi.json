@@ -787,6 +787,69 @@
         ]
       }
     },
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/drafts/authored": {
+      "post": {
+        "operationId": "inbox_api_drafts_create_authored",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Drafts Create Authored",
+        "tags": [
+          "Drafts"
+        ]
+      }
+    },
     "/api/v1/domains/{domain_id}/conversations/{conversation_id}/tags": {
       "post": {
         "operationId": "inbox_api_conversations_tags_add",

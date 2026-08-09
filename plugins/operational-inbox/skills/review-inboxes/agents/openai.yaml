@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Inboxes"
-  short_description: "Review and organize multi-domain mail"
-  default_prompt: "Use $review-inboxes to review new mail across my authorized domains and apply only the reversible organization changes I request."
