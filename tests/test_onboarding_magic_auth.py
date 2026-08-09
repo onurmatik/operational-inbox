@@ -134,9 +134,7 @@ def test_magic_link_request_creates_passwordless_user_without_domain(client, mai
 
 @pytest.mark.django_db
 @override_settings(EMAIL_BACKEND=LOCMEM_EMAIL_BACKEND)
-def test_magic_link_request_keeps_existing_user_domainless_idempotently(
-    client, mailoutbox
-):
+def test_magic_link_request_keeps_existing_user_domainless_idempotently(client, mailoutbox):
     user = User.objects.create_user(email="existing@example.com", password="Legacy-password-123")
 
     first = client.post(reverse("signup"), {"email": "existing@example.com"})

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch
 from django.utils import timezone
 
 from inbox.models import AgentRun, Classification, Domain, Message, Report, ReportItem
@@ -69,19 +69,13 @@ class ReportCandidate:
 
 
 def _report_candidates(domain: Domain, start: datetime, end: datetime) -> list[ReportCandidate]:
-    aging_cutoff = end - timedelta(hours=domain.report_schedule.aging_reminder_hours)
     messages = list(
         Message.objects.filter(
             domain=domain,
             direction=Message.Direction.INBOUND,
             normalized_purged_at__isnull=True,
-        )
-        .filter(
-            Q(received_at__gte=start, received_at__lt=end)
-            | Q(
-                conversation__status__in=["OPEN", "WAITING_EXTERNAL"],
-                conversation__last_message_at__lte=aging_cutoff,
-            )
+            received_at__gte=start,
+            received_at__lt=end,
         )
         .select_related("conversation", "domain")
         .prefetch_related(

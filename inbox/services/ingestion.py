@@ -307,11 +307,6 @@ def _store_domain_message(
             domain=domain,
             subject=parsed.subject,
             normalized_subject=normalize_subject(parsed.subject),
-            status=(
-                Conversation.Status.QUARANTINED
-                if _verdict(receipt, "virusVerdict") != Message.Verdict.PASS
-                else Conversation.Status.OPEN
-            ),
             first_message_at=received_at,
             last_message_at=received_at,
             last_inbound_at=received_at,
@@ -325,20 +320,12 @@ def _store_domain_message(
         conversation.last_inbound_at = received_at
         conversation.archived_at = None
         conversation.trashed_at = None
-        if conversation.status in {
-            Conversation.Status.RESOLVED,
-            Conversation.Status.WAITING_EXTERNAL,
-        }:
-            conversation.status = Conversation.Status.OPEN
-            conversation.resolved_at = None
         conversation.save(
             update_fields=(
                 "last_message_at",
                 "last_inbound_at",
                 "archived_at",
                 "trashed_at",
-                "status",
-                "resolved_at",
                 "updated_at",
             )
         )

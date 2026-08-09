@@ -1,4 +1,0 @@
-interface:
-  display_name: "Review Inboxes"
-  short_description: "Review operational inboxes safely"
-  default_prompt: "Use $review-inboxes to review my authorized inboxes and summarize what needs attention without changing anything."

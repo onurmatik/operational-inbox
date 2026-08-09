@@ -170,20 +170,19 @@ def test_new_inbound_restores_removed_conversation_and_preserves_star(
     process_sqs_body(sns_body([address]), s3_client=FakeS3(raw_email()))
     conversation = Message.objects.get().conversation
     now = timezone.now()
-    conversation.status = conversation.Status.RESOLVED
-    conversation.resolved_at = now
     conversation.starred_at = now
-    conversation.work_started_at = now
     setattr(conversation, removed_field, now)
     conversation.save(
         update_fields=(
-            "status",
-            "resolved_at",
             "starred_at",
-            "work_started_at",
             removed_field,
             "updated_at",
         )
+    )
+    conversation.tags.create(
+        domain=project,
+        name="agent-reviewed",
+        normalized_name="agent-reviewed",
     )
     Message.objects.filter(conversation=conversation).update(viewed_at=now)
 
@@ -193,12 +192,10 @@ def test_new_inbound_restores_removed_conversation_and_preserves_star(
     )
 
     conversation.refresh_from_db()
-    assert conversation.status == conversation.Status.OPEN
-    assert conversation.resolved_at is None
     assert conversation.archived_at is None
     assert conversation.trashed_at is None
     assert conversation.starred_at == now
-    assert conversation.work_started_at == now
+    assert conversation.tags.filter(normalized_name="agent-reviewed").exists()
     assert (
         Message.objects.filter(
             conversation=conversation,
@@ -251,7 +248,6 @@ def test_virus_verdict_quarantines_message_and_attachments(organization, project
     process_sqs_body(sns_body([address], virus="FAIL"), s3_client=s3)
     message = Message.objects.get()
     assert message.is_quarantined
-    assert message.conversation.status == message.conversation.Status.QUARANTINED
     assert message.attachments.get().scan_status == "QUARANTINED"
 
 

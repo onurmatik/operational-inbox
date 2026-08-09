@@ -44,15 +44,6 @@ def apply_conversation_action(
         if conversation.starred_at is not None:
             conversation.starred_at = None
             update_fields.append("starred_at")
-    elif action == "start":
-        if conversation.trashed_at is not None or conversation.archived_at is not None:
-            raise ValidationError("Restore this conversation before starting work.")
-        if conversation.status == Conversation.Status.QUARANTINED:
-            raise ValidationError("Quarantined conversations cannot be started.")
-        if conversation.work_started_at is None:
-            conversation.work_started_at = now
-            update_fields.append("work_started_at")
-        viewed_messages = mark_conversation_viewed(conversation)
     elif action == "archive":
         if conversation.archived_at is None or conversation.trashed_at is not None:
             conversation.archived_at = now

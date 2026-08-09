@@ -8,7 +8,7 @@ from typing import Any, Literal
 from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.http import Http404, HttpRequest
 from django.utils import timezone
 from ninja import NinjaAPI, Schema, Status
@@ -23,6 +23,7 @@ from inbox.models import (
     AuditEvent,
     Classification,
     Conversation,
+    ConversationTag,
     Domain,
     DomainTest,
     DurableJob,
@@ -38,6 +39,7 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
+from inbox.services.conversations import apply_conversation_action
 from inbox.services.domains import DomainClaimConflict, create_domain, ensure_domain_test
 from inbox.services.drafts import (
     approve_exact_revision,
@@ -57,6 +59,7 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     ensure_routing_transition_test,
 )
+from inbox.services.tags import add_conversation_tag, normalize_tag, remove_conversation_tag
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +96,12 @@ class RoutingTransitionInput(Schema):
     target_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
 
 
-class ConversationStatusInput(Schema):
-    status: Literal["OPEN", "WAITING_EXTERNAL", "RESOLVED"]
+class ConversationTagInput(Schema):
+    tag: str = Field(min_length=1, max_length=64)
+
+
+class ConversationActionInput(Schema):
+    action: Literal["star", "unstar", "archive", "trash", "restore"]
 
 
 class ClassificationInput(Schema):
@@ -119,26 +126,35 @@ class ApprovalInput(Schema):
 class TokenInput(Schema):
     name: str = Field(min_length=1, max_length=80)
     scopes: list[Literal["read", "write", "approve_send"]]
+    all_domains: bool = False
 
 
 class ScopedBearer(HttpBearer):
     def authenticate(self, request: HttpRequest, token: str) -> APIToken | None:
         if not token.startswith("oi_") or len(token) < 40:
             return None
-        candidates = APIToken.objects.filter(
-            prefix=token[:10],
-            revoked_at__isnull=True,
-            domain__status__in=[
-                Domain.Status.PROVISIONING,
-                Domain.Status.PENDING_DNS,
-                Domain.Status.PENDING_TEST,
-                Domain.Status.READY,
-                Domain.Status.ERROR,
-                Domain.Status.DEGRADED,
-            ],
-            owner__is_active=True,
-            owner__email_verified_at__isnull=False,
-        ).select_related("domain", "owner")
+        candidates = (
+            APIToken.objects.filter(
+                prefix=token[:10],
+                revoked_at__isnull=True,
+                owner__is_active=True,
+                owner__email_verified_at__isnull=False,
+            )
+            .filter(
+                Q(domain__isnull=True)
+                | Q(
+                    domain__status__in=[
+                        Domain.Status.PROVISIONING,
+                        Domain.Status.PENDING_DNS,
+                        Domain.Status.PENDING_TEST,
+                        Domain.Status.READY,
+                        Domain.Status.ERROR,
+                        Domain.Status.DEGRADED,
+                    ]
+                )
+            )
+            .select_related("domain", "owner")
+        )
         for candidate in candidates:
             if candidate.is_active and candidate.matches(token):
                 APIToken.objects.filter(id=candidate.id).update(last_used_at=timezone.now())
@@ -279,25 +295,38 @@ def record_api_audit(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     auth = request.auth
-    actor = auth.owner if isinstance(auth, APIToken) else request.user
+    is_token = isinstance(auth, APIToken)
+    actor = auth.owner if is_token else request.user
+    audit_metadata = dict(metadata or {})
+    if is_token:
+        audit_metadata["api_token_id"] = str(auth.id)
+        audit_metadata["api_token_name"] = auth.name
     AuditEvent.objects.create(
         domain=domain,
-        actor_type=AuditEvent.ActorType.OWNER,
-        actor_id=actor.id,
+        actor_type=AuditEvent.ActorType.AGENT if is_token else AuditEvent.ActorType.OWNER,
+        actor_id=auth.id if is_token else actor.id,
         event_type=event_type,
         object_type=instance.__class__.__name__,
         object_id=instance.id,
         request_id=_request_id(request),
-        metadata=metadata or {},
+        metadata=audit_metadata,
     )
 
 
 def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
     auth = request.auth
     if isinstance(auth, APIToken):
-        if auth.domain_id != domain_id:
+        if auth.domain_id is not None and auth.domain_id != domain_id:
             raise Http404
-        return auth.domain
+        if auth.domain_id is not None:
+            return auth.domain
+        try:
+            return Domain.objects.exclude(status=Domain.Status.DISABLED).get(
+                id=domain_id,
+                owner=auth.owner,
+            )
+        except Domain.DoesNotExist as exc:
+            raise Http404 from exc
     try:
         return Domain.objects.exclude(status=Domain.Status.DISABLED).get(
             id=domain_id, owner=request.user
@@ -306,10 +335,20 @@ def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
         raise Http404 from exc
 
 
+def api_domains_queryset(request: HttpRequest):
+    auth = request.auth
+    if isinstance(auth, APIToken) and auth.domain_id is not None:
+        return Domain.objects.filter(id=auth.domain_id)
+    owner = auth.owner if isinstance(auth, APIToken) else request.user
+    return Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED)
+
+
 def scoped_object(model, domain: Domain, object_id: uuid.UUID):
+    queryset = model.objects if hasattr(model, "objects") else model
+    model_class = model if hasattr(model, "DoesNotExist") else model.model
     try:
-        return model.objects.get(id=object_id, domain=domain)
-    except (model.DoesNotExist, ValueError) as exc:
+        return queryset.get(id=object_id, domain=domain)
+    except (model_class.DoesNotExist, ValueError) as exc:
         raise Http404 from exc
 
 
@@ -388,6 +427,7 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
         "subject": message.subject,
         "from_address": message.from_address,
         "received_at": message.received_at,
+        "viewed_at": message.viewed_at,
         "is_suspicious": message.is_suspicious,
         "is_quarantined": message.is_quarantined,
         "security": {
@@ -418,11 +458,30 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
 
 
 def _conversation_dict(conversation: Conversation, *, details: bool = False) -> dict[str, Any]:
+    if conversation.trashed_at is not None:
+        folder = "trash"
+    elif conversation.archived_at is not None:
+        folder = "archive"
+    else:
+        folder = "inbox"
+    has_quarantined = getattr(conversation, "has_quarantined", None)
+    if has_quarantined is None:
+        has_quarantined = conversation.messages.filter(is_quarantined=True).exists()
+    new_message_count = getattr(conversation, "new_message_count", None)
+    if new_message_count is None:
+        new_message_count = conversation.messages.filter(
+            direction=Message.Direction.INBOUND,
+            viewed_at__isnull=True,
+        ).count()
     result: dict[str, Any] = {
         "id": str(conversation.id),
         "domain_id": str(conversation.domain_id),
         "subject": conversation.subject,
-        "status": conversation.status,
+        "folder": folder,
+        "starred": conversation.starred_at is not None,
+        "tags": [{"id": str(tag.id), "name": tag.name} for tag in conversation.tags.all()],
+        "new_message_count": new_message_count,
+        "has_quarantined": has_quarantined,
         "last_message_at": conversation.last_message_at,
     }
     if details:
@@ -433,6 +492,44 @@ def _conversation_dict(conversation: Conversation, *, details: bool = False) -> 
             ).prefetch_related("recipients", "attachments")
         ]
     return result
+
+
+def _message_feed_dict(message: Message) -> dict[str, Any]:
+    conversation = message.conversation
+    if conversation.trashed_at is not None:
+        folder = "trash"
+    elif conversation.archived_at is not None:
+        folder = "archive"
+    else:
+        folder = "inbox"
+    return {
+        "id": str(message.id),
+        "received_at": message.received_at,
+        "viewed_at": message.viewed_at,
+        "subject": message.subject,
+        "from_address": message.from_address,
+        "text_preview": None if message.is_quarantined else message.text_body[:500],
+        "is_suspicious": message.is_suspicious,
+        "is_quarantined": message.is_quarantined,
+        "domain": {
+            "id": str(message.domain_id),
+            "hostname": message.domain.hostname,
+        },
+        "mailboxes": sorted(
+            {
+                recipient.address
+                for recipient in message.recipients.all()
+                if recipient.is_routing_recipient
+            }
+        ),
+        "conversation": {
+            "id": str(conversation.id),
+            "subject": conversation.subject,
+            "folder": folder,
+            "starred": conversation.starred_at is not None,
+            "tags": [{"id": str(tag.id), "name": tag.name} for tag in conversation.tags.all()],
+        },
+    }
 
 
 CURSOR_MAX_AGE_SECONDS = 86400 * 30
@@ -506,10 +603,7 @@ def api_health(request: HttpRequest) -> dict[str, str]:
 @api.get("/domains", auth=authenticated, tags=["Domains"])
 def domains_list(request: HttpRequest):
     require_scope(request, APIToken.Scope.READ)
-    if isinstance(request.auth, APIToken):
-        domains = [request.auth.domain]
-    else:
-        domains = Domain.objects.filter(owner=request.user).exclude(status=Domain.Status.DISABLED)
+    domains = api_domains_queryset(request)
     return {"items": [_domain_dict(item) for item in domains]}
 
 
@@ -923,20 +1017,54 @@ def conversations_list(
     domain_id: uuid.UUID,
     cursor: str | None = None,
     limit: int = 50,
-    state: str | None = None,
-    classification: str | None = None,
+    folder: Literal["inbox", "starred", "archive", "trash"] = "inbox",
+    mailbox: str | None = None,
+    tag: str | None = None,
+    new_only: bool = False,
+    security: Literal["suspicious", "quarantined"] | None = None,
     q: str | None = None,
 ):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
-    queryset = Conversation.objects.filter(domain=domain)
-    if state in Conversation.Status.values:
-        queryset = queryset.filter(status=state)
-    if classification in Classification.Category.values:
+    queryset = Conversation.objects.filter(domain=domain).annotate(
+        new_message_count=Count(
+            "messages",
+            filter=Q(
+                messages__direction=Message.Direction.INBOUND,
+                messages__viewed_at__isnull=True,
+            ),
+            distinct=True,
+        ),
+        has_quarantined=Exists(
+            Message.objects.filter(conversation=OuterRef("pk"), is_quarantined=True)
+        ),
+    )
+    if folder == "inbox":
+        queryset = queryset.filter(archived_at__isnull=True, trashed_at__isnull=True)
+    elif folder == "starred":
+        queryset = queryset.filter(starred_at__isnull=False, trashed_at__isnull=True)
+    elif folder == "archive":
+        queryset = queryset.filter(archived_at__isnull=False, trashed_at__isnull=True)
+    else:
+        queryset = queryset.filter(trashed_at__isnull=False)
+    if mailbox:
         queryset = queryset.filter(
-            messages__classifications__is_current=True,
-            messages__classifications__category=classification,
+            messages__direction=Message.Direction.INBOUND,
+            messages__recipients__is_routing_recipient=True,
+            messages__recipients__address__iexact=mailbox.strip(),
         ).distinct()
+    if tag:
+        try:
+            _, normalized_tag = normalize_tag(tag)
+        except DjangoValidationError as exc:
+            raise APIError("invalid_tag", exc.messages[0]) from exc
+        queryset = queryset.filter(tags__normalized_name=normalized_tag).distinct()
+    if new_only:
+        queryset = queryset.filter(new_message_count__gt=0)
+    if security == "suspicious":
+        queryset = queryset.filter(messages__is_suspicious=True).distinct()
+    elif security == "quarantined":
+        queryset = queryset.filter(messages__is_quarantined=True).distinct()
     if q:
         queryset = queryset.filter(
             Q(subject__icontains=q)
@@ -944,7 +1072,7 @@ def conversations_list(
             | Q(messages__text_body__icontains=q)
         ).distinct()
     items, next_cursor = _paginate_queryset(
-        queryset,
+        queryset.prefetch_related("tags"),
         cursor=cursor,
         limit=limit,
         timestamp_field="last_message_at",
@@ -956,6 +1084,118 @@ def conversations_list(
     }
 
 
+@api.get("/feed/messages", auth=authenticated, tags=["Message feed"])
+def messages_feed(
+    request: HttpRequest,
+    cursor: str | None = None,
+    after: str | None = None,
+    limit: int = 50,
+    domain_id: uuid.UUID | None = None,
+    mailbox: str | None = None,
+    tag: str | None = None,
+    folder: Literal["inbox", "starred", "archive", "trash"] | None = None,
+    new_only: bool = False,
+    security: Literal["suspicious", "quarantined"] | None = None,
+):
+    require_scope(request, APIToken.Scope.READ)
+    if cursor and after:
+        raise APIError(
+            "invalid_cursor",
+            "Use cursor for older history or after for new mail, not both.",
+        )
+    domains = api_domains_queryset(request)
+    if domain_id is not None:
+        domain = api_domain(request, domain_id)
+        domains = domains.filter(id=domain.id)
+    queryset = Message.objects.filter(
+        domain__in=domains,
+        direction=Message.Direction.INBOUND,
+    )
+    if mailbox:
+        queryset = queryset.filter(
+            recipients__is_routing_recipient=True,
+            recipients__address__iexact=mailbox.strip(),
+        ).distinct()
+    if tag:
+        try:
+            _, normalized_tag = normalize_tag(tag)
+        except DjangoValidationError as exc:
+            raise APIError("invalid_tag", exc.messages[0]) from exc
+        queryset = queryset.filter(conversation__tags__normalized_name=normalized_tag).distinct()
+    if folder == "inbox":
+        queryset = queryset.filter(
+            conversation__archived_at__isnull=True,
+            conversation__trashed_at__isnull=True,
+        )
+    elif folder == "starred":
+        queryset = queryset.filter(
+            conversation__starred_at__isnull=False,
+            conversation__trashed_at__isnull=True,
+        )
+    elif folder == "archive":
+        queryset = queryset.filter(
+            conversation__archived_at__isnull=False,
+            conversation__trashed_at__isnull=True,
+        )
+    elif folder == "trash":
+        queryset = queryset.filter(conversation__trashed_at__isnull=False)
+    if new_only:
+        queryset = queryset.filter(viewed_at__isnull=True)
+    if security == "suspicious":
+        queryset = queryset.filter(is_suspicious=True)
+    elif security == "quarantined":
+        queryset = queryset.filter(is_quarantined=True)
+    queryset = queryset.select_related("domain", "conversation").prefetch_related(
+        "recipients",
+        "conversation__tags",
+    )
+
+    page_size = min(max(limit, 1), MAX_PAGE_SIZE)
+    if after:
+        at, object_id = _decode_cursor(after, collection="message-feed-checkpoint")
+        candidates = list(
+            queryset.filter(Q(received_at__gt=at) | Q(received_at=at, id__gt=object_id)).order_by(
+                "received_at", "id"
+            )[: page_size + 1]
+        )
+        has_more = len(candidates) > page_size
+        items = candidates[:page_size]
+        checkpoint = (
+            _encode_cursor(
+                item=items[-1],
+                timestamp_field="received_at",
+                collection="message-feed-checkpoint",
+            )
+            if items
+            else after
+        )
+        next_cursor = None
+    else:
+        items, next_cursor = _paginate_queryset(
+            queryset,
+            cursor=cursor,
+            limit=page_size,
+            timestamp_field="received_at",
+            collection="message-feed-history",
+        )
+        has_more = next_cursor is not None
+        checkpoint = (
+            _encode_cursor(
+                item=items[0],
+                timestamp_field="received_at",
+                collection="message-feed-checkpoint",
+            )
+            if items and cursor is None
+            else None
+        )
+    return {
+        "items": [_message_feed_dict(item) for item in items],
+        "next_cursor": next_cursor,
+        "checkpoint": checkpoint,
+        "has_more": has_more,
+    }
+
+
 @api.get(
     "/domains/{domain_id}/conversations/{conversation_id}",
     auth=authenticated,
@@ -964,41 +1204,112 @@ def conversations_list(
 def conversations_detail(request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
-    conversation = scoped_object(Conversation, domain, conversation_id)
+    conversation = scoped_object(
+        Conversation.objects.prefetch_related("tags"),
+        domain,
+        conversation_id,
+    )
     return _conversation_dict(conversation, details=True)
 
 
 @api.post(
-    "/domains/{domain_id}/conversations/{conversation_id}/state",
+    "/domains/{domain_id}/conversations/{conversation_id}/action",
     auth=authenticated,
     tags=["Conversations"],
 )
-def conversations_state(
+def conversations_action(
     request: HttpRequest,
     domain_id: uuid.UUID,
     conversation_id: uuid.UUID,
-    payload: ConversationStatusInput,
+    payload: ConversationActionInput,
+):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    event_types = {
+        "star": "conversation.starred",
+        "unstar": "conversation.unstarred",
+        "archive": "conversation.archived",
+        "trash": "conversation.trashed",
+        "restore": "conversation.restored",
+    }
+    with transaction.atomic():
+        conversation = scoped_object(
+            Conversation.objects.select_for_update().prefetch_related("tags"),
+            domain,
+            conversation_id,
+        )
+        result = apply_conversation_action(conversation, payload.action)
+        if result.state_changed:
+            record_api_audit(
+                request,
+                domain,
+                event_types[payload.action],
+                conversation,
+                {"action": payload.action},
+            )
+    return {"changed": result.state_changed, **_conversation_dict(conversation)}
+
+
+@api.post(
+    "/domains/{domain_id}/conversations/{conversation_id}/tags",
+    auth=authenticated,
+    response={200: dict, 201: dict},
+    tags=["Conversation tags"],
+)
+def conversations_tags_add(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    payload: ConversationTagInput,
 ):
     require_scope(request, APIToken.Scope.WRITE)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
-    conversation.status = payload.status
-    conversation.resolved_at = (
-        timezone.now() if payload.status == Conversation.Status.RESOLVED else None
+    try:
+        tag, created = add_conversation_tag(conversation, payload.tag)
+    except DjangoValidationError as exc:
+        raise APIError("invalid_tag", exc.messages[0]) from exc
+    if created:
+        record_api_audit(
+            request,
+            domain,
+            "conversation.tag_added",
+            tag,
+            {"conversation_id": str(conversation.id), "tag": tag.normalized_name},
+        )
+    return Status(
+        201 if created else 200,
+        {"id": str(tag.id), "name": tag.name, "created": created},
     )
-    update_fields = ["status", "resolved_at", "updated_at"]
-    if payload.status == Conversation.Status.RESOLVED:
-        conversation.work_started_at = None
-        update_fields.append("work_started_at")
-    conversation.save(update_fields=update_fields)
+
+
+@api.delete(
+    "/domains/{domain_id}/conversations/{conversation_id}/tags/{tag_id}",
+    auth=authenticated,
+    tags=["Conversation tags"],
+)
+def conversations_tags_remove(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    tag_id: uuid.UUID,
+):
+    require_scope(request, APIToken.Scope.WRITE)
+    domain = api_domain(request, domain_id)
+    conversation = scoped_object(Conversation, domain, conversation_id)
+    tag = scoped_object(ConversationTag, domain, tag_id)
+    if tag.conversation_id != conversation.id:
+        raise Http404
+    tag_name = tag.normalized_name
+    remove_conversation_tag(conversation, tag_name)
     record_api_audit(
         request,
         domain,
-        "conversation.state_changed",
-        conversation,
-        {"status": conversation.status},
+        "conversation.tag_removed",
+        tag,
+        {"conversation_id": str(conversation.id), "tag": tag_name},
     )
-    return _conversation_dict(conversation)
+    return {"removed": True, "tag": tag_name}
 
 
 @api.post(
@@ -1384,7 +1695,7 @@ def tokens_create(request: HttpRequest, domain_id: uuid.UUID, payload: TokenInpu
         )
     try:
         token, raw = APIToken.issue(
-            domain=domain,
+            domain=None if payload.all_domains else domain,
             owner=request.user,
             name=payload.name,
             scopes=list(payload.scopes),
@@ -1396,7 +1707,7 @@ def tokens_create(request: HttpRequest, domain_id: uuid.UUID, payload: TokenInpu
         domain,
         "api_token.created",
         token,
-        {"scopes": token.scopes},
+        {"scopes": token.scopes, "all_domains": token.domain_id is None},
     )
     return Status(
         201,
@@ -1405,6 +1716,7 @@ def tokens_create(request: HttpRequest, domain_id: uuid.UUID, payload: TokenInpu
             "token": raw,
             "prefix": token.prefix,
             "scopes": token.scopes,
+            "all_domains": token.domain_id is None,
             "shown_once": True,
         },
     )

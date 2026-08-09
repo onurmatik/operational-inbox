@@ -1,10 +1,11 @@
 # Operational Inbox
 
-Operational Inbox is a tenant-safe control layer for operational email: the addresses a
-business must publish and must not ignore, such as `support@`, `privacy@`, `security@`,
-`legal@`, `billing@`, and `abuse@`. It receives mail through Amazon SES, preserves the raw
-message, presents a complete searchable inbox, highlights work that needs attention, creates
-scheduled reviews, and prepares replies that require exact human approval.
+Operational Inbox is a tenant-safe email layer for people and agents that operate many projects,
+domains, and routing addresses. It replaces the need to provision a separate hosted mailbox for
+every `support@`, `contact@`, `privacy@`, or one-off project address. It receives mail through
+Amazon SES, preserves the raw message, presents a searchable cross-domain inbox, and exposes a
+cursor-based API with free-form tags and reversible organization actions. It is deliberately not
+a CRM, task manager, or source of workflow truth.
 
 This repository contains the production-ready MVP application, AWS email data-plane
 infrastructure, and the tracked deployment contract. The application and all product copy are
@@ -26,20 +27,21 @@ English.
 - Direct-MX and provider-forwarding domain onboarding, exact
   DNS instructions, DNS drift checks, test delivery, separate inbound/outbound readiness, and
   safe domain disablement.
-- A complete inbox with search and filters, conversation timelines, security verdicts,
-  quarantined attachments, reports, notifications, settings, API-token management, and an
-  append-only audit view.
+- A complete inbox with automatic viewed tracking, domain/mailbox navigation, new-message counts,
+  search, tag/security/folder filters, inline Star/Archive/Trash/Restore actions, conversation
+  timelines, quarantined attachments, API-token management, and an append-only audit view.
 - Account-level freemium access with one Free domain, a 20-domain Pro plan, Stripe Checkout,
   dynamically configured monthly pricing, Customer Portal subscription management, and
   signature-verified webhook synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
   sanitization, domain-local message threading, multi-domain delivery, and delivery-event processing.
-- Structured OpenAI triage, reply drafting, and report generation with a deterministic report
-  fallback when OpenAI is unavailable.
+- Optional OpenAI reply drafting behind an exact human-approval boundary. New inbound mail is not
+  assigned a built-in workflow state or repeatedly classified into an application-owned work queue.
 - Immutable reply revisions, exact-revision approval, explicit resend, and conservative SES
   timeout handling that never retries an ambiguous submission automatically.
-- Django Ninja `/api/v1`, CSRF-protected session access, and once-displayed hashed bearer tokens
-  with `read`, `write`, and `approve_send` scopes.
+- Django Ninja `/api/v1`, an all-domain inbound message feed, CSRF-protected session access, and
+  once-displayed hashed bearer tokens that can be account- or domain-scoped with `read`, `write`,
+  and `approve_send` scopes.
 - SQLite WAL deployment, encrypted integrity-checked backups, configurable retention, private S3
   storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps configuration, and a
   locked `origin/main` deployment flow.
@@ -75,7 +77,7 @@ Customer domain or provider catch-all
                           SQLite/WAL --> Django UI + /api/v1
 
 Exact approved revision --> durable job --> SES outbound --> delivery SNS
-Scheduled jobs ----------> triage, reports, reminders, DNS and retention
+Scheduled jobs ----------> security/domain email, DNS, retention, and outbound delivery
 ```
 
 The queue uses 20-second long polling and a 5-minute visibility timeout. A StageOps cron starts
@@ -101,7 +103,7 @@ retry; malformed or permanently invalid input leaves an inspectable quarantine e
 ## Tenant and data model
 
 All tenant records use UUID primary keys and carry a `domain_id`. Tenant resolution begins with
-the authenticated domain owner or domain-bound bearer token
+the authenticated domain owner or an owner-/domain-scoped bearer token
 before an object identifier is accepted. Cross-tenant web and API lookups return `404`, and S3
 keys and AWS implementation details are never exposed in API errors.
 
@@ -109,16 +111,18 @@ The model covers:
 
 - domains, domain-specific report schedules and retention policies;
 - DNS instructions/results, inbound routes, and delivery tests;
-- conversations, messages, envelope/header recipients, RFC references, and attachments;
+- conversations, free-form tags, messages, envelope/header recipients, RFC references, and attachments;
 - classifications, agent runs, and idempotent leased jobs;
 - reply drafts, immutable revisions, exact approvals, and outbound messages;
 - reports/items, notifications, ingress/delivery events, API tokens, and append-only audits.
 
-Conversation states are `OPEN`, `WAITING_EXTERNAL`, `RESOLVED`, and `QUARANTINED`. Threading is
-domain-local: RFC `References` is considered first, then `In-Reply-To` with participant overlap.
-Subject similarity can create a merge suggestion but never silently merges conversations. A new
-inbound message reopens a resolved/waiting conversation and invalidates any existing draft
-approval.
+Conversations have no built-in Open/Waiting/Resolved or Start work state. Organization is limited
+to viewed timestamps, Starred, Archive, Trash, and usage-derived free-form tags; tag names come
+from people or their agents rather than an account-level allowed list. Quarantine is derived from
+message security verdicts. Threading is domain-local: RFC `References` is considered first, then
+`In-Reply-To` with participant overlap. Subject similarity can create a merge suggestion but never
+silently merges conversations. New inbound mail restores an archived or trashed conversation to
+Inbox, preserves its Star and tags, and invalidates any existing draft approval.
 
 The default plan limits are one active domain on Free and 20 active domains on Pro. Abuse controls
 allow 5 domain provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy
@@ -198,21 +202,16 @@ writes customer records. Provider-forward domains with sending disabled are not 
   no tools, cannot browse or open links, and receives only attachment filename/type/size/scan
   metadata—not attachment bytes.
 
-OpenAI integration uses the Responses API with Pydantic Structured Outputs and `store=false`.
-Defaults are configurable:
+Optional OpenAI draft generation uses the Responses API with Pydantic Structured Outputs and
+`store=false`; the default draft model is `gpt-5.6-terra` with medium reasoning. When
+`OPENAI_API_KEY` is empty or an API/schema/refusal error occurs, ingestion, feed polling, search,
+security verdicts, tags, and folders continue to work. Draft generation reports itself unavailable
+rather than taking external action.
 
-- triage: `gpt-5.6-luna`, low reasoning;
-- drafts: `gpt-5.6-terra`, medium reasoning;
-- reports: `gpt-5.6-terra`, medium reasoning.
-
-When `OPENAI_API_KEY` is empty or an API/schema/refusal error occurs, ingestion, search, security
-verdicts, and the rest of the inbox continue to work. Messages remain visibly unclassified, and
-scheduled reports use deterministic content. Draft generation reports itself unavailable rather
-than taking external action.
-
-The default review frequency is hourly. Daily mode generates a report at 09:00 in the
-domain's time zone, including DST-safe schedule keys. Aging reminders default to 24 hours.
-Important and suspicious classifications create deduplicated in-app and SES email notifications.
+Operational Inbox does not schedule classification, aging, or report jobs and does not create
+in-app notifications. Security/quarantine and domain-health conditions create deduplicated email
+notifications. The user's agent decides concepts such as Requires reply, Aging, or project
+priority and may persist them as ordinary free-form tags.
 
 ## Human-approved outbound mail
 
@@ -283,7 +282,7 @@ runtime and serves collected static files through WhiteNoise.
 Useful commands:
 
 ```console
-# Process due triage, report, notification, domain and outbound jobs
+# Process due security-email, domain and outbound jobs
 uv run python manage.py run_scheduler
 
 # Poll SQS for at most 55 seconds
@@ -342,10 +341,11 @@ SQLite is the only configured application database. It uses WAL, a 20-second bus
 ## API
 
 The Django Ninja API is mounted at `/api/v1`; interactive OpenAPI documentation is available at
-`/api/v1/docs` when the application is running. It exposes domains/checks/tests and domain-scoped
-conversations/messages, classification overrides, drafts/revisions/exact
-approval, outbound status/resend, reports, notifications, audits, API tokens, and attachment
-download authorization.
+`/api/v1/docs` when the application is running. It exposes domains/checks/tests, domain-scoped
+conversation reads, free-form tag writes, drafts/revisions/exact approval, outbound status/resend,
+legacy-compatible report/notification reads, audits, API tokens, and attachment download
+authorization. `GET /api/v1/feed/messages` provides the owner-wide inbound feed with domain, full
+mailbox, tag, folder, new-only, and security filters.
 
 Browser requests use the authenticated Django session and CSRF protection. External clients use
 a bearer token:
@@ -355,10 +355,13 @@ Authorization: Bearer oi_<one-time-secret>
 ```
 
 Only the hash and a short lookup prefix are stored. The raw token is displayed once. Tokens are
-domain-bound, independently revocable, invalid when the owner or domain is inactive,
-and limited to `read`, `write`, and/or `approve_send`.
+independently revocable and limited to `read`, `write`, and/or `approve_send`. A token can cover
+one domain or all current and future active domains owned by the account.
 
-Conversation lists use opaque signed cursors. API failures have one stable envelope:
+Conversation lists use opaque signed history cursors. The message feed also returns an opaque
+checkpoint: persist it and pass it as `after` to poll only messages received since the last
+processed position. This is polling, not a webhook subscription. API failures have one stable
+envelope:
 
 ```json
 {
@@ -368,6 +371,17 @@ Conversation lists use opaque signed cursors. API failures have one stable envel
   "request_id": "c56f..."
 }
 ```
+
+## Agent plugin
+
+The agent-first plugin package lives at
+[`plugins/operational-inbox`](plugins/operational-inbox). It includes the
+portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
+and the `review-inboxes` skill. The package intentionally has no MCP configuration until a
+production MCP endpoint exists; the live integration contract is the all-domain feed plus scoped
+tag/folder actions. See
+[`docs/agentic-integration.md`](docs/agentic-integration.md) for the package
+boundary and future MCP contract.
 
 ## Retention and recovery
 
@@ -478,9 +492,9 @@ Do not change the existing root MX records for `operationalinbox.com`.
 6. Confirm the minute cron consumes SQS, leaves the DLQ empty, and meets the 90-second inbound
    acceptance target.
 7. Exercise the complete path: enter domain -> request magic link -> domain setup
-   -> choose the safe domain setup mode -> DNS checklist -> catch-all test -> inbox -> triage ->
-   report -> draft -> optionally enable sending and publish DKIM -> exact approval -> SES reply ->
-   delivery/audit event.
+   -> choose the safe domain setup mode -> DNS checklist -> catch-all test -> inbox/feed -> tag and
+   archive/restore -> draft -> optionally enable sending and publish DKIM -> exact approval -> SES
+   reply -> delivery/audit event.
 
 Before the first live deploy, create the empty private GitHub repository
 `onurmatik/operational-inbox`, commit and push this project to `main`, deploy the CDK stack, and
@@ -517,7 +531,8 @@ These checks are intentionally local; this repository does not install a GitHub 
 
 ## MVP boundaries
 
-Not included: teams or roles, annual or usage-based billing, custom cron expressions, legal hold, marketing or
-bulk email, personal IMAP/POP replacement, automatic acknowledgement, autonomous external
+Not included: teams or roles, annual or usage-based billing, custom cron expressions, legal hold,
+marketing or bulk email, personal IMAP/POP replacement, CRM/work-management states, account-level
+allowed-tag catalogs, in-app notification queues, automatic acknowledgement, autonomous external
 replies, or automatic model analysis of attachment contents. Customer DNS is verified and shown
 as exact instructions but is never modified by the application.

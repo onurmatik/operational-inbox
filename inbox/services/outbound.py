@@ -99,7 +99,6 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
             return locked
         locked.status = OutboundMessage.Status.SUBMITTING
         locked.save(update_fields=("status", "updated_at"))
-        submission_started_at = locked.updated_at
     client = ses_client or boto3.client("ses", region_name=settings.AWS_REGION)
     provider_message_id = ""
     target_status = OutboundMessage.Status.UNKNOWN
@@ -207,12 +206,5 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
                     id=current.conversation_id
                 )
                 conversation.last_outbound_at = outbound_at
-                conversation_update_fields = ["last_outbound_at", "updated_at"]
-                if (
-                    conversation.last_inbound_at is None
-                    or conversation.last_inbound_at <= submission_started_at
-                ):
-                    conversation.status = conversation.Status.WAITING_EXTERNAL
-                    conversation_update_fields.append("status")
-                conversation.save(update_fields=conversation_update_fields)
+                conversation.save(update_fields=("last_outbound_at", "updated_at"))
     return current

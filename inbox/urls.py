@@ -22,14 +22,14 @@ urlpatterns = [
         name="conversation_detail",
     ),
     path(
-        "app/conversations/<uuid:conversation_id>/status/",
-        views.conversation_status,
-        name="conversation_status",
-    ),
-    path(
         "app/conversations/<uuid:conversation_id>/action/",
         views.conversation_action,
         name="conversation_action",
+    ),
+    path(
+        "app/conversations/<uuid:conversation_id>/tags/",
+        views.conversation_tag,
+        name="conversation_tag",
     ),
     path(
         "app/conversations/<uuid:conversation_id>/draft/",
@@ -86,9 +86,7 @@ urlpatterns = [
         views.domain_disable,
         name="domain_disable",
     ),
-    path("app/reports/", views.reports_list, name="reports"),
-    path("app/notifications/", views.notifications_list, name="notifications"),
-    path("app/settings/schedules/", views.schedules_settings, name="schedules_settings"),
+    path("app/settings/retention/", views.retention_settings, name="retention_settings"),
     path("app/settings/api-tokens/", views.api_tokens, name="api_tokens"),
     path(
         "app/settings/api-tokens/<uuid:token_id>/revoke/",

@@ -577,15 +577,11 @@ def test_disabled_tenant_invalidates_bearer_token(client, owner, organization):
 
 
 @pytest.mark.django_db
-def test_hourly_scheduler_catches_up_missed_runs(organization):
+def test_scheduler_does_not_create_classification_or_report_work(organization, inbound_message):
     now = datetime(2026, 7, 31, 12, 5, tzinfo=ZoneInfo("UTC"))
     schedule = organization.report_schedule
     schedule.review_frequency = schedule.Frequency.HOURLY
     schedule.last_review_at = now - timedelta(hours=3, minutes=5)
     schedule.save(update_fields=("review_frequency", "last_review_at", "updated_at"))
     schedule_work(now=now)
-    jobs = list(
-        DurableJob.objects.filter(kind="generate_report").order_by("payload__scheduled_for")
-    )
-    assert len(jobs) == 3
-    assert jobs[-1].payload["scheduled_for"].startswith("2026-07-31T12:00:00")
+    assert not DurableJob.objects.filter(kind__in=("classify_message", "generate_report")).exists()

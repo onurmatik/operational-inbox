@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
 from django import forms
-from django.core.exceptions import ValidationError
 
-from inbox.models import APIToken, Domain, ReportSchedule, RetentionPolicy, User
+from inbox.models import APIToken, Domain, RetentionPolicy, User
 from inbox.services.domains import normalize_hostname
 
 
@@ -84,30 +81,6 @@ class DomainForm(StyledFormMixin, forms.Form):
         return normalize_hostname(self.cleaned_data["hostname"])
 
 
-class ScheduleForm(StyledFormMixin, forms.ModelForm):
-    timezone = forms.CharField(max_length=64)
-
-    class Meta:
-        model = ReportSchedule
-        fields = ("review_frequency", "daily_report_time", "aging_reminder_hours", "is_enabled")
-        widgets = {"daily_report_time": forms.TimeInput(attrs={"type": "time"})}
-
-    def __init__(self, *args, domain=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.domain = domain
-        if domain and not self.is_bound:
-            self.fields["timezone"].initial = domain.timezone
-        self._style_fields()
-
-    def clean_timezone(self) -> str:
-        value = self.cleaned_data["timezone"].strip()
-        try:
-            ZoneInfo(value)
-        except ZoneInfoNotFoundError as exc:
-            raise ValidationError("Enter a valid IANA timezone.") from exc
-        return value
-
-
 class RetentionForm(StyledFormMixin, forms.ModelForm):
     class Meta:
         model = RetentionPolicy
@@ -135,6 +108,11 @@ class DraftRevisionForm(StyledFormMixin, forms.Form):
 
 class APITokenForm(StyledFormMixin, forms.Form):
     name = forms.CharField(max_length=80)
+    all_domains = forms.BooleanField(
+        required=False,
+        label="Allow access to all current and future domains",
+        help_text="Leave off to keep this token limited to the active domain.",
+    )
     scopes = forms.MultipleChoiceField(
         choices=APIToken.Scope.choices,
         widget=forms.CheckboxSelectMultiple,

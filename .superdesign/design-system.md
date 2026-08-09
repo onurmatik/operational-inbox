@@ -2,16 +2,16 @@
 
 ## Product context
 
-Operational Inbox is a security-conscious control layer for official inbound email. The interface must make it easy for a single organization owner to connect domains, inspect every message, understand security verdicts, review scheduled reports, and approve an exact reply revision. It is an operational application, not a personal mail client and not a marketing automation product.
+Operational Inbox is a security-conscious, agent-first email layer for indie developers operating many project domains and routing addresses. The interface must make it easy to connect domains, inspect every message, understand security verdicts, and share lightweight mailbox state with user-controlled agents. It is not a CRM, task manager, or communication-management suite.
 
 Primary journeys:
 
 - Account creation, email verification, organization and first-project onboarding.
 - Domain provisioning through direct SES MX or provider catch-all forwarding.
 - DNS verification, test delivery, and separate inbound/outbound readiness.
-- Dashboard review, complete inbox search, conversation inspection, and quarantine handling.
+- Cross-domain inbox review, complete search, conversation inspection, quarantine handling, and free-form conversation tags.
 - Draft review, immutable revision editing, exact approval, and outbound delivery tracking.
-- Reports, notifications, retention, audit history, and scoped API-token settings.
+- Retention, audit history, and domain- or owner-scoped API-token settings.
 
 ## Visual direction
 
@@ -68,7 +68,7 @@ Long email bodies use the body font, a 68ch measure, and 16px/26px sizing. Never
 - Inputs: 40px minimum height, white background, 1px line border, visible label, help text, and inline field errors. Never rely on placeholders as labels.
 - Status badge: compact inline flex, square 7px status marker plus text, 1px tinted border, mono 10px label. Use symbols for high-risk states.
 - Metric tile: flat surface with hairline outline; mono eyebrow, 28px value, concise interpretation. Avoid vanity metrics.
-- Inbox row: sender/avatar marker, subject/snippet, project/domain labels, security/priority state, owner-visible age, and unread indicator. Whole row is keyboard-focusable.
+- Inbox row: subject/snippet detail link, routing-address labels, free-form tag chips, security state, owner-visible age, unread indicator, and sibling icon actions for star/archive/trash/restore.
 - Timeline item: vertical hairline with direction/security marker, header summary, recipients, sanitized body, attachment list, classifications, and audit expansion.
 - DNS record: record type, host, exact value in copyable monospace block, TTL, verification result, and actionable error.
 - Approval modal: names the exact revision, recipients, subject, and body hash; requires an explicit approval action and explains that future edits invalidate approval.
@@ -76,7 +76,7 @@ Long email bodies use the body font, a 68ch measure, and 16px/26px sizing. Never
 
 ## Navigation and content hierarchy
 
-Primary navigation order: Overview, Inbox, Reports, Notifications. A Settings group contains Domains, Schedules & retention, API tokens, and Audit. Show unread notification and quarantined-message counts without animation.
+Primary navigation order: Overview and Inbox. A Settings group contains Domains, Retention, API tokens, and Audit. Show new-message and quarantined-message counts without animation. Do not expose workflow-state or in-app-notification navigation.
 
 Breadcrumbs include organization and project where ambiguity is possible. Cross-project views must label every item with its project. Destructive and send actions remain project-scoped.
 
@@ -93,12 +93,11 @@ Breadcrumbs include organization and project where ambiguity is possible. Cross-
 
 - Authentication pages use a centered 440px technical form with corner markers, a short trust statement, and no application rail.
 - Onboarding is a numbered, resumable sequence. Show limits before the user reaches them.
-- Dashboard leads with items requiring action, then security/health, domain readiness, and recent activity.
-- Inbox supports query, project/domain/state/classification/security filters, opaque-cursor pagination, and a complete unfiltered baseline.
-- Conversation view favors the timeline. AI output is explicitly labeled and visually secondary to original message content.
+- Dashboard is an operational overview of new mail, routing-address activity, quarantine, domain readiness, and recent audited activity; it does not infer tasks.
+- Inbox supports query, domain/routing-address/tag/security filters, pagination, and a complete unfiltered baseline. Tags are usage-derived free-form labels, never an account-level allowed list.
+- Conversation view favors the timeline and includes a compact internal tag editor. It has no Open/Waiting/Resolved or Start work controls.
 - Quarantine view never offers direct preview or download. It explains the verdict and records any administrative action.
 - Domain wizard first detects existing MX. Existing mail service yields provider-forwarding as the recommended safe option; direct MX remains an explicit alternative.
-- Reports clearly distinguish deterministic fallback reports from AI-generated reports.
 - Settings expose retention defaults and hard product limits without suggesting unsupported billing/team features.
 
 ## Brand mark

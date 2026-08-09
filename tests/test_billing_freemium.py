@@ -125,8 +125,7 @@ def test_free_conversation_uses_draft_action_as_upgrade_prompt(client, free_owne
     assert b"Free inbox mode" not in response.content
     assert b"AI drafts and outbound sending require" not in response.content
     assert (
-        f'action="{reverse("draft_generate", args=[conversation.id])}"'.encode()
-        in response.content
+        f'action="{reverse("draft_generate", args=[conversation.id])}"'.encode() in response.content
     )
 
     upgrade = client.post(reverse("draft_generate", args=[conversation.id]))
@@ -230,11 +229,8 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"Up to 20 managed domains" in response.content
     assert b"Receive at any address" in response.content
     assert b"no per-address fee" in response.content
-    assert b"AI triage, drafts &amp; reports" in response.content
-    assert (
-        f'method="post" action="{reverse("billing_checkout")}"'.encode()
-        in response.content
-    )
+    assert b"All-domain agent feed, API &amp; optional drafts" in response.content
+    assert f'method="post" action="{reverse("billing_checkout")}"'.encode() in response.content
     assert "Upgrade to Pro · USD 4.99/month".encode() in response.content
     assert b"Billed monthly through Stripe" in response.content
 
@@ -298,10 +294,7 @@ def test_pro_billing_page_keeps_subscription_management_state(client, free_owner
     assert response.status_code == 200
     assert response.context["plan_entitlements"].is_pro is True
     assert b"Manage subscription" in response.content
-    assert (
-        f'method="post" action="{reverse("billing_portal")}"'.encode()
-        in response.content
-    )
+    assert f'method="post" action="{reverse("billing_portal")}"'.encode() in response.content
     assert reverse("billing_checkout").encode() not in response.content
     assert b"Limited-time price" not in response.content
     assert b"Regular price" not in response.content
@@ -328,14 +321,14 @@ def test_extra_free_domain_is_read_only_but_preserved(client, free_owner):
     session.save()
 
     response = client.post(
-        reverse("conversation_status", args=[conversation.id]),
-        {"status": Conversation.Status.RESOLVED},
+        reverse("conversation_tag", args=[conversation.id]),
+        {"operation": "add", "tag": "agent-reviewed"},
     )
 
     conversation.refresh_from_db()
     assert response.status_code == 302
     assert response.url == reverse("billing")
-    assert conversation.status == Conversation.Status.OPEN
+    assert not conversation.tags.exists()
     assert Domain.objects.filter(id=extra.id, inbound_ready=True).exists()
 
 

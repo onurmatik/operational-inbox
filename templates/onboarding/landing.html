@@ -8,7 +8,7 @@
         <img src="{% static 'img/logo.svg' %}" alt="" class="size-9">
         <span>
           <span class="block font-heading text-lg font-semibold leading-tight">Operational Inbox</span>
-          <span class="block font-mono text-[9px] uppercase tracking-[0.1em] text-muted">Human-approved operations</span>
+          <span class="block font-mono text-[9px] uppercase tracking-[0.1em] text-muted">Multi-domain mail layer</span>
         </span>
       </a>
       <a href="{% url 'login' %}" class="text-sm font-semibold text-muted transition-colors hover:text-ink">Sign in</a>
@@ -16,13 +16,13 @@
 
     <main class="flex-1">
       <section class="mx-auto max-w-[1440px] px-4 py-16 text-center md:px-8 md:py-24">
-        <p class="mb-4 font-mono text-[11px] uppercase tracking-[0.08em] text-muted">Domain-first email operations</p>
+        <p class="mb-4 font-mono text-[11px] uppercase tracking-[0.08em] text-muted">Every project address, one inbox</p>
         <h1 class="mx-auto max-w-3xl font-heading text-[40px] font-semibold leading-[1.1] tracking-tight md:text-[60px]">
-          Manage every operational email<br>
-          <span class="text-forest">for your domain.</span>
+          Receive mail for every project<br>
+          <span class="text-forest">without another workspace.</span>
         </h1>
         <p class="mx-auto mt-6 max-w-xl text-base leading-7 text-muted md:text-lg">
-          Route official inbound mail into a secure, inspectable, and human-approved inbox designed for high-stakes organizational control.
+          Route unlimited addresses across your domains into one secure inbox and let your own agents organize them through a focused API.
         </p>
 
         <form action="{% url 'start_onboarding' %}" method="post" class="mx-auto mt-12 max-w-xl text-left">
@@ -65,9 +65,9 @@
               <p class="mt-1 text-xs text-muted">Inbound and outbound ready</p>
             </div>
             <div class="border border-line p-4">
-              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Active review</p>
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">New messages</p>
               <p class="mt-2 font-mono text-2xl">03</p>
-              <p class="mt-1 text-xs text-muted">Requiring human approval</p>
+              <p class="mt-1 text-xs text-muted">Across routed addresses</p>
             </div>
             <div class="border border-line p-4">
               <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Quarantined</p>
@@ -81,7 +81,7 @@
               <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">
                 <tr>
                   <th class="px-4 py-3 font-medium">Conversation</th>
-                  <th class="px-4 py-3 font-medium">Classification</th>
+                  <th class="px-4 py-3 font-medium">Mailbox &amp; tags</th>
                   <th class="px-4 py-3 font-medium">Security state</th>
                   <th class="px-4 py-3 text-right font-medium">Review</th>
                 </tr>
@@ -92,7 +92,7 @@
                     <p class="font-semibold">Security audit: Q4 review</p>
                     <p class="mt-0.5 text-xs text-muted">audit-service@partner.org</p>
                   </td>
-                  <td class="px-4 py-3"><span class="oi-status oi-status-info">Official</span></td>
+                  <td class="px-4 py-3"><span class="font-mono text-xs">security@example-corp.com</span></td>
                   <td class="px-4 py-3"><span class="oi-status oi-status-ready">Ready</span></td>
                   <td class="px-4 py-3 text-right font-semibold text-forest">Inspect</td>
                 </tr>
@@ -101,7 +101,7 @@
                     <p class="font-semibold">Billing dispute: INV-9920</p>
                     <p class="mt-0.5 text-xs text-muted">billing@vendor.example</p>
                   </td>
-                  <td class="px-4 py-3"><span class="oi-status oi-status-info">Billing</span></td>
+                  <td class="px-4 py-3"><span class="font-mono text-xs">billing@example-corp.com · #vendor</span></td>
                   <td class="px-4 py-3"><span class="oi-status oi-status-pending">Needs review</span></td>
                   <td class="px-4 py-3 text-right font-semibold text-forest">Inspect</td>
                 </tr>
@@ -110,7 +110,7 @@
                     <p class="font-semibold">Urgent: password reset link</p>
                     <p class="mt-0.5 text-xs text-muted">unauthorized relay detected</p>
                   </td>
-                  <td class="px-4 py-3"><span class="oi-status oi-status-info">System</span></td>
+                  <td class="px-4 py-3"><span class="font-mono text-xs">support@example-corp.com</span></td>
                   <td class="px-4 py-3"><span class="oi-status oi-status-danger">Quarantined</span></td>
                   <td class="px-4 py-3 text-right font-semibold text-coral-strong">Verdict</td>
                 </tr>
@@ -123,8 +123,8 @@
       <section class="mx-auto max-w-[960px] px-4 pb-24 md:px-8" aria-labelledby="pricing-title">
         <div class="text-center"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Simple account plans</p><h2 id="pricing-title" class="mt-2 font-heading text-3xl font-semibold">Start free. Upgrade when operations grow.</h2></div>
         <div class="mt-8 grid gap-5 md:grid-cols-2">
-          <article class="oi-panel p-6"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Free</p><h3 class="mt-1 font-heading text-2xl font-semibold">One operational domain</h3><p class="mt-3 text-sm leading-6 text-muted">Secure inbound mail, search, attachments, manual review, security notifications, and audit history.</p><a href="#domain-input" class="oi-button-secondary mt-6">Start free</a></article>
-          <article class="border border-forest bg-forest p-6 text-white"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-white/70">Pro · monthly</p><h3 class="mt-1 font-heading text-2xl font-semibold">Automation for up to 20 domains</h3><p class="mt-3 text-sm leading-6 text-white/75">AI triage, drafts and reports, approved outbound sending, API access, and custom policies.</p><a href="#domain-input" class="mt-6 inline-flex min-h-11 items-center bg-white px-4 text-sm font-semibold text-forest">Create account</a></article>
+          <article class="oi-panel p-6"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Free</p><h3 class="mt-1 font-heading text-2xl font-semibold">One domain, every address</h3><p class="mt-3 text-sm leading-6 text-muted">Secure inbound mail, search, tags, attachments, security email, and audit history.</p><a href="#domain-input" class="oi-button-secondary mt-6">Start free</a></article>
+          <article class="border border-forest bg-forest p-6 text-white"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-white/70">Pro · monthly</p><h3 class="mt-1 font-heading text-2xl font-semibold">20 domains, every address</h3><p class="mt-3 text-sm leading-6 text-white/75">All-domain agent feed, scoped API access, optional drafts, approved outbound sending, and custom retention.</p><a href="#domain-input" class="mt-6 inline-flex min-h-11 items-center bg-white px-4 text-sm font-semibold text-forest">Create account</a></article>
         </div>
       </section>
     </main>

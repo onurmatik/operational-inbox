@@ -27,7 +27,7 @@ from inbox.services.jobs import (
     switch_domain_to_direct,
 )
 from inbox.services.notifications import (
-    create_classification_notifications,
+    create_security_notifications,
     send_pending_email_notification,
 )
 
@@ -474,17 +474,11 @@ def test_scheduler_repairs_provisioning_domain_without_an_active_job(organizatio
 def test_important_notification_is_deduplicated_and_email_delivered(
     mailoutbox, organization, inbound_message
 ):
-    classification = Classification.objects.create(
-        domain=organization,
-        message=inbound_message,
-        source=Classification.Source.OWNER,
-        category=Classification.Category.SUSPICIOUS,
-        urgency=Classification.Urgency.HIGH,
-        summary="Suspicious authentication failure.",
-    )
-    first = create_classification_notifications(classification)
-    second = create_classification_notifications(classification)
-    assert Notification.objects.count() == 2
+    inbound_message.is_suspicious = True
+    inbound_message.save(update_fields=("is_suspicious", "updated_at"))
+    first = create_security_notifications(inbound_message)
+    second = create_security_notifications(inbound_message)
+    assert Notification.objects.count() == 1
     assert [item.id for item in first] == [item.id for item in second]
     email_notification = Notification.objects.get(channel=Notification.Channel.EMAIL)
     assert send_pending_email_notification(email_notification)

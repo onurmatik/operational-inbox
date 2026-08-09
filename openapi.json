@@ -75,22 +75,39 @@
         "title": "ClassificationInput",
         "type": "object"
       },
-      "ConversationStatusInput": {
+      "ConversationActionInput": {
         "properties": {
-          "status": {
+          "action": {
             "enum": [
-              "OPEN",
-              "WAITING_EXTERNAL",
-              "RESOLVED"
+              "star",
+              "unstar",
+              "archive",
+              "trash",
+              "restore"
             ],
-            "title": "Status",
+            "title": "Action",
             "type": "string"
           }
         },
         "required": [
-          "status"
+          "action"
         ],
-        "title": "ConversationStatusInput",
+        "title": "ConversationActionInput",
+        "type": "object"
+      },
+      "ConversationTagInput": {
+        "properties": {
+          "tag": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Tag",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag"
+        ],
+        "title": "ConversationTagInput",
         "type": "object"
       },
       "DomainInput": {
@@ -158,6 +175,11 @@
       },
       "TokenInput": {
         "properties": {
+          "all_domains": {
+            "default": false,
+            "title": "All Domains",
+            "type": "boolean"
+          },
           "name": {
             "maxLength": 80,
             "minLength": 1,
@@ -502,23 +524,23 @@
           },
           {
             "in": "query",
-            "name": "state",
+            "name": "folder",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
+              "default": "inbox",
+              "enum": [
+                "inbox",
+                "starred",
+                "archive",
+                "trash"
               ],
-              "title": "State"
+              "title": "Folder",
+              "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "classification",
+            "name": "mailbox",
             "required": false,
             "schema": {
               "anyOf": [
@@ -529,7 +551,53 @@
                   "type": "null"
                 }
               ],
-              "title": "Classification"
+              "title": "Mailbox"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "new_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "New Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "security",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "suspicious",
+                    "quarantined"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Security"
             }
           },
           {
@@ -612,6 +680,60 @@
         ]
       }
     },
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/action": {
+      "post": {
+        "operationId": "inbox_api_conversations_action",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationActionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Conversations Action",
+        "tags": [
+          "Conversations"
+        ]
+      }
+    },
     "/api/v1/domains/{domain_id}/conversations/{conversation_id}/drafts": {
       "post": {
         "operationId": "inbox_api_drafts_generate",
@@ -665,9 +787,9 @@
         ]
       }
     },
-    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/state": {
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/tags": {
       "post": {
-        "operationId": "inbox_api_conversations_state",
+        "operationId": "inbox_api_conversations_tags_add",
         "parameters": [
           {
             "in": "path",
@@ -694,12 +816,87 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ConversationStatusInput"
+                "$ref": "#/components/schemas/ConversationTagInput"
               }
             }
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Conversations Tags Add",
+        "tags": [
+          "Conversation tags"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/tags/{tag_id}": {
+      "delete": {
+        "operationId": "inbox_api_conversations_tags_remove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tag_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tag Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -713,9 +910,9 @@
             "ScopedBearer": []
           }
         ],
-        "summary": "Conversations State",
+        "summary": "Conversations Tags Remove",
         "tags": [
-          "Conversations"
+          "Conversation tags"
         ]
       }
     },
@@ -1543,6 +1740,173 @@
         "summary": "Tokens Create",
         "tags": [
           "Tokens"
+        ]
+      }
+    },
+    "/api/v1/feed/messages": {
+      "get": {
+        "operationId": "inbox_api_messages_feed",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "domain_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mailbox",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mailbox"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "folder",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "inbox",
+                    "starred",
+                    "archive",
+                    "trash"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Folder"
+            }
+          },
+          {
+            "in": "query",
+            "name": "new_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "New Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "security",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "suspicious",
+                    "quarantined"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Security"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Messages Feed",
+        "tags": [
+          "Message feed"
         ]
       }
     },

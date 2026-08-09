@@ -37,9 +37,7 @@ def current_domain(request: HttpRequest) -> Domain:
     return selected
 
 
-def domain_get_or_404(
-    queryset: Manager[T] | QuerySet[T], *, domain: Domain, **lookup: object
-) -> T:
+def domain_get_or_404(queryset: Manager[T] | QuerySet[T], *, domain: Domain, **lookup: object) -> T:
     try:
         return queryset.filter(domain=domain).get(**lookup)
     except (ObjectDoesNotExist, ValueError) as exc:

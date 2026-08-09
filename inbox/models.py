@@ -518,22 +518,13 @@ class IngressEvent(UUIDTimeStampedModel):
 
 
 class Conversation(DomainScopedModel):
-    class Status(models.TextChoices):
-        OPEN = "OPEN", "Open"
-        WAITING_EXTERNAL = "WAITING_EXTERNAL", "Waiting for external reply"
-        RESOLVED = "RESOLVED", "Resolved"
-        QUARANTINED = "QUARANTINED", "Quarantined"
-
     subject = models.CharField(max_length=998, blank=True)
     normalized_subject = models.CharField(max_length=998, blank=True, db_index=True)
-    status = models.CharField(max_length=24, choices=Status.choices, default=Status.OPEN)
     first_message_at = models.DateTimeField()
     last_message_at = models.DateTimeField(db_index=True)
     last_inbound_at = models.DateTimeField(null=True, blank=True)
     last_outbound_at = models.DateTimeField(null=True, blank=True)
-    resolved_at = models.DateTimeField(null=True, blank=True)
     starred_at = models.DateTimeField(null=True, blank=True)
-    work_started_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
     trashed_at = models.DateTimeField(null=True, blank=True)
     snoozed_until = models.DateTimeField(null=True, blank=True)
@@ -548,12 +539,41 @@ class Conversation(DomainScopedModel):
     class Meta:
         ordering = ("-last_message_at",)
         indexes = [
-            models.Index(fields=("domain", "status", "-last_message_at")),
             models.Index(
                 fields=("domain", "trashed_at", "archived_at", "-last_message_at"),
                 name="inbox_conve_domain__3932b5_idx",
             ),
         ]
+
+
+class ConversationTag(DomainScopedModel):
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="tags",
+    )
+    name = models.CharField(max_length=64)
+    normalized_name = models.CharField(max_length=64)
+
+    class Meta:
+        ordering = ("normalized_name", "created_at")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("conversation", "normalized_name"),
+                name="uniq_conversation_tag_name",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("domain", "normalized_name", "-created_at"),
+                name="inbox_tag_domain_name_idx",
+            )
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        if self.conversation_id and self.domain_id != self.conversation.domain_id:
+            raise ValidationError("Conversation and tag must belong to the same domain.")
 
 
 class Message(DomainScopedModel):
@@ -1119,13 +1139,20 @@ class AuditEvent(DomainScopedModel):
         raise ValidationError("Audit events are append-only.")
 
 
-class APIToken(DomainScopedModel):
+class APIToken(UUIDTimeStampedModel):
     class Scope(models.TextChoices):
         READ = "read", "Read"
         WRITE = "write", "Write"
         APPROVE_SEND = "approve_send", "Approve and send"
 
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
+    domain = models.ForeignKey(
+        Domain,
+        on_delete=models.CASCADE,
+        related_name="+",
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=80)
     prefix = models.CharField(max_length=12, db_index=True)
     token_hash = models.CharField(max_length=64, unique=True)
@@ -1138,7 +1165,7 @@ class APIToken(DomainScopedModel):
     def issue(
         cls,
         *,
-        domain: Domain,
+        domain: Domain | None,
         owner: User,
         name: str,
         scopes: list[str],
@@ -1147,7 +1174,7 @@ class APIToken(DomainScopedModel):
         allowed = {choice for choice, _ in cls.Scope.choices}
         if not scopes or not set(scopes).issubset(allowed):
             raise ValidationError({"scopes": "Select one or more valid token scopes."})
-        if owner.id != domain.owner_id:
+        if domain is not None and owner.id != domain.owner_id:
             raise ValidationError({"owner": "Only the domain owner can create API tokens."})
         raw = f"oi_{secrets.token_urlsafe(36)}"
         token = cls.objects.create(

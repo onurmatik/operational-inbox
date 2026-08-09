@@ -24,7 +24,6 @@ from inbox.models import (
     DurableJob,
     InboundRoute,
     InboundRoutingTransition,
-    ReportSchedule,
     RetentionPolicy,
     User,
 )
@@ -302,7 +301,6 @@ def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:
         raise DomainClaimConflict(
             existing_domain=existing if existing.owner_id == owner.id else None
         ) from exc
-    ReportSchedule.objects.create(domain=domain)
     RetentionPolicy.objects.create(domain=domain)
     return domain
 

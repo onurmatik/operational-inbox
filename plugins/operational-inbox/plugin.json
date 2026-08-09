@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "operational-inbox",
+  "version": "0.1.0",
+  "description": "Review and organize email across many domains and routing addresses.",
+  "author": {
+    "name": "Operational Inbox",
+    "url": "https://operationalinbox.com/"
+  },
+  "homepage": "https://operationalinbox.com/",
+  "keywords": [
+    "email",
+    "inbox",
+    "multi-domain",
+    "agents",
+    "tags"
+  ]
+}

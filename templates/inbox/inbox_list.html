@@ -9,7 +9,7 @@
         {% if filters.recipient %}
           <p class="mt-1 text-sm text-muted">Messages routed to <span class="font-semibold text-ink">{{ filters.recipient }}</span>.</p>
         {% elif folder == "inbox" %}
-          <p class="mt-1 text-sm text-muted">New messages stay prominent until they are opened or work starts.</p>
+          <p class="mt-1 text-sm text-muted">New messages stay prominent until they are opened.</p>
         {% elif folder == "trash" %}
           <p class="mt-1 text-sm text-muted">Trashed conversations remain recoverable.</p>
         {% else %}
@@ -20,7 +20,7 @@
     </div>
   </div>
 
-  <form method="get" class="mt-5 grid gap-3 border border-line bg-white p-4 md:grid-cols-5" data-inbox-filters>
+  <form method="get" class="mt-5 grid gap-3 border border-line bg-white p-4 md:grid-cols-4" data-inbox-filters>
     <input type="hidden" name="domain" value="{{ domain.id }}">
     {% if folder != "inbox" %}<input type="hidden" name="folder" value="{{ folder }}">{% endif %}
     {% if filters.recipient %}<input type="hidden" name="recipient" value="{{ filters.recipient }}">{% endif %}
@@ -32,18 +32,9 @@
       </div>
     </div>
     <div>
-      <label for="state" class="oi-label text-xs">State</label>
-      <select id="state" name="state" class="oi-input" data-auto-submit>
-        <option value="">All states</option>
-        {% for value,label in conversation_states %}<option value="{{ value }}" {% if filters.state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
-    </div>
-    <div>
-      <label for="classification" class="oi-label text-xs">Classification</label>
-      <select id="classification" name="classification" class="oi-input" data-auto-submit>
-        <option value="">All classifications</option>
-        {% for value,label in classification_categories %}<option value="{{ value }}" {% if filters.classification == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
-      </select>
+      <label for="tag" class="oi-label text-xs">Tag</label>
+      <input id="tag" name="tag" value="{{ filters.tag }}" class="oi-input" list="observed-tags" placeholder="Exact tag">
+      <datalist id="observed-tags">{% for tag in observed_tags %}<option value="{{ tag }}">{% endfor %}</datalist>
     </div>
     <div>
       <label for="security" class="oi-label text-xs">Security</label>
@@ -67,6 +58,9 @@
               <span class="max-w-full truncate border border-line bg-white px-1.5 py-0.5 font-mono text-[10px] text-muted" title="{{ mailbox.address }}">{{ mailbox.address }}</span>
             {% empty %}
               <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">No routing address</span>
+            {% endfor %}
+            {% for tag in conversation.tags.all %}
+              <span class="border border-line bg-paper px-1.5 py-0.5 font-mono text-[10px] text-muted">#{{ tag.name }}</span>
             {% endfor %}
           </div>
           <a href="{% url 'conversation_detail' conversation.id %}" class="mt-2 block rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forest">
@@ -98,16 +92,6 @@
                 </form>
               {% endif %}
             {% else %}
-              {% if conversation.work_started_at %}
-                <span class="oi-row-action-static" tabindex="0" aria-label="Work started" data-tooltip="Work started">{% include "inbox/_action_icon.html" with icon="started" %}</span>
-              {% elif conversation.status != "QUARANTINED" %}
-                <form method="post" action="{% url 'conversation_action' conversation.id %}">
-                  {% csrf_token %}
-                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                  <input type="hidden" name="action" value="start">
-                  <button type="submit" class="oi-row-action" aria-label="Start work on conversation" data-tooltip="Start work">{% include "inbox/_action_icon.html" with icon="start" %}</button>
-                </form>
-              {% endif %}
               <form method="post" action="{% url 'conversation_action' conversation.id %}">
                 {% csrf_token %}
                 <input type="hidden" name="next" value="{{ request.get_full_path }}">
@@ -124,12 +108,7 @@
           </div>
         </div>
         <div class="flex items-center justify-between gap-3 sm:block sm:text-right">
-          <div>
-            {% if conversation.status == "QUARANTINED" %}<span class="oi-status oi-status-danger">Quarantined</span>
-            {% elif conversation.status == "WAITING_EXTERNAL" %}<span class="oi-status oi-status-info">Waiting external</span>
-            {% elif conversation.status == "RESOLVED" %}<span class="oi-status oi-status-ready">Resolved</span>
-            {% else %}<span class="oi-status oi-status-pending">Open</span>{% endif %}
-          </div>
+          {% if conversation.has_quarantined %}<div><span class="oi-status oi-status-danger">Quarantined</span></div>{% endif %}
           <time class="font-mono text-xs text-muted sm:mt-3 sm:block" datetime="{{ conversation.last_message_at|date:'c' }}">{{ conversation.last_message_at|date:"Y-m-d H:i" }} UTC</time>
           <p class="mt-2 hidden font-mono text-[10px] uppercase tracking-[0.08em] text-muted sm:block">{{ conversation.message_count }} message{{ conversation.message_count|pluralize }}</p>
         </div>

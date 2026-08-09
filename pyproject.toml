@@ -1,7 +1,7 @@
 [project]
 name = "operational-inbox"
 version = "0.1.0"
-description = "A tenant-safe operational email control layer."
+description = "A tenant-safe multi-domain email layer for people and agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

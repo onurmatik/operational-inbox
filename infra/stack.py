@@ -283,9 +283,7 @@ class OperationalInboxEmailStack(Stack):
                 sid="EmailBucketList",
                 actions=["s3:ListBucket"],
                 resources=[bucket.bucket_arn],
-                conditions={
-                    "StringLike": {"s3:prefix": ["ingress/*", "domains/*", "backups/*"]}
-                },
+                conditions={"StringLike": {"s3:prefix": ["ingress/*", "domains/*", "backups/*"]}},
             )
         )
         app_user.add_to_policy(

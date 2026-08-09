@@ -1,0 +1,39 @@
+{
+  "name": "operational-inbox",
+  "version": "0.1.0",
+  "description": "Review and organize email across many domains and routing addresses.",
+  "author": {
+    "name": "Operational Inbox",
+    "url": "https://operationalinbox.com/"
+  },
+  "homepage": "https://operationalinbox.com/",
+  "keywords": [
+    "email",
+    "inbox",
+    "multi-domain",
+    "agents",
+    "tags"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Operational Inbox",
+    "shortDescription": "Review multi-domain mail",
+    "longDescription": "Review authorized mail across domains and routing addresses, use agent-defined workflow tags, and apply only requested reversible organization actions.",
+    "developerName": "Operational Inbox",
+    "category": "Productivity",
+    "capabilities": [
+      "Cross-domain inbox review",
+      "Usage-derived tags",
+      "Reversible inbox organization"
+    ],
+    "websiteURL": "https://operationalinbox.com/",
+    "defaultPrompt": [
+      "Review new mail across all my domains.",
+      "Show mail for this mailbox and tag.",
+      "Tag and archive the conversations I select."
+    ],
+    "brandColor": "#1A3C2B",
+    "composerIcon": "./assets/logo.png",
+    "logo": "./assets/logo.png"
+  }
+}

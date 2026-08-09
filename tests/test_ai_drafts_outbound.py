@@ -369,12 +369,10 @@ def test_inbound_arriving_during_send_keeps_conversation_open(
     class InboundDuringSend:
         def send_raw_email(self, **kwargs):
             conversation.last_inbound_at = timezone.now()
-            conversation.status = conversation.Status.OPEN
-            conversation.save(update_fields=("last_inbound_at", "status", "updated_at"))
+            conversation.save(update_fields=("last_inbound_at", "updated_at"))
             return {"MessageId": "ses-after-new-inbound"}
 
     result = submit_outbound(outbound, ses_client=InboundDuringSend())
     conversation.refresh_from_db()
     assert result.status == OutboundMessage.Status.ACCEPTED
-    assert conversation.status == conversation.Status.OPEN
     assert conversation.last_outbound_at is not None

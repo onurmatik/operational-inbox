@@ -16,13 +16,7 @@
         </a>
         {% if nav_inbox_tree %}
           <div class="border-b border-line bg-paper/30 px-2 pb-3 pt-2">
-            <div class="grid gap-0.5">
-              <a href="{{ nav_current_inbox_url }}" class="flex min-h-9 items-center px-2 text-xs font-semibold {% if active_nav == 'inbox' and nav_folder == 'inbox' and not nav_recipient %}bg-white text-forest shadow-[inset_3px_0_0_#123f34]{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">All messages</a>
-              <a href="{{ nav_starred_url }}" class="flex min-h-9 items-center px-2 text-xs font-semibold {% if active_nav == 'inbox' and nav_folder == 'starred' %}bg-white text-forest shadow-[inset_3px_0_0_#123f34]{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Starred</a>
-              <a href="{{ nav_archive_url }}" class="flex min-h-9 items-center px-2 text-xs font-semibold {% if active_nav == 'inbox' and nav_folder == 'archive' %}bg-white text-forest shadow-[inset_3px_0_0_#123f34]{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Archive</a>
-              <a href="{{ nav_trash_url }}" class="flex min-h-9 items-center px-2 text-xs font-semibold {% if active_nav == 'inbox' and nav_folder == 'trash' %}bg-white text-forest shadow-[inset_3px_0_0_#123f34]{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Trash</a>
-            </div>
-            <p class="mb-1 mt-3 px-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domains</p>
+            <p class="mb-1 px-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domains</p>
             <div class="grid gap-1">
               {% for item in nav_inbox_tree %}
                 <div>
@@ -39,17 +33,21 @@
                         {% if mailbox.new_count %}<span class="bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong" aria-hidden="true">{{ mailbox.new_count }}</span>{% endif %}
                       </a>
                     {% endfor %}
+                    {% if current_domain.id == item.id %}
+                      <div class="my-1 border-t border-line"></div>
+                      <a href="{{ item.starred_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'starred' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Starred</a>
+                      <a href="{{ item.archive_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'archive' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Archive</a>
+                      <a href="{{ item.trash_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'trash' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Trash</a>
+                    {% endif %}
                   </div>{% endif %}
                 </div>
               {% endfor %}
             </div>
           </div>
         {% endif %}
-        <a href="{% url 'reports' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'reports' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▥</span>Reports</a>
-        <a href="{% url 'notifications' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'notifications' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◇</span>Notifications{% if nav_unread_notifications %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_unread_notifications }}</span>{% endif %}</a>
         <p class="mb-1 mt-5 px-4 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Settings</p>
         <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'domains' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◎</span>Domains</a>
-        <a href="{% url 'schedules_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'schedules' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Schedules &amp; retention</a>
+        <a href="{% url 'retention_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'retention' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Retention</a>
         <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'api_tokens' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">⌁</span>API tokens</a>
         <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'audit' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">≡</span>Audit</a>
         <a href="{% url 'billing' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'billing' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◈</span>Plan &amp; billing<span class="ml-auto oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span></a>

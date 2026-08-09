@@ -22,10 +22,7 @@ from inbox.services.entitlements import require_pro
 
 def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
     require_pro(message.domain.owner, "AI reply drafts")
-    if (
-        message.is_quarantined
-        or message.conversation.status == message.conversation.Status.QUARANTINED
-    ):
+    if message.is_quarantined:
         raise ValidationError("A reply draft cannot be generated for quarantined content.")
     output = generate_draft_output(message, client=client)
     with transaction.atomic():

@@ -85,9 +85,7 @@ def test_collection_cursor_is_stable_and_tenant_scoped(
 
     assert received_ids == expected_ids
     assert not set(received_ids) & set(other_ids)
-    assert (
-        client.get(f"/api/v1/domains/{other_organization.id}/{resource}").status_code == 404
-    )
+    assert client.get(f"/api/v1/domains/{other_organization.id}/{resource}").status_code == 404
 
 
 @pytest.mark.django_db

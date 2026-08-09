@@ -35,6 +35,7 @@ for model in (
     models.InboundRoute,
     models.DomainTest,
     models.Conversation,
+    models.ConversationTag,
     models.Message,
     models.MessageRecipient,
     models.MessageReference,

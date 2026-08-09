@@ -110,9 +110,7 @@ def price_summary() -> dict[str, Any] | None:
         "unit_amount": unit_amount,
         "amount": f"{unit_amount / 100:,.2f}",
         "compare_at_unit_amount": compare_at_unit_amount if is_promotional else None,
-        "compare_at_amount": (
-            f"{compare_at_unit_amount / 100:,.2f}" if is_promotional else None
-        ),
+        "compare_at_amount": (f"{compare_at_unit_amount / 100:,.2f}" if is_promotional else None),
         "currency": settings.STRIPE_PRO_CURRENCY.upper(),
         "interval": "month",
         "is_promotional": is_promotional,

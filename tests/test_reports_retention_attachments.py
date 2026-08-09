@@ -130,9 +130,7 @@ def test_attachment_authorization_clean_locked_and_expired(organization, inbound
         scan_status=Attachment.ScanStatus.CLEAN,
         purge_at=timezone.now() + timedelta(days=1),
     )
-    authorized = authorized_attachment_url(
-        attachment=clean, domain=organization, s3_client=s3
-    )
+    authorized = authorized_attachment_url(attachment=clean, domain=organization, s3_client=s3)
     assert authorized.expires_in == 300
     assert s3.generate_presigned_url.call_args.kwargs["ExpiresIn"] == 300
     clean.scan_status = Attachment.ScanStatus.QUARANTINED

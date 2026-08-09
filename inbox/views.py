@@ -20,7 +20,7 @@ from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models import Count, Exists, IntegerField, OuterRef, Prefetch, Q, Subquery, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
@@ -39,7 +39,6 @@ from inbox.forms import (
     DomainForm,
     DraftRevisionForm,
     RetentionForm,
-    ScheduleForm,
     SignupForm,
     StartOnboardingForm,
     VerificationResendForm,
@@ -48,8 +47,8 @@ from inbox.models import (
     APIToken,
     Attachment,
     AuditEvent,
-    Classification,
     Conversation,
+    ConversationTag,
     Domain,
     DomainDNSRecord,
     DomainTest,
@@ -58,11 +57,8 @@ from inbox.models import (
     InboundRoutingTransition,
     Message,
     MessageRecipient,
-    Notification,
     OutboundMessage,
     ReplyDraft,
-    Report,
-    ReportSchedule,
     RetentionPolicy,
     SignupAttempt,
     User,
@@ -109,6 +105,7 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     ensure_routing_transition_test,
 )
+from inbox.services.tags import add_conversation_tag, normalize_tag, remove_conversation_tag
 from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
 
 logger = logging.getLogger(__name__)
@@ -719,33 +716,39 @@ def dashboard(request: HttpRequest) -> HttpResponse:
     if not request.user.domains.exclude(status=Domain.Status.DISABLED).exists():
         return redirect("domain_create")
     domain = current_domain(request)
-    conversations = Conversation.objects.filter(domain=domain)
     messages_qs = Message.objects.filter(domain=domain)
-    attention = (
-        conversations.filter(
-            Q(messages__classifications__is_current=True)
-            & (
-                Q(messages__classifications__category=Classification.Category.ACTIONABLE)
-                | Q(messages__classifications__category=Classification.Category.SUSPICIOUS)
-                | Q(messages__classifications__urgency__in=["HIGH", "CRITICAL"])
-            )
+    recent_messages = (
+        messages_qs.filter(
+            direction=Message.Direction.INBOUND,
+            conversation__trashed_at__isnull=True,
         )
-        .distinct()
-        .order_by("-last_message_at")[:8]
+        .select_related("conversation")
+        .prefetch_related("conversation__tags", "recipients")
+        .order_by("-received_at")[:8]
     )
     context = {
         "active_nav": "overview",
         "domain": domain,
-        "attention": attention,
+        "recent_messages": recent_messages,
         "metrics": {
-            "open": conversations.filter(status=Conversation.Status.OPEN).count(),
+            "new_messages": messages_qs.filter(
+                direction=Message.Direction.INBOUND,
+                viewed_at__isnull=True,
+                conversation__archived_at__isnull=True,
+                conversation__trashed_at__isnull=True,
+            ).count(),
             "quarantined": messages_qs.filter(is_quarantined=True).count(),
-            "unclassified": messages_qs.exclude(classifications__is_current=True).count(),
+            "mailboxes": MessageRecipient.objects.filter(
+                domain=domain,
+                is_routing_recipient=True,
+            )
+            .values("address")
+            .distinct()
+            .count(),
             "domains_ready": int(domain.status == Domain.Status.READY),
             "domains_total": 1,
         },
         "domains": [domain],
-        "reports": Report.objects.filter(domain=domain)[:4],
         "audit_events": AuditEvent.objects.filter(domain=domain)[:6],
     }
     return render(request, "inbox/dashboard.html", context)
@@ -804,6 +807,9 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
         preview_from_address=Subquery(latest_message.values("from_address")[:1]),
         preview_text_body=Subquery(latest_message.values("text_body")[:1]),
         preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
+        has_quarantined=Exists(
+            Message.objects.filter(conversation=OuterRef("pk"), is_quarantined=True)
+        ),
     )
     if folder == "inbox":
         conversations = conversations.filter(archived_at__isnull=True, trashed_at__isnull=True)
@@ -834,21 +840,22 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
             | Q(messages__from_address__icontains=query)
             | Q(messages__text_body__icontains=query)
         ).distinct()
-    state = request.GET.get("state", "")
-    if state in Conversation.Status.values:
-        conversations = conversations.filter(status=state)
-    classification = request.GET.get("classification", "")
-    if classification in Classification.Category.values:
-        conversations = conversations.filter(
-            messages__classifications__is_current=True,
-            messages__classifications__category=classification,
-        ).distinct()
+    raw_tag = request.GET.get("tag", "")
+    tag = ""
+    if raw_tag:
+        try:
+            _, tag = normalize_tag(raw_tag)
+        except ValidationError:
+            tag = raw_tag.casefold()[:64]
+        conversations = conversations.filter(tags__normalized_name=tag).distinct()
     security = request.GET.get("security", "")
     if security == "suspicious":
         conversations = conversations.filter(messages__is_suspicious=True).distinct()
     elif security == "quarantined":
         conversations = conversations.filter(messages__is_quarantined=True).distinct()
-    ordered_conversations = conversations.order_by("-last_message_at")
+    ordered_conversations = conversations.prefetch_related(
+        Prefetch("tags", queryset=ConversationTag.objects.order_by("normalized_name"))
+    ).order_by("-last_message_at")
     paginator = Paginator(ordered_conversations, 50)
     page = paginator.get_page(request.GET.get("page"))
     conversation_ids = [conversation.id for conversation in page.object_list]
@@ -894,15 +901,16 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
             "pagination_query": pagination_params.urlencode(),
             "filters": {
                 "q": query,
-                "state": state,
-                "classification": classification,
+                "tag": tag,
                 "security": security,
                 "recipient": recipient,
             },
-            "has_active_filters": any((query, state, classification, security, recipient)),
+            "observed_tags": ConversationTag.objects.filter(domain=domain)
+            .values_list("name", flat=True)
+            .order_by("normalized_name")
+            .distinct(),
+            "has_active_filters": any((query, tag, security, recipient)),
             "clear_filters_url": f"{reverse('inbox')}?{urlencode(clear_params)}",
-            "conversation_states": Conversation.Status.choices,
-            "classification_categories": Classification.Category.choices,
         },
     )
 
@@ -912,7 +920,7 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     domain = current_domain(request)
     with transaction.atomic():
         conversation = domain_get_or_404(
-            Conversation.objects.select_for_update(),
+            Conversation.objects.select_for_update().prefetch_related("tags"),
             domain=domain,
             id=conversation_id,
         )
@@ -949,36 +957,9 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
                 )
             ),
             "outbound_messages": conversation.outbound_messages.order_by("-created_at"),
+            "has_quarantined": conversation.messages.filter(is_quarantined=True).exists(),
         },
     )
-
-
-@verified_required
-@require_POST
-def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
-    if denied := _domain_write_required(request, domain):
-        return denied
-    conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
-    status = request.POST.get("status", "")
-    if status not in Conversation.Status.values or status == Conversation.Status.QUARANTINED:
-        messages.error(request, "Select a supported conversation state.")
-    elif status != conversation.status:
-        conversation.status = status
-        conversation.resolved_at = (
-            timezone.now() if status == Conversation.Status.RESOLVED else None
-        )
-        update_fields = ["status", "resolved_at", "updated_at"]
-        if status == Conversation.Status.RESOLVED:
-            conversation.work_started_at = None
-            update_fields.append("work_started_at")
-        conversation.save(update_fields=update_fields)
-        _audit(domain, request, "conversation.status_changed", conversation, {"status": status})
-        messages.success(
-            request,
-            f"Conversation status changed to {conversation.get_status_display()}.",
-        )
-    return redirect("conversation_detail", conversation_id=conversation.id)
 
 
 @verified_required
@@ -992,7 +973,6 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     event_types = {
         "star": "conversation.starred",
         "unstar": "conversation.unstarred",
-        "start": "conversation.work_started",
         "archive": "conversation.archived",
         "trash": "conversation.trashed",
         "restore": "conversation.restored",
@@ -1000,7 +980,6 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     feedback = {
         "star": "Conversation starred.",
         "unstar": "Conversation unstarred.",
-        "start": "Work started.",
         "archive": "Conversation moved to Archive.",
         "trash": "Conversation moved to Trash.",
         "restore": "Conversation restored to Inbox.",
@@ -1021,14 +1000,6 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
                     conversation,
                     {"action": action, "messages_viewed": result.viewed_messages},
                 )
-            elif result.viewed_messages:
-                _audit(
-                    domain,
-                    request,
-                    "conversation.viewed",
-                    conversation,
-                    {"messages_viewed": result.viewed_messages, "source": "start"},
-                )
     except (KeyError, ValidationError) as exc:
         error = (
             exc.messages[0] if isinstance(exc, ValidationError) else "Select a supported action."
@@ -1037,6 +1008,52 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
         return redirect(next_url)
     if result.changed:
         messages.success(request, feedback[action])
+    return redirect(next_url)
+
+
+@verified_required
+@require_POST
+def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
+    domain = current_domain(request)
+    next_url = _safe_next(
+        request,
+        request.POST.get("next") or reverse("conversation_detail", args=[conversation_id]),
+    )
+    if denied := _domain_write_required(request, domain):
+        return denied
+    operation = request.POST.get("operation", "add")
+    value = request.POST.get("tag", "")
+    try:
+        with transaction.atomic():
+            conversation = domain_get_or_404(
+                Conversation.objects.select_for_update(),
+                domain=domain,
+                id=conversation_id,
+            )
+            if operation == "add":
+                tag, changed = add_conversation_tag(conversation, value)
+                event_type = "conversation.tag_added"
+                feedback = f"Tag #{tag.name} added."
+            elif operation == "remove":
+                tag = remove_conversation_tag(conversation, value)
+                changed = tag is not None
+                event_type = "conversation.tag_removed"
+                feedback = f"Tag #{tag.name} removed." if tag else ""
+            else:
+                raise ValidationError("Select a supported tag action.")
+            if changed and tag is not None:
+                _audit(
+                    domain,
+                    request,
+                    event_type,
+                    tag,
+                    {"conversation_id": str(conversation.id), "tag": tag.normalized_name},
+                )
+    except ValidationError as exc:
+        messages.error(request, exc.messages[0])
+        return redirect(next_url)
+    if changed:
+        messages.success(request, feedback)
     return redirect(next_url)
 
 
@@ -1695,72 +1712,22 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 
 
 @verified_required
-def reports_list(request: HttpRequest) -> HttpResponse:
+def retention_settings(request: HttpRequest) -> HttpResponse:
     domain = current_domain(request)
-    return render(
-        request,
-        "inbox/reports.html",
-        {"active_nav": "reports", "reports": Report.objects.filter(domain=domain)},
-    )
-
-
-@verified_required
-def notifications_list(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
-    if request.method == "POST":
-        if denied := _domain_write_required(request, domain):
-            return denied
-        Notification.objects.filter(
-            domain=domain,
-            channel=Notification.Channel.IN_APP,
-            read_at__isnull=True,
-        ).update(status=Notification.Status.READ, read_at=timezone.now())
-        return redirect("notifications")
-    return render(
-        request,
-        "inbox/notifications.html",
-        {
-            "active_nav": "notifications",
-            "notifications": Notification.objects.filter(
-                domain=domain, channel=Notification.Channel.IN_APP
-            ),
-        },
-    )
-
-
-@verified_required
-def schedules_settings(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
-    schedule, _ = ReportSchedule.objects.get_or_create(domain=domain)
     retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
-    schedule_form = ScheduleForm(
-        request.POST or None,
-        instance=schedule,
-        domain=domain,
-        prefix="schedule",
-    )
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
     if request.method == "POST" and not for_user(request.user).custom_settings:
-        return _upgrade_required(request, "Custom schedules and retention")
-    if request.method == "POST":
-        if request.POST.get("form") == "schedule" and schedule_form.is_valid():
-            schedule_form.save()
-            domain.timezone = schedule_form.cleaned_data["timezone"]
-            domain.save(update_fields=("timezone", "updated_at"))
-            _audit(domain, request, "schedule.updated", schedule)
-            messages.success(request, "Review schedule updated.")
-            return redirect("schedules_settings")
-        if request.POST.get("form") == "retention" and retention_form.is_valid():
-            retention_form.save()
-            _audit(domain, request, "retention.updated", retention)
-            messages.success(request, "Retention policy updated.")
-            return redirect("schedules_settings")
+        return _upgrade_required(request, "Custom retention")
+    if request.method == "POST" and retention_form.is_valid():
+        retention_form.save()
+        _audit(domain, request, "retention.updated", retention)
+        messages.success(request, "Retention policy updated.")
+        return redirect("retention_settings")
     return render(
         request,
-        "inbox/settings_schedules.html",
+        "inbox/settings_retention.html",
         {
-            "active_nav": "schedules",
-            "schedule_form": schedule_form,
+            "active_nav": "retention",
             "retention_form": retention_form,
         },
     )
@@ -1774,13 +1741,19 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
         return _upgrade_required(request, "API access")
     if request.method == "POST" and form.is_valid():
         token, raw = APIToken.issue(
-            domain=domain,
+            domain=None if form.cleaned_data["all_domains"] else domain,
             owner=request.user,
             name=form.cleaned_data["name"],
             scopes=form.cleaned_data["scopes"],
         )
         request.session["new_api_token"] = raw
-        _audit(domain, request, "api_token.created", token, {"scopes": token.scopes})
+        _audit(
+            domain,
+            request,
+            "api_token.created",
+            token,
+            {"scopes": token.scopes, "all_domains": token.domain_id is None},
+        )
         return redirect("api_tokens")
     new_token = request.session.pop("new_api_token", None)
     return render(
@@ -1789,7 +1762,9 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
         {
             "active_nav": "api_tokens",
             "form": form,
-            "tokens": APIToken.objects.filter(domain=domain).order_by("-created_at"),
+            "tokens": APIToken.objects.filter(owner=request.user)
+            .filter(Q(domain=domain) | Q(domain__isnull=True))
+            .order_by("-created_at"),
             "new_token": new_token,
         },
     )
@@ -1801,7 +1776,13 @@ def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
     if not for_user(request.user).api:
         return _upgrade_required(request, "API access")
-    token = domain_get_or_404(APIToken.objects, domain=domain, id=token_id)
+    token = (
+        APIToken.objects.filter(owner=request.user, id=token_id)
+        .filter(Q(domain=domain) | Q(domain__isnull=True))
+        .first()
+    )
+    if token is None:
+        raise Http404
     token.revoked_at = timezone.now()
     token.save(update_fields=("revoked_at", "updated_at"))
     _audit(domain, request, "api_token.revoked", token)

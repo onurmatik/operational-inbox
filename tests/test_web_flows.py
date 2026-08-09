@@ -9,12 +9,11 @@ from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
-from inbox.forms import APITokenForm, DomainForm, ScheduleForm
+from inbox.forms import APITokenForm, DomainForm
 from inbox.models import (
     APIToken,
     Attachment,
     AuditEvent,
-    Classification,
     Conversation,
     Domain,
     DomainDNSRecord,
@@ -22,10 +21,8 @@ from inbox.models import (
     DurableJob,
     InboundRoute,
     InboundRoutingTransition,
-    Notification,
     OutboundMessage,
     ReplyDraft,
-    Report,
 )
 from inbox.services.domains import (
     DomainClaimLookupError,
@@ -76,8 +73,8 @@ def test_choice_widgets_do_not_receive_text_input_styles():
         domain_form["setup_mode"]
     )
 
-    assert "class" not in ScheduleForm().fields["is_enabled"].widget.attrs
     assert "class" not in APITokenForm().fields["scopes"].widget.attrs
+    assert "class" not in APITokenForm().fields["all_domains"].widget.attrs
 
 
 @pytest.mark.django_db
@@ -1013,15 +1010,6 @@ def test_authenticated_application_pages_render(
     client.force_login(owner)
     client.session["domain_id"] = str(organization.id)
     client.session.save()
-    Classification.objects.create(
-        domain=organization,
-        message=inbound_message,
-        source=Classification.Source.OWNER,
-        category=Classification.Category.ACTIONABLE,
-        urgency=Classification.Urgency.HIGH,
-        summary="Review this message.",
-        recommended_action="Respond after verifying the request.",
-    )
     Domain.objects.create(
         owner=project.owner,
         hostname="example.org",
@@ -1032,25 +1020,6 @@ def test_authenticated_application_pages_render(
         outbound_status=Domain.OutboundStatus.READY,
         ownership_verified=True,
         claim_expires_at=timezone.now() + timedelta(days=1),
-    )
-    Notification.objects.create(
-        domain=project,
-        conversation=conversation,
-        channel=Notification.Channel.IN_APP,
-        kind="important",
-        dedupe_key="web-test",
-        title="Review required",
-        body="An actionable message arrived.",
-    )
-    Report.objects.create(
-        domain=organization,
-        kind=Report.Kind.DAILY,
-        schedule_key="2026-07-31:daily",
-        period_start=timezone.now() - timedelta(days=1),
-        period_end=timezone.now(),
-        status=Report.Status.READY,
-        title="Daily review",
-        content="One actionable item.",
     )
     AuditEvent.objects.create(
         domain=organization,
@@ -1092,9 +1061,7 @@ def test_authenticated_application_pages_render(
         reverse("conversation_detail", args=[conversation.id]),
         reverse("domains"),
         reverse("domain_create"),
-        reverse("reports"),
-        reverse("notifications"),
-        reverse("schedules_settings"),
+        reverse("retention_settings"),
         reverse("api_tokens"),
         reverse("audit"),
     ]
@@ -1103,9 +1070,11 @@ def test_authenticated_application_pages_render(
         assert response.status_code == 200, url
         assert b"Operational Inbox" in response.content
 
-    notifications = client.get(reverse("notifications"))
-    assert b"create in-app and email notifications" in notifications.content
-    assert b"SES email notifications" not in notifications.content
+    dashboard = client.get(reverse("dashboard"))
+    assert b"New messages" in dashboard.content
+    assert b"Mailboxes" in dashboard.content
+    assert b"Needs attention" not in dashboard.content
+    assert b"Notifications" not in dashboard.content
 
     domains = client.get(reverse("domains"))
     assert b"Direct routing to Operational Inbox" in domains.content
@@ -1119,25 +1088,30 @@ def test_authenticated_application_pages_render(
 
 
 @pytest.mark.django_db
-def test_conversation_state_and_api_token_web_actions(
+def test_conversation_tags_and_all_domain_api_token_web_actions(
     client, owner, organization, project, conversation
 ):
     client.force_login(owner)
     session = client.session
     session["domain_id"] = str(organization.id)
     session.save()
-    state = client.post(
-        reverse("conversation_status", args=[conversation.id]), {"status": "RESOLVED"}
+    tagged = client.post(
+        reverse("conversation_tag", args=[conversation.id]),
+        {"operation": "add", "tag": "customer-request"},
     )
-    assert state.status_code == 302
-    conversation.refresh_from_db()
-    assert conversation.status == "RESOLVED"
+    assert tagged.status_code == 302
+    assert conversation.tags.filter(normalized_name="customer-request").exists()
     create = client.post(
         reverse("api_tokens"),
-        {"name": "Web automation", "scopes": ["read", "write"]},
+        {
+            "name": "Web automation",
+            "scopes": ["read", "write"],
+            "all_domains": "on",
+        },
     )
     assert create.status_code == 302
     token = APIToken.objects.get(name="Web automation")
+    assert token.domain_id is None
     reveal = client.get(reverse("api_tokens"))
     assert reveal.status_code == 200
     assert b"shown again" in reveal.content
@@ -1149,7 +1123,7 @@ def test_conversation_state_and_api_token_web_actions(
 
 
 @pytest.mark.django_db
-def test_conversation_status_autosaves_and_only_notifies_for_real_changes(
+def test_conversation_tags_render_and_only_audit_real_changes(
     client, owner, organization, conversation
 ):
     client.force_login(owner)
@@ -1157,40 +1131,40 @@ def test_conversation_status_autosaves_and_only_notifies_for_real_changes(
     session["domain_id"] = str(organization.id)
     session.save()
     detail_url = reverse("conversation_detail", args=[conversation.id])
-    status_url = reverse("conversation_status", args=[conversation.id])
+    tag_url = reverse("conversation_tag", args=[conversation.id])
 
     detail = client.get(detail_url)
 
     assert detail.status_code == 200
-    assert b'<label for="conversation-status"' in detail.content
-    assert b"Conversation state</label>" in detail.content
-    assert b'onchange="this.form.requestSubmit()"' in detail.content
-    assert b"Update state" not in detail.content
+    assert b'<label for="conversation-tag"' in detail.content
+    assert b"Add a free-form tag" in detail.content
+    assert b"Conversation state" not in detail.content
+    assert b"Start work" not in detail.content
 
-    changed = client.post(status_url, {"status": "RESOLVED"}, follow=True)
+    changed = client.post(
+        tag_url,
+        {"operation": "add", "tag": "Needs Owner", "next": detail_url},
+        follow=True,
+    )
 
     assert changed.status_code == 200
     assert changed.redirect_chain == [(detail_url, 302)]
-    assert b"Conversation status changed to Resolved." in changed.content
-    conversation.refresh_from_db()
-    assert conversation.status == Conversation.Status.RESOLVED
-    assert conversation.resolved_at is not None
-    changed_at = conversation.updated_at
-    resolved_at = conversation.resolved_at
+    assert b"Tag #Needs Owner added." in changed.content
+    assert b"#Needs Owner" in changed.content
     audit_events = AuditEvent.objects.filter(
         domain=organization,
-        event_type="conversation.status_changed",
-        object_id=conversation.id,
+        event_type="conversation.tag_added",
     )
     assert audit_events.count() == 1
 
-    unchanged = client.post(status_url, {"status": "RESOLVED"}, follow=True)
+    unchanged = client.post(
+        tag_url,
+        {"operation": "add", "tag": "needs   owner", "next": detail_url},
+        follow=True,
+    )
 
     assert unchanged.status_code == 200
-    assert b"Conversation status changed" not in unchanged.content
-    conversation.refresh_from_db()
-    assert conversation.updated_at == changed_at
-    assert conversation.resolved_at == resolved_at
+    assert b"Tag #Needs Owner added." not in unchanged.content
     assert audit_events.count() == 1
 
 
@@ -1248,22 +1222,32 @@ def test_complete_inbox_has_filter_preserving_pagination(
 ):
     now = timezone.now()
     for index in range(50):
-        Conversation.objects.create(
+        item = Conversation.objects.create(
             domain=project,
             subject=f"Paged conversation {index:02d}",
             normalized_subject=f"paged conversation {index:02d}",
             first_message_at=now - timedelta(minutes=index + 1),
             last_message_at=now - timedelta(minutes=index + 1),
         )
+        item.tags.create(
+            domain=project,
+            name="agent-review",
+            normalized_name="agent-review",
+        )
+    conversation.tags.create(
+        domain=project,
+        name="agent-review",
+        normalized_name="agent-review",
+    )
     client.force_login(owner)
     session = client.session
     session["domain_id"] = str(organization.id)
     session.save()
-    first = client.get(reverse("inbox"), {"state": "OPEN"})
-    second = client.get(reverse("inbox"), {"state": "OPEN", "page": 2})
+    first = client.get(reverse("inbox"), {"tag": "agent-review"})
+    second = client.get(reverse("inbox"), {"tag": "agent-review", "page": 2})
     assert first.status_code == 200 and len(first.context["conversations"]) == 50
     assert second.status_code == 200 and len(second.context["conversations"]) == 1
-    assert b"state=OPEN&amp;page=2" in first.content
+    assert b"tag=agent-review&amp;page=2" in first.content
 
 
 @pytest.mark.django_db
@@ -1273,8 +1257,6 @@ def test_quarantined_inbox_preview_never_leaks_body(
     inbound_message.is_quarantined = True
     inbound_message.text_body = "DO-NOT-LEAK-QUARANTINED-CONTENT"
     inbound_message.save(update_fields=("is_quarantined", "text_body", "updated_at"))
-    conversation.status = Conversation.Status.QUARANTINED
-    conversation.save(update_fields=("status", "updated_at"))
     client.force_login(owner)
     session = client.session
     session["domain_id"] = str(organization.id)
@@ -1285,7 +1267,8 @@ def test_quarantined_inbox_preview_never_leaks_body(
 
     detail = client.get(reverse("conversation_detail", args=[conversation.id]))
     assert b"This message did not pass the malware scan" in detail.content
-    assert b'<option value="QUARANTINED" selected disabled>Quarantined</option>' in detail.content
+    assert b"Quarantined content" in detail.content
+    assert b"Conversation state" not in detail.content
     assert b"SES virus verdict" not in detail.content
 
 

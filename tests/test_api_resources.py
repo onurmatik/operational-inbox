@@ -7,18 +7,23 @@ import pytest
 from django.utils import timezone
 
 from inbox.models import (
+    APIToken,
     Attachment,
     AuditEvent,
+    Conversation,
     Domain,
     DomainDNSRecord,
     DomainTest,
     DurableJob,
     InboundRoute,
     InboundRoutingTransition,
+    Message,
+    MessageRecipient,
     Notification,
     OutboundMessage,
     ReplyDraft,
     Report,
+    User,
 )
 from inbox.services.drafts import revise_draft
 
@@ -469,12 +474,40 @@ def test_session_api_resource_surface(
     assert conversations.json()["items"][0]["id"] == str(conversation.id)
     detail = client.get(f"{base}/conversations/{conversation.id}")
     assert detail.status_code == 200 and detail.json()["messages"]
-    state = client.post(
-        f"{base}/conversations/{conversation.id}/state",
-        data={"status": "RESOLVED"},
+    added = client.post(
+        f"{base}/conversations/{conversation.id}/tags",
+        data={"tag": "requires-reply"},
         content_type="application/json",
     )
-    assert state.status_code == 200 and state.json()["status"] == "RESOLVED"
+    duplicate = client.post(
+        f"{base}/conversations/{conversation.id}/tags",
+        data={"tag": "#REQUIRES-REPLY"},
+        content_type="application/json",
+    )
+    assert added.status_code == 201 and added.json()["created"] is True
+    assert duplicate.status_code == 200 and duplicate.json()["created"] is False
+    detail_payload = client.get(f"{base}/conversations/{conversation.id}").json()
+    assert detail_payload["tags"] == [{"id": added.json()["id"], "name": "requires-reply"}]
+    assert "status" not in detail_payload
+    archived = client.post(
+        f"{base}/conversations/{conversation.id}/action",
+        data={"action": "archive"},
+        content_type="application/json",
+    )
+    unchanged_archive = client.post(
+        f"{base}/conversations/{conversation.id}/action",
+        data={"action": "archive"},
+        content_type="application/json",
+    )
+    assert archived.status_code == 200
+    assert archived.json()["changed"] is True and archived.json()["folder"] == "archive"
+    assert unchanged_archive.json()["changed"] is False
+    restored = client.post(
+        f"{base}/conversations/{conversation.id}/action",
+        data={"action": "restore"},
+        content_type="application/json",
+    )
+    assert restored.json()["folder"] == "inbox"
     override = client.post(
         f"{base}/messages/{inbound_message.id}/classification",
         data={
@@ -553,8 +586,15 @@ def test_session_api_resource_surface(
     assert token.json()["token"].startswith("oi_")
     assert AuditEvent.objects.filter(
         domain=organization,
-        event_type="conversation.state_changed",
+        event_type="conversation.tag_added",
     ).exists()
+    assert (
+        AuditEvent.objects.filter(
+            domain=organization,
+            event_type="conversation.archived",
+        ).count()
+        == 1
+    )
     assert AuditEvent.objects.filter(
         domain=organization,
         event_type="classification.overridden",
@@ -612,3 +652,182 @@ def test_api_opaque_cursor_and_invalid_cursor_contract(
     invalid = client.get(base, {"cursor": "not-a-valid-cursor"})
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "invalid_cursor"
+
+
+@pytest.mark.django_db
+def test_cross_domain_message_feed_filters_checkpoints_and_token_scope(
+    client,
+    owner,
+    organization,
+    conversation,
+    inbound_message,
+):
+    client.force_login(owner)
+    now = timezone.now()
+    MessageRecipient.objects.create(
+        domain=organization,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="support@example.com",
+        is_routing_recipient=True,
+    )
+    conversation.tags.create(
+        domain=organization,
+        name="customer-request",
+        normalized_name="customer-request",
+    )
+    second_domain = Domain.objects.create(
+        owner=owner,
+        hostname="second-feed.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        ownership_verified=True,
+        inbound_ready=True,
+        claim_expires_at=now + timedelta(days=1),
+    )
+    second_conversation = Conversation.objects.create(
+        domain=second_domain,
+        subject="Billing question",
+        normalized_subject="billing question",
+        first_message_at=now,
+        last_message_at=now,
+        last_inbound_at=now,
+    )
+    second_conversation.tags.create(
+        domain=second_domain,
+        name="billing",
+        normalized_name="billing",
+    )
+    second_message = Message.objects.create(
+        domain=second_domain,
+        conversation=second_conversation,
+        direction=Message.Direction.INBOUND,
+        provider_message_id="feed-second",
+        rfc_message_id="<feed-second@example.net>",
+        from_address="customer@example.net",
+        subject="Billing question",
+        text_body="Please check this invoice.",
+        received_at=now,
+        is_suspicious=True,
+    )
+    MessageRecipient.objects.create(
+        domain=second_domain,
+        message=second_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="billing@second-feed.example",
+        is_routing_recipient=True,
+    )
+
+    other_owner = User.objects.create_user(
+        email="feed-other@example.com",
+        password="Different-Strong-Password-123",
+        email_verified_at=now,
+    )
+    hidden_domain = Domain.objects.create(
+        owner=other_owner,
+        hostname="hidden-feed.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=now + timedelta(days=1),
+    )
+    hidden_conversation = Conversation.objects.create(
+        domain=hidden_domain,
+        subject="Hidden",
+        first_message_at=now,
+        last_message_at=now,
+    )
+    hidden_message = Message.objects.create(
+        domain=hidden_domain,
+        conversation=hidden_conversation,
+        direction=Message.Direction.INBOUND,
+        provider_message_id="feed-hidden",
+        rfc_message_id="<feed-hidden@example.net>",
+        from_address="hidden@example.net",
+        subject="Hidden",
+        received_at=now,
+    )
+
+    feed = client.get("/api/v1/feed/messages")
+    assert feed.status_code == 200
+    payload = feed.json()
+    assert {item["id"] for item in payload["items"]} == {
+        str(inbound_message.id),
+        str(second_message.id),
+    }
+    assert str(hidden_message.id) not in {item["id"] for item in payload["items"]}
+    assert payload["checkpoint"]
+    assert client.get(
+        "/api/v1/feed/messages",
+        {"domain_id": second_domain.id},
+    ).json()["items"][0]["id"] == str(second_message.id)
+    assert client.get(
+        "/api/v1/feed/messages",
+        {"mailbox": "billing@second-feed.example"},
+    ).json()["items"][0]["id"] == str(second_message.id)
+    assert client.get("/api/v1/feed/messages", {"tag": "BILLING"}).json()["items"][0]["id"] == str(
+        second_message.id
+    )
+    assert client.get(
+        "/api/v1/feed/messages",
+        {"new_only": "true", "security": "suspicious"},
+    ).json()["items"][0]["id"] == str(second_message.id)
+
+    later = now + timedelta(seconds=1)
+    later_message = Message.objects.create(
+        domain=second_domain,
+        conversation=second_conversation,
+        direction=Message.Direction.INBOUND,
+        provider_message_id="feed-later",
+        rfc_message_id="<feed-later@example.net>",
+        from_address="customer@example.net",
+        subject="Billing follow-up",
+        received_at=later,
+    )
+    delta = client.get(
+        "/api/v1/feed/messages",
+        {"after": payload["checkpoint"]},
+    )
+    assert delta.status_code == 200
+    assert [item["id"] for item in delta.json()["items"]] == [str(later_message.id)]
+    assert delta.json()["checkpoint"] != payload["checkpoint"]
+
+    client.logout()
+    global_token, global_raw = APIToken.issue(
+        domain=None,
+        owner=owner,
+        name="All-domain agent",
+        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE],
+    )
+    global_feed = client.get(
+        "/api/v1/feed/messages",
+        headers={"Authorization": f"Bearer {global_raw}"},
+    )
+    assert {item["domain"]["id"] for item in global_feed.json()["items"]} == {
+        str(organization.id),
+        str(second_domain.id),
+    }
+    starred = client.post(
+        f"/api/v1/domains/{second_domain.id}/conversations/{second_conversation.id}/action",
+        data={"action": "star"},
+        content_type="application/json",
+        headers={"Authorization": f"Bearer {global_raw}"},
+    )
+    assert starred.status_code == 200
+    assert starred.json()["changed"] is True and starred.json()["starred"] is True
+    agent_event = AuditEvent.objects.get(
+        domain=second_domain,
+        event_type="conversation.starred",
+    )
+    assert agent_event.actor_type == AuditEvent.ActorType.AGENT
+    assert agent_event.metadata["api_token_name"] == global_token.name
+    _, scoped_raw = APIToken.issue(
+        domain=organization,
+        owner=owner,
+        name="One-domain agent",
+        scopes=[APIToken.Scope.READ],
+    )
+    scoped_feed = client.get(
+        "/api/v1/feed/messages",
+        headers={"Authorization": f"Bearer {scoped_raw}"},
+    )
+    assert {item["domain"]["id"] for item in scoped_feed.json()["items"]} == {str(organization.id)}
