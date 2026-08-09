@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 
 import pytest
+from jsonschema import Draft202012Validator, FormatChecker
 
+from inbox.mcp_server import MCP_TOOLS
 from inbox.models import APIToken, AuditEvent, MessageRecipient, OutboundMessage
 
 
@@ -38,7 +40,20 @@ def tool_call(client, raw_token: str, name: str, arguments: dict, *, request_id=
         request_id=request_id,
     )
     assert response.status_code == 200
-    return response.json()["result"]
+    result = response.json()["result"]
+    if not result["isError"]:
+        descriptor = next(tool for tool in MCP_TOOLS if tool["name"] == name)
+        Draft202012Validator(
+            descriptor["outputSchema"],
+            format_checker=FormatChecker(),
+        ).validate(result["structuredContent"])
+    return result
+
+
+def tool_error_payload(result: dict) -> dict:
+    assert result["isError"] is True
+    assert "structuredContent" not in result
+    return json.loads(result["content"][0]["text"])
 
 
 @pytest.mark.django_db
@@ -107,7 +122,8 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
     assert initialized.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
 
     listed = mcp_request(client, read_raw, "tools/list")
-    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    tools = listed.json()["result"]["tools"]
+    names = {tool["name"] for tool in tools}
     assert names == {
         "list_domains",
         "read_message_feed",
@@ -124,11 +140,14 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
         "approve_and_send_reply",
         "resend_outbound",
     }
-    feed_tool = next(
-        tool for tool in listed.json()["result"]["tools"] if tool["name"] == "read_message_feed"
-    )
+    for tool in tools:
+        assert {"readOnlyHint", "destructiveHint", "openWorldHint"} <= set(tool["annotations"])
+        Draft202012Validator.check_schema(tool["outputSchema"])
+
+    feed_tool = next(tool for tool in tools if tool["name"] == "read_message_feed")
     assert "untrusted data" in feed_tool["description"]
     assert feed_tool["annotations"]["readOnlyHint"] is True
+    assert feed_tool["annotations"]["destructiveHint"] is False
     assert feed_tool["securitySchemes"] == [
         {"type": "oauth2", "scopes": ["read", "write", "approve_send"]}
     ]
@@ -158,8 +177,7 @@ def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
             "action": "star",
         },
     )
-    assert denied["isError"] is True
-    assert denied["structuredContent"]["code"] == "insufficient_scope"
+    assert tool_error_payload(denied)["code"] == "insufficient_scope"
 
     _, write_raw = APIToken.issue(
         domain=domain,
@@ -216,8 +234,7 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
         "get_conversation",
         {"domain_id": str(other_domain.id), "conversation_id": str(conversation.id)},
     )
-    assert hidden["isError"] is True
-    assert hidden["structuredContent"]["code"] == "not_found"
+    assert tool_error_payload(hidden)["code"] == "not_found"
 
 
 @pytest.mark.django_db
@@ -263,8 +280,7 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
             "content_hash": stale_hash,
         },
     )
-    assert rejected["isError"] is True
-    assert rejected["structuredContent"]["code"] == "stale_revision"
+    assert tool_error_payload(rejected)["code"] == "stale_revision"
     assert not OutboundMessage.objects.exists()
 
     approved = tool_call(

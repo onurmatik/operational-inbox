@@ -69,6 +69,386 @@ def _object_schema(properties: dict[str, Any], required: list[str] | None = None
 
 UUID_SCHEMA = {"type": "string", "format": "uuid"}
 CURSOR_SCHEMA = {"type": "string", "minLength": 1}
+DATETIME_SCHEMA = {"type": "string", "format": "date-time"}
+EMAIL_SCHEMA = {"type": "string", "format": "email", "maxLength": 320}
+CONTENT_HASH_SCHEMA = {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+PUBLIC_ERROR_SCHEMA = _object_schema(
+    {
+        "code": {"type": "string"},
+        "message": {"type": "string"},
+    },
+    ["code", "message"],
+)
+
+TAG_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "name": {"type": "string", "maxLength": 64},
+    },
+    ["id", "name"],
+)
+
+ROUTING_TRANSITION_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "generation": {"type": "integer", "minimum": 1},
+        "from_mode": {"type": "string", "enum": ["DIRECT_MX", "PROVIDER_FORWARD"]},
+        "to_mode": {"type": "string", "enum": ["DIRECT_MX", "PROVIDER_FORWARD"]},
+        "status": {
+            "type": "string",
+            "enum": [
+                "PREPARING",
+                "WAITING_DNS",
+                "WAITING_TEST",
+                "GRACE",
+                "COMPLETE",
+                "FAILED",
+                "CANCELLED",
+            ],
+        },
+        "dns_verified_at": _nullable(DATETIME_SCHEMA),
+        "cutover_at": _nullable(DATETIME_SCHEMA),
+        "grace_until": _nullable(DATETIME_SCHEMA),
+        "error": _nullable(PUBLIC_ERROR_SCHEMA),
+    },
+    [
+        "id",
+        "generation",
+        "from_mode",
+        "to_mode",
+        "status",
+        "dns_verified_at",
+        "cutover_at",
+        "grace_until",
+        "error",
+    ],
+)
+
+DOMAIN_PROPERTIES: dict[str, Any] = {
+    "id": UUID_SCHEMA,
+    "hostname": {"type": "string", "minLength": 1, "maxLength": 253},
+    "setup_mode": {"type": "string", "enum": ["DIRECT_MX", "PROVIDER_FORWARD"]},
+    "status": {
+        "type": "string",
+        "enum": [
+            "PROVISIONING",
+            "PENDING_DNS",
+            "PENDING_TEST",
+            "READY",
+            "ERROR",
+            "DEGRADED",
+            "DISABLED",
+        ],
+    },
+    "inbound_ready": {"type": "boolean"},
+    "outbound_ready": {"type": "boolean"},
+    "outbound_status": {
+        "type": "string",
+        "enum": ["DISABLED", "PROVISIONING", "PENDING_DNS", "READY", "ERROR", "DEGRADED"],
+    },
+    "pending_setup_mode": _nullable({"type": "string", "enum": ["DIRECT_MX", "PROVIDER_FORWARD"]}),
+    "routing_transition": _nullable(ROUTING_TRANSITION_SCHEMA),
+    "last_checked_at": _nullable(DATETIME_SCHEMA),
+    "error": _nullable(PUBLIC_ERROR_SCHEMA),
+    "outbound_error": _nullable(PUBLIC_ERROR_SCHEMA),
+}
+DOMAIN_REQUIRED = list(DOMAIN_PROPERTIES)
+DOMAIN_SCHEMA = _object_schema(DOMAIN_PROPERTIES, DOMAIN_REQUIRED)
+
+EXISTING_MX_SCHEMA = _object_schema(
+    {
+        "preference": {"type": "integer", "minimum": 0},
+        "exchange": {"type": "string", "minLength": 1},
+    },
+    ["preference", "exchange"],
+)
+
+DNS_RECORD_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "purpose": {
+            "type": "string",
+            "enum": ["OWNERSHIP", "SES_VERIFICATION", "MX", "DKIM", "SPF", "DMARC"],
+        },
+        "type": {"type": "string", "minLength": 1, "maxLength": 10},
+        "name": {"type": "string", "minLength": 1, "maxLength": 253},
+        "value": {"type": "string"},
+        "priority": _nullable({"type": "integer", "minimum": 0}),
+        "required": {"type": "boolean"},
+        "status": {"type": "string", "enum": ["PENDING", "VALID", "INVALID", "MISSING"]},
+        "error": _nullable({"type": "string"}),
+    },
+    ["id", "purpose", "type", "name", "value", "priority", "required", "status", "error"],
+)
+
+DOMAIN_HEALTH_SCHEMA = _object_schema(
+    {
+        **DOMAIN_PROPERTIES,
+        "existing_mx": {"type": "array", "items": EXISTING_MX_SCHEMA},
+        "dns_records": {"type": "array", "items": DNS_RECORD_SCHEMA},
+    },
+    [*DOMAIN_REQUIRED, "existing_mx", "dns_records"],
+)
+
+FEED_CONVERSATION_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "subject": {"type": "string", "maxLength": 998},
+        "folder": {"type": "string", "enum": ["inbox", "archive", "trash"]},
+        "starred": {"type": "boolean"},
+        "tags": {"type": "array", "items": TAG_SCHEMA},
+    },
+    ["id", "subject", "folder", "starred", "tags"],
+)
+
+MESSAGE_FEED_ITEM_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "received_at": DATETIME_SCHEMA,
+        "viewed_at": _nullable(DATETIME_SCHEMA),
+        "subject": {"type": "string", "maxLength": 998},
+        "from_address": EMAIL_SCHEMA,
+        "text_preview": _nullable({"type": "string", "maxLength": 500}),
+        "is_suspicious": {"type": "boolean"},
+        "is_quarantined": {"type": "boolean"},
+        "domain": _object_schema(
+            {
+                "id": UUID_SCHEMA,
+                "hostname": {"type": "string", "minLength": 1, "maxLength": 253},
+            },
+            ["id", "hostname"],
+        ),
+        "mailboxes": {"type": "array", "items": EMAIL_SCHEMA, "uniqueItems": True},
+        "conversation": FEED_CONVERSATION_SCHEMA,
+    },
+    [
+        "id",
+        "received_at",
+        "viewed_at",
+        "subject",
+        "from_address",
+        "text_preview",
+        "is_suspicious",
+        "is_quarantined",
+        "domain",
+        "mailboxes",
+        "conversation",
+    ],
+)
+
+SECURITY_VERDICTS_SCHEMA = _object_schema(
+    {
+        field: {"type": "string", "enum": ["PASS", "FAIL", "GRAY", "UNKNOWN"]}
+        for field in ["spam", "virus", "dkim", "spf", "dmarc"]
+    },
+    ["spam", "virus", "dkim", "spf", "dmarc"],
+)
+
+RECIPIENT_SCHEMA = _object_schema(
+    {
+        "kind": {"type": "string", "enum": ["ENVELOPE", "TO", "CC", "BCC"]},
+        "address": EMAIL_SCHEMA,
+        "routing": {"type": "boolean"},
+    },
+    ["kind", "address", "routing"],
+)
+
+ATTACHMENT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "name": {"type": "string", "maxLength": 255},
+        "content_type": {"type": "string", "maxLength": 255},
+        "size": {"type": "integer", "minimum": 0},
+        "scan_status": {
+            "type": "string",
+            "enum": ["CLEAN", "QUARANTINED", "UNKNOWN", "EXPIRED"],
+        },
+    },
+    ["id", "name", "content_type", "size", "scan_status"],
+)
+
+MESSAGE_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "direction": {"type": "string", "enum": ["INBOUND", "OUTBOUND"]},
+        "subject": {"type": "string", "maxLength": 998},
+        "from_address": EMAIL_SCHEMA,
+        "received_at": DATETIME_SCHEMA,
+        "viewed_at": _nullable(DATETIME_SCHEMA),
+        "is_suspicious": {"type": "boolean"},
+        "is_quarantined": {"type": "boolean"},
+        "security": SECURITY_VERDICTS_SCHEMA,
+        "text_body": _nullable({"type": "string"}),
+        "recipients": {"type": "array", "items": RECIPIENT_SCHEMA},
+        "attachments": {"type": "array", "items": ATTACHMENT_SCHEMA},
+    },
+    [
+        "id",
+        "direction",
+        "subject",
+        "from_address",
+        "received_at",
+        "viewed_at",
+        "is_suspicious",
+        "is_quarantined",
+        "security",
+        "text_body",
+        "recipients",
+        "attachments",
+    ],
+)
+
+CONVERSATION_PROPERTIES: dict[str, Any] = {
+    "id": UUID_SCHEMA,
+    "domain_id": UUID_SCHEMA,
+    "subject": {"type": "string", "maxLength": 998},
+    "folder": {"type": "string", "enum": ["inbox", "archive", "trash"]},
+    "starred": {"type": "boolean"},
+    "tags": {"type": "array", "items": TAG_SCHEMA},
+    "new_message_count": {"type": "integer", "minimum": 0},
+    "has_quarantined": {"type": "boolean"},
+    "last_message_at": DATETIME_SCHEMA,
+}
+CONVERSATION_REQUIRED = list(CONVERSATION_PROPERTIES)
+CONVERSATION_SCHEMA = _object_schema(CONVERSATION_PROPERTIES, CONVERSATION_REQUIRED)
+CONVERSATION_DETAIL_SCHEMA = _object_schema(
+    {**CONVERSATION_PROPERTIES, "messages": {"type": "array", "items": MESSAGE_SCHEMA}},
+    [*CONVERSATION_REQUIRED, "messages"],
+)
+
+OUTBOUND_STATUS_VALUES = [
+    "QUEUED",
+    "SUBMITTING",
+    "ACCEPTED",
+    "DELIVERED",
+    "FAILED",
+    "UNKNOWN",
+    "BOUNCED",
+    "COMPLAINED",
+]
+
+OUTBOUND_REFERENCE_SCHEMA = _object_schema(
+    {
+        "outbound_id": UUID_SCHEMA,
+        "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
+    },
+    ["outbound_id", "status"],
+)
+
+LIST_DOMAINS_OUTPUT_SCHEMA = _object_schema(
+    {"items": {"type": "array", "items": DOMAIN_SCHEMA}}, ["items"]
+)
+MESSAGE_FEED_OUTPUT_SCHEMA = _object_schema(
+    {
+        "items": {"type": "array", "items": MESSAGE_FEED_ITEM_SCHEMA},
+        "next_cursor": _nullable(CURSOR_SCHEMA),
+        "checkpoint": _nullable(CURSOR_SCHEMA),
+        "has_more": {"type": "boolean"},
+    },
+    ["items", "next_cursor", "checkpoint", "has_more"],
+)
+ADD_TAG_OUTPUT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "name": {"type": "string", "maxLength": 64},
+        "created": {"type": "boolean"},
+    },
+    ["id", "name", "created"],
+)
+REMOVE_TAG_OUTPUT_SCHEMA = _object_schema(
+    {
+        "removed": {"type": "boolean", "const": True},
+        "tag": {"type": "string", "maxLength": 64},
+    },
+    ["removed", "tag"],
+)
+CONVERSATION_ACTION_OUTPUT_SCHEMA = _object_schema(
+    {"changed": {"type": "boolean"}, **CONVERSATION_PROPERTIES},
+    ["changed", *CONVERSATION_REQUIRED],
+)
+OUTBOUND_STATUS_OUTPUT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
+        "attempt": {"type": "integer", "minimum": 1},
+        "accepted_at": _nullable(DATETIME_SCHEMA),
+        "delivered_at": _nullable(DATETIME_SCHEMA),
+        "error": _nullable(PUBLIC_ERROR_SCHEMA),
+    },
+    ["id", "status", "attempt", "accepted_at", "delivered_at", "error"],
+)
+AUDIT_EVENT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "actor_type": {"type": "string", "enum": ["OWNER", "SYSTEM", "AGENT", "AWS"]},
+        "event_type": {"type": "string", "maxLength": 96},
+        "object_type": {"type": "string", "maxLength": 64},
+        "object_id": _nullable(UUID_SCHEMA),
+        "request_id": {"type": "string", "maxLength": 64},
+        "metadata": {"type": "object"},
+        "created_at": DATETIME_SCHEMA,
+    },
+    [
+        "id",
+        "actor_type",
+        "event_type",
+        "object_type",
+        "object_id",
+        "request_id",
+        "metadata",
+        "created_at",
+    ],
+)
+AUDIT_EVENTS_OUTPUT_SCHEMA = _object_schema(
+    {
+        "items": {"type": "array", "items": AUDIT_EVENT_SCHEMA},
+        "next_cursor": _nullable(CURSOR_SCHEMA),
+    },
+    ["items", "next_cursor"],
+)
+CREATE_DRAFT_OUTPUT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "revision_id": UUID_SCHEMA,
+        "content_hash": CONTENT_HASH_SCHEMA,
+        "subject": {"type": "string", "maxLength": 998},
+        "body_text": {"type": "string", "maxLength": 20000},
+    },
+    ["id", "revision_id", "content_hash", "subject", "body_text"],
+)
+DRAFT_REVISION_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "number": {"type": "integer", "minimum": 1},
+        "subject": {"type": "string", "maxLength": 998},
+        "body_text": {"type": "string", "maxLength": 20000},
+        "content_hash": CONTENT_HASH_SCHEMA,
+    },
+    ["id", "number", "subject", "body_text", "content_hash"],
+)
+DRAFT_DETAIL_OUTPUT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "conversation_id": UUID_SCHEMA,
+        "is_stale": {"type": "boolean"},
+        "current_revision": DRAFT_REVISION_SCHEMA,
+    },
+    ["id", "conversation_id", "is_stale", "current_revision"],
+)
+REVISE_DRAFT_OUTPUT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "number": {"type": "integer", "minimum": 1},
+        "content_hash": CONTENT_HASH_SCHEMA,
+    },
+    ["id", "number", "content_hash"],
+)
 
 MCP_TOOLS: list[dict[str, Any]] = [
     {
@@ -78,7 +458,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
             "List active domains authorized for the current Operational Inbox connection."
         ),
         "inputSchema": _object_schema({}),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": LIST_DOMAINS_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "read_message_feed",
@@ -104,7 +489,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "security": {"type": "string", "enum": ["suspicious", "quarantined"]},
             }
         ),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": MESSAGE_FEED_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "get_conversation",
@@ -117,7 +507,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
             {"domain_id": UUID_SCHEMA, "conversation_id": UUID_SCHEMA},
             ["domain_id", "conversation_id"],
         ),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": CONVERSATION_DETAIL_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "add_conversation_tag",
@@ -131,6 +526,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id", "conversation_id", "tag"],
         ),
+        "outputSchema": ADD_TAG_OUTPUT_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": False,
@@ -150,6 +546,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id", "conversation_id", "tag_id"],
         ),
+        "outputSchema": REMOVE_TAG_OUTPUT_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -175,6 +572,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id", "conversation_id", "action"],
         ),
+        "outputSchema": CONVERSATION_ACTION_OUTPUT_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -187,7 +585,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "title": "Get domain health",
         "description": "Read the stored inbound, outbound, DNS, and routing health for a domain.",
         "inputSchema": _object_schema({"domain_id": UUID_SCHEMA}, ["domain_id"]),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": DOMAIN_HEALTH_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "get_outbound_status",
@@ -197,7 +600,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
             {"domain_id": UUID_SCHEMA, "outbound_id": UUID_SCHEMA},
             ["domain_id", "outbound_id"],
         ),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": OUTBOUND_STATUS_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "list_audit_events",
@@ -211,7 +619,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id"],
         ),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": AUDIT_EVENTS_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "create_reply_draft",
@@ -229,6 +642,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id", "conversation_id", "subject", "body_text"],
         ),
+        "outputSchema": CREATE_DRAFT_OUTPUT_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": False,
@@ -244,7 +658,12 @@ MCP_TOOLS: list[dict[str, Any]] = [
             {"domain_id": UUID_SCHEMA, "draft_id": UUID_SCHEMA},
             ["domain_id", "draft_id"],
         ),
-        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "outputSchema": DRAFT_DETAIL_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "revise_reply_draft",
@@ -262,6 +681,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             },
             ["domain_id", "draft_id", "subject", "body_text"],
         ),
+        "outputSchema": REVISE_DRAFT_OUTPUT_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -281,13 +701,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 "domain_id": UUID_SCHEMA,
                 "draft_id": UUID_SCHEMA,
                 "revision_id": UUID_SCHEMA,
-                "content_hash": {
-                    "type": "string",
-                    "pattern": "^[a-f0-9]{64}$",
-                },
+                "content_hash": CONTENT_HASH_SCHEMA,
             },
             ["domain_id", "draft_id", "revision_id", "content_hash"],
         ),
+        "outputSchema": OUTBOUND_REFERENCE_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -306,6 +724,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             {"domain_id": UUID_SCHEMA, "outbound_id": UUID_SCHEMA},
             ["domain_id", "outbound_id"],
         ),
+        "outputSchema": OUTBOUND_REFERENCE_SCHEMA,
         "annotations": {
             "readOnlyHint": False,
             "destructiveHint": True,
@@ -531,7 +950,6 @@ def _tool_error(request: HttpRequest, code: str, message: str) -> dict[str, Any]
     }
     return {
         "content": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}],
-        "structuredContent": payload,
         "isError": True,
     }
 

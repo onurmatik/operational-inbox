@@ -26,6 +26,7 @@ dependencies = [
 dev = [
   "django-stubs[compatible-mypy]>=5.2,<6",
   "freezegun>=1.5,<2",
+  "jsonschema>=4.23,<5",
   "moto[s3,ses,sns,sqs]>=5.1,<6",
   "mypy>=1.15,<2",
   "pytest>=8.3,<9",

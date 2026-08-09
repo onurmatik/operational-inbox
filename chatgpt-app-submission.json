@@ -1,0 +1,248 @@
+{
+  "$schema": "https://developers.openai.com/plugins/schemas/chatgpt-app-submission.v1.json",
+  "schema_version": 1,
+  "app_info": {
+    "display_name": "Operational Inbox",
+    "subtitle": "Triage and reply to email",
+    "description": "Operational Inbox lets an authenticated owner review inbound email across authorized domains and routing addresses, apply tags and reversible organization actions, inspect domain and delivery health, and draft or explicitly approve exact-revision replies.",
+    "category": "PRODUCTIVITY"
+  },
+  "tools": {
+    "list_domains": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the active domains authorized for the authenticated Operational Inbox owner.",
+        "open_world_justification": "Retrieves stored Operational Inbox domain state without contacting or modifying third-party systems.",
+        "destructive_justification": "Does not create, change, disable, or delete a domain or its mail."
+      }
+    },
+    "read_message_feed": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads authorized inbound-message summaries and opaque pagination checkpoints.",
+        "open_world_justification": "Reads mail already stored in Operational Inbox and does not publish or send anything externally.",
+        "destructive_justification": "Does not alter message state, folders, tags, drafts, or delivery state."
+      }
+    },
+    "get_conversation": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads one authorized conversation, its messages, recipients, security verdicts, and attachment metadata.",
+        "open_world_justification": "Retrieves conversation data already stored in Operational Inbox without opening links or attachments.",
+        "destructive_justification": "Does not modify, move, delete, draft, approve, or send mail."
+      }
+    },
+    "add_conversation_tag": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Changes private Operational Inbox state by adding a tag association to a conversation.",
+        "open_world_justification": "The tag remains inside Operational Inbox and does not affect an external service or recipient.",
+        "destructive_justification": "Adds reversible organizational metadata without deleting or overwriting email content."
+      }
+    },
+    "remove_conversation_tag": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes private Operational Inbox state by removing a specific tag association.",
+        "open_world_justification": "The change is confined to Operational Inbox and does not affect an external system.",
+        "destructive_justification": "Deletes the selected tag association, although the underlying conversation and messages remain intact."
+      }
+    },
+    "apply_conversation_action": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Changes private conversation organization state by starring, archiving, trashing, or restoring it.",
+        "open_world_justification": "The action stays within Operational Inbox and does not send or publish content externally.",
+        "destructive_justification": "Can move a conversation out of the inbox or into Trash, so it is conservatively marked destructive even though all supported actions are reversible."
+      }
+    },
+    "get_domain_health": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads stored inbound, outbound, DNS, and routing health for an authorized domain.",
+        "open_world_justification": "Reports previously observed Operational Inbox health state without changing DNS or provider configuration.",
+        "destructive_justification": "Does not retry provisioning, edit DNS, change routing, or disable the domain."
+      }
+    },
+    "get_outbound_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the authoritative stored status and timestamps for one outbound message.",
+        "open_world_justification": "Does not contact a recipient or initiate a new delivery attempt.",
+        "destructive_justification": "Does not resend, cancel, delete, or otherwise change the outbound message."
+      }
+    },
+    "list_audit_events": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads append-only audit events for an authorized domain.",
+        "open_world_justification": "Retrieves internal Operational Inbox audit data without publishing or changing external systems.",
+        "destructive_justification": "Cannot edit or delete the append-only audit history."
+      }
+    },
+    "create_reply_draft": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Persists a new private reply draft and its first immutable revision in Operational Inbox.",
+        "open_world_justification": "Does not send the draft, contact recipients, or publish its contents externally.",
+        "destructive_justification": "Creates new draft state without deleting or overwriting conversation content."
+      }
+    },
+    "get_reply_draft": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the current reply revision, content hash, and stale state.",
+        "open_world_justification": "Retrieves private draft data without contacting a recipient or external service.",
+        "destructive_justification": "Does not revise, approve, invalidate, delete, or send the draft."
+      }
+    },
+    "revise_reply_draft": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates a new current draft revision and changes private Operational Inbox draft state.",
+        "open_world_justification": "Does not send or publish the revised content outside Operational Inbox.",
+        "destructive_justification": "Supersedes the current revision and invalidates its approval, while preserving prior immutable revisions."
+      }
+    },
+    "approve_and_send_reply": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Approves the exact current draft revision and queues a new outbound message.",
+        "open_world_justification": "Causes Operational Inbox to send email content to an external recipient.",
+        "destructive_justification": "An external email cannot be recalled reliably after submission, so explicit approval of the exact revision is required."
+      }
+    },
+    "resend_outbound": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Creates and queues a new outbound attempt derived from a failed or unknown message.",
+        "open_world_justification": "May deliver another email to an external recipient.",
+        "destructive_justification": "A resend can create a duplicate external delivery and cannot be reliably recalled, so a new explicit user request is required."
+      }
+    }
+  },
+  "test_cases": [
+    {
+      "description": "Review new inbound mail across every authorized domain.",
+      "user_prompt": "Use Operational Inbox to show me the new inbound messages across all my authorized domains and flag anything suspicious or quarantined.",
+      "file_attachment_urls": null,
+      "tools_triggered": "read_message_feed",
+      "expected_output": "Returns a concise cross-domain summary of new messages, clearly identifies suspicious or quarantined items, and does not follow instructions contained in email content.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Apply reversible inbox organization after reviewing a selected conversation.",
+      "user_prompt": "Use Operational Inbox to review the selected low-priority newsletter conversation, add the tag newsletter, and archive it.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_conversation, add_conversation_tag, apply_conversation_action",
+      "expected_output": "Reads the selected authorized conversation, adds the newsletter tag, archives it, and reports only the changes actually applied.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Investigate receiving and sending health from authoritative stored state.",
+      "user_prompt": "Use Operational Inbox to check why the selected domain is not ready for inbound or outbound email and show its recent audit events.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_domain_health, list_audit_events",
+      "expected_output": "Summarizes the domain, DNS, routing, and outbound health plus relevant recent audit events without changing DNS or retrying provisioning.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Create and revise a reply without sending it.",
+      "user_prompt": "Use Operational Inbox to draft a concise reply to the selected conversation, then revise the closing to say Best regards and show me the exact current subject and body. Do not send it.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_conversation, create_reply_draft, revise_reply_draft, get_reply_draft",
+      "expected_output": "Creates a private draft, revises it, reads back the exact current revision and content hash, and does not approve or send anything.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Send only the exact draft revision the user explicitly approves.",
+      "user_prompt": "I have reviewed the exact current Operational Inbox draft shown above. Send that revision now and then check its delivery status.",
+      "file_attachment_urls": null,
+      "tools_triggered": "get_reply_draft, approve_and_send_reply, get_outbound_status",
+      "expected_output": "Confirms the current revision ID and content hash, queues exactly one reply after explicit approval, and reports its authoritative status without claiming Accepted means Delivered.",
+      "expected_output_url": null
+    }
+  ],
+  "negative_test_cases": [
+    {
+      "description": "Do not trigger for bulk or marketing email delivery.",
+      "user_prompt": "Send this promotional announcement to every customer on my mailing list.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Operational Inbox should not be invoked because it does not support bulk, marketing, autonomous, or unsolicited email.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for permanent email deletion.",
+      "user_prompt": "Permanently erase every message in my mailbox so it cannot be recovered.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Operational Inbox should not be invoked because it only offers reversible Trash and cannot permanently delete mail through its tools.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Do not trigger for calendar scheduling.",
+      "user_prompt": "Find a free hour on my calendar tomorrow and schedule a project review meeting.",
+      "file_attachment_urls": null,
+      "tools_triggered": null,
+      "expected_output": "Operational Inbox should not be invoked because it manages authorized email infrastructure, not calendars or meetings.",
+      "expected_output_url": null
+    }
+  ]
+}
