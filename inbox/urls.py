@@ -27,6 +27,11 @@ urlpatterns = [
         name="conversation_status",
     ),
     path(
+        "app/conversations/<uuid:conversation_id>/action/",
+        views.conversation_action,
+        name="conversation_action",
+    ),
+    path(
         "app/conversations/<uuid:conversation_id>/draft/",
         views.draft_generate,
         name="draft_generate",

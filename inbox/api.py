@@ -986,7 +986,11 @@ def conversations_state(
     conversation.resolved_at = (
         timezone.now() if payload.status == Conversation.Status.RESOLVED else None
     )
-    conversation.save(update_fields=("status", "resolved_at", "updated_at"))
+    update_fields = ["status", "resolved_at", "updated_at"]
+    if payload.status == Conversation.Status.RESOLVED:
+        conversation.work_started_at = None
+        update_fields.append("work_started_at")
+    conversation.save(update_fields=update_fields)
     record_api_audit(
         request,
         domain,

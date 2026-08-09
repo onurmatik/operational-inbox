@@ -68,6 +68,18 @@
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-[2px] border border-line-strong bg-surface px-4 text-sm font-semibold text-ink transition-colors duration-150 hover:border-forest hover:text-forest disabled:cursor-not-allowed disabled:opacity-50;
   }
 
+  .oi-row-action {
+    @apply inline-flex min-h-11 items-center justify-center border border-line bg-white px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-forest transition-colors hover:border-forest hover:bg-paper sm:min-h-8;
+  }
+
+  .oi-row-action-danger {
+    @apply inline-flex min-h-11 items-center justify-center border border-coral-strong/30 bg-white px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-coral-strong transition-colors hover:border-coral-strong hover:bg-coral-soft sm:min-h-8;
+  }
+
+  .oi-row-action-static {
+    @apply inline-flex min-h-11 items-center justify-center border border-line bg-paper px-2 font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-muted sm:min-h-8;
+  }
+
   .oi-input {
     @apply min-h-10 w-full rounded-[2px] border border-line bg-white px-3 text-sm text-ink placeholder:text-muted/70 hover:border-line-strong focus:border-forest focus:outline-none;
   }

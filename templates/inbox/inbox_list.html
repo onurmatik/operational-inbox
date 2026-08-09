@@ -1,25 +1,151 @@
 {% extends "app_base.html" %}
-{% block title %}Inbox · Operational Inbox{% endblock %}
+{% block title %}{{ folder_label }} · Operational Inbox{% endblock %}
 {% block content %}
-  <div class="border-b border-line pb-6"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Complete record</p><h1 class="mt-1 font-heading text-3xl font-semibold">Inbox</h1><p class="mt-1 text-sm text-muted">Classification highlights messages; it never removes them from this list.</p></div>
-  <form method="get" class="mt-5 grid gap-3 border border-line bg-white p-4 md:grid-cols-5">
-    <div class="md:col-span-2"><label for="q" class="oi-label text-xs">Search</label><input id="q" name="q" value="{{ filters.q }}" class="oi-input" placeholder="Subject, sender, or body"></div>
-    <div><label for="state" class="oi-label text-xs">State</label><select id="state" name="state" class="oi-input"><option value="">All states</option>{% for value,label in conversation_states %}<option value="{{ value }}" {% if filters.state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-    <div><label for="classification" class="oi-label text-xs">Classification</label><select id="classification" name="classification" class="oi-input"><option value="">All classifications</option>{% for value,label in classification_categories %}<option value="{{ value }}" {% if filters.classification == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
-    <div><label for="security" class="oi-label text-xs">Security</label><div class="flex gap-2"><select id="security" name="security" class="oi-input"><option value="">All verdicts</option><option value="suspicious" {% if filters.security == 'suspicious' %}selected{% endif %}>Suspicious</option><option value="quarantined" {% if filters.security == 'quarantined' %}selected{% endif %}>Quarantined</option></select><button class="oi-button-primary">Apply</button></div></div>
-  </form>
-  <div class="mt-5 oi-panel divide-y divide-line">
-    {% for conversation in conversations %}<a href="{% url 'conversation_detail' conversation.id %}" class="grid gap-3 p-4 hover:bg-paper/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"><div class="min-w-0"><div class="flex flex-wrap items-center gap-2"><span class="font-semibold">{{ conversation.subject|default:"(no subject)" }}</span>{% if conversation.status == 'QUARANTINED' %}<span class="oi-status oi-status-danger">Quarantined</span>{% elif conversation.status == 'WAITING_EXTERNAL' %}<span class="oi-status oi-status-info">Waiting external</span>{% elif conversation.status == 'RESOLVED' %}<span class="oi-status oi-status-ready">Resolved</span>{% else %}<span class="oi-status oi-status-pending">Open</span>{% endif %}</div>{% with preview=conversation.messages.last %}<p class="mt-1 truncate text-sm text-muted">{{ preview.from_address }} · {% if preview.is_quarantined %}Content locked by the malware quarantine.{% else %}{{ preview.text_body|truncatechars:160 }}{% endif %}</p>{% endwith %}<p class="mt-2 font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ conversation.message_count }} message{{ conversation.message_count|pluralize }}</p></div><time class="font-mono text-xs text-muted">{{ conversation.last_message_at|date:"Y-m-d H:i" }} UTC</time></a>{% empty %}<div class="p-12 text-center"><p class="font-semibold">No conversations match these filters</p><p class="mt-1 text-sm text-muted">Clear filters to return to the complete inbox.</p><a href="{% url 'inbox' %}" class="oi-button-secondary mt-4">Clear filters</a></div>{% endfor %}
+  <div class="border-b border-line pb-6">
+    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">{{ domain.hostname }}</p>
+    <div class="mt-1 flex flex-wrap items-end justify-between gap-3">
+      <div>
+        <h1 class="font-heading text-3xl font-semibold">{{ folder_label }}</h1>
+        {% if filters.recipient %}
+          <p class="mt-1 text-sm text-muted">Messages routed to <span class="font-semibold text-ink">{{ filters.recipient }}</span>.</p>
+        {% elif folder == "inbox" %}
+          <p class="mt-1 text-sm text-muted">New messages stay prominent until they are opened or work starts.</p>
+        {% elif folder == "trash" %}
+          <p class="mt-1 text-sm text-muted">Trashed conversations remain recoverable.</p>
+        {% else %}
+          <p class="mt-1 text-sm text-muted">{{ folder_label }} conversations for this domain.</p>
+        {% endif %}
+      </div>
+      {% if has_active_filters %}<a href="{{ clear_filters_url }}" class="text-sm font-semibold text-forest underline decoration-line underline-offset-4 hover:decoration-forest">Clear filters</a>{% endif %}
+    </div>
   </div>
+
+  <form method="get" class="mt-5 grid gap-3 border border-line bg-white p-4 md:grid-cols-5" data-inbox-filters>
+    <input type="hidden" name="domain" value="{{ domain.id }}">
+    {% if folder != "inbox" %}<input type="hidden" name="folder" value="{{ folder }}">{% endif %}
+    {% if filters.recipient %}<input type="hidden" name="recipient" value="{{ filters.recipient }}">{% endif %}
+    <div class="md:col-span-2">
+      <label for="q" class="oi-label text-xs">Search</label>
+      <div class="flex gap-2">
+        <input id="q" name="q" value="{{ filters.q }}" class="oi-input" placeholder="Subject, sender, or body">
+        <button class="oi-button-primary shrink-0">Search</button>
+      </div>
+    </div>
+    <div>
+      <label for="state" class="oi-label text-xs">State</label>
+      <select id="state" name="state" class="oi-input" data-auto-submit>
+        <option value="">All states</option>
+        {% for value,label in conversation_states %}<option value="{{ value }}" {% if filters.state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="classification" class="oi-label text-xs">Classification</label>
+      <select id="classification" name="classification" class="oi-input" data-auto-submit>
+        <option value="">All classifications</option>
+        {% for value,label in classification_categories %}<option value="{{ value }}" {% if filters.classification == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="security" class="oi-label text-xs">Security</label>
+      <select id="security" name="security" class="oi-input" data-auto-submit>
+        <option value="">All verdicts</option>
+        <option value="suspicious" {% if filters.security == "suspicious" %}selected{% endif %}>Suspicious</option>
+        <option value="quarantined" {% if filters.security == "quarantined" %}selected{% endif %}>Quarantined</option>
+      </select>
+    </div>
+  </form>
+
+  <div class="mt-5 oi-panel divide-y divide-line">
+    {% for conversation in conversations %}
+      <article class="grid gap-4 border-l-4 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start {% if conversation.new_message_count %}border-l-forest bg-paper/30{% else %}border-l-transparent{% endif %}">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            {% if conversation.new_message_count %}
+              <span class="oi-status oi-status-ready" aria-label="{{ conversation.new_message_count }} new message{{ conversation.new_message_count|pluralize }}">{{ conversation.new_message_count }} new</span>
+            {% endif %}
+            {% for mailbox in conversation.routing_addresses %}
+              <span class="max-w-full truncate border border-line bg-white px-1.5 py-0.5 font-mono text-[10px] text-muted" title="{{ mailbox.address }}">{{ mailbox.address }}</span>
+            {% empty %}
+              <span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">No routing address</span>
+            {% endfor %}
+          </div>
+          <a href="{% url 'conversation_detail' conversation.id %}" class="mt-2 block rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forest">
+            <span class="block truncate {% if conversation.new_message_count %}font-bold text-ink{% else %}font-semibold{% endif %}">{{ conversation.subject|default:"(no subject)" }}</span>
+            <span class="mt-1 block truncate text-sm {% if conversation.new_message_count %}font-medium text-ink{% else %}text-muted{% endif %}">{{ conversation.preview_from_address }} · {% if conversation.preview_is_quarantined %}Content locked by the malware quarantine.{% else %}{{ conversation.preview_text_body|truncatechars:160 }}{% endif %}</span>
+          </a>
+          <div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+            <form method="post" action="{% url 'conversation_action' conversation.id %}">
+              {% csrf_token %}
+              <input type="hidden" name="next" value="{{ request.get_full_path }}">
+              <input type="hidden" name="action" value="{% if conversation.starred_at %}unstar{% else %}star{% endif %}">
+              <button class="oi-row-action">{% if conversation.starred_at %}Unstar{% else %}Star{% endif %}</button>
+            </form>
+            {% if conversation.archived_at or conversation.trashed_at %}
+              <form method="post" action="{% url 'conversation_action' conversation.id %}">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <input type="hidden" name="action" value="restore">
+                <button class="oi-row-action">Restore</button>
+              </form>
+              {% if not conversation.trashed_at %}
+                <form method="post" action="{% url 'conversation_action' conversation.id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <input type="hidden" name="action" value="trash">
+                  <button class="oi-row-action-danger">Trash</button>
+                </form>
+              {% endif %}
+            {% else %}
+              {% if conversation.work_started_at %}
+                <span class="oi-row-action-static">Started</span>
+              {% elif conversation.status != "QUARANTINED" %}
+                <form method="post" action="{% url 'conversation_action' conversation.id %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                  <input type="hidden" name="action" value="start">
+                  <button class="oi-row-action">Start work</button>
+                </form>
+              {% endif %}
+              <form method="post" action="{% url 'conversation_action' conversation.id %}">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <input type="hidden" name="action" value="archive">
+                <button class="oi-row-action">Archive</button>
+              </form>
+              <form method="post" action="{% url 'conversation_action' conversation.id %}">
+                {% csrf_token %}
+                <input type="hidden" name="next" value="{{ request.get_full_path }}">
+                <input type="hidden" name="action" value="trash">
+                <button class="oi-row-action-danger">Trash</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>
+        <div class="flex items-center justify-between gap-3 sm:block sm:text-right">
+          <div>
+            {% if conversation.status == "QUARANTINED" %}<span class="oi-status oi-status-danger">Quarantined</span>
+            {% elif conversation.status == "WAITING_EXTERNAL" %}<span class="oi-status oi-status-info">Waiting external</span>
+            {% elif conversation.status == "RESOLVED" %}<span class="oi-status oi-status-ready">Resolved</span>
+            {% else %}<span class="oi-status oi-status-pending">Open</span>{% endif %}
+          </div>
+          <time class="font-mono text-xs text-muted sm:mt-3 sm:block" datetime="{{ conversation.last_message_at|date:'c' }}">{{ conversation.last_message_at|date:"Y-m-d H:i" }} UTC</time>
+          <p class="mt-2 hidden font-mono text-[10px] uppercase tracking-[0.08em] text-muted sm:block">{{ conversation.message_count }} message{{ conversation.message_count|pluralize }}</p>
+        </div>
+      </article>
+    {% empty %}
+      <div class="p-12 text-center">
+        <p class="font-semibold">No conversations found in {{ folder_label|lower }}</p>
+        {% if has_active_filters %}<p class="mt-1 text-sm text-muted">Clear filters to see the complete folder.</p><a href="{{ clear_filters_url }}" class="oi-button-secondary mt-4">Clear filters</a>
+        {% else %}<p class="mt-1 text-sm text-muted">Conversations will appear here when they match this folder.</p>{% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
   {% if page_obj.paginator.num_pages > 1 %}
     <nav class="mt-5 flex items-center justify-between border border-line bg-white p-3 text-sm" aria-label="Inbox pages">
-      <div>
-        {% if page_obj.has_previous %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}
-      </div>
+      <div>{% if page_obj.has_previous %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.previous_page_number }}">Previous</a>{% endif %}</div>
       <span class="font-mono text-xs text-muted">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
-      <div>
-        {% if page_obj.has_next %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% endif %}
-      </div>
+      <div>{% if page_obj.has_next %}<a class="oi-button-secondary min-h-8" href="?{% if pagination_query %}{{ pagination_query }}&amp;{% endif %}page={{ page_obj.next_page_number }}">Next</a>{% endif %}</div>
     </nav>
   {% endif %}
 {% endblock %}

@@ -110,6 +110,17 @@ def raw_email_to(
     return message.as_bytes()
 
 
+def raw_follow_up(address: str) -> bytes:
+    message = EmailMessage()
+    message["From"] = "Sender <sender@example.net>"
+    message["To"] = address
+    message["Subject"] = "Re: Hello"
+    message["Message-ID"] = "<follow-up@example.net>"
+    message["In-Reply-To"] = "<new@example.net>"
+    message.set_content("Following up with new information.")
+    return message.as_bytes()
+
+
 def provider_forward_challenge(project, *, alias: str) -> tuple[Domain, InboundRoute, DomainTest]:
     domain = create_route(project, project, alias)
     domain.inbound_ready = False
@@ -140,6 +151,62 @@ def test_duplicate_sns_and_ses_messages_are_idempotent(organization, project):
     # Different SNS IDs can redeliver the same SES message without creating a duplicate.
     assert process_sqs_body(sns_body([address], sns_id="sns-2"), s3_client=s3)
     assert Message.objects.filter(domain=project).count() == 1
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("removed_field", ["archived_at", "trashed_at"])
+@override_settings(
+    AWS_INGRESS_BUCKET=BUCKET,
+    AWS_INBOUND_TOPIC_ARN=INBOUND_TOPIC,
+    AWS_DELIVERY_TOPIC_ARN=DELIVERY_TOPIC,
+)
+def test_new_inbound_restores_removed_conversation_and_preserves_star(
+    organization,
+    project,
+    removed_field,
+):
+    address = f"route-{removed_field}@inbound.example"
+    create_route(organization, project, address)
+    process_sqs_body(sns_body([address]), s3_client=FakeS3(raw_email()))
+    conversation = Message.objects.get().conversation
+    now = timezone.now()
+    conversation.status = conversation.Status.RESOLVED
+    conversation.resolved_at = now
+    conversation.starred_at = now
+    conversation.work_started_at = now
+    setattr(conversation, removed_field, now)
+    conversation.save(
+        update_fields=(
+            "status",
+            "resolved_at",
+            "starred_at",
+            "work_started_at",
+            removed_field,
+            "updated_at",
+        )
+    )
+    Message.objects.filter(conversation=conversation).update(viewed_at=now)
+
+    process_sqs_body(
+        sns_body([address], sns_id="sns-follow-up", ses_id="ses-follow-up"),
+        s3_client=FakeS3(raw_follow_up(address)),
+    )
+
+    conversation.refresh_from_db()
+    assert conversation.status == conversation.Status.OPEN
+    assert conversation.resolved_at is None
+    assert conversation.archived_at is None
+    assert conversation.trashed_at is None
+    assert conversation.starred_at == now
+    assert conversation.work_started_at == now
+    assert (
+        Message.objects.filter(
+            conversation=conversation,
+            direction=Message.Direction.INBOUND,
+            viewed_at__isnull=True,
+        ).count()
+        == 1
+    )
 
 
 @pytest.mark.django_db

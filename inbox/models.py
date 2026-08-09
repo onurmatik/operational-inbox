@@ -532,6 +532,10 @@ class Conversation(DomainScopedModel):
     last_inbound_at = models.DateTimeField(null=True, blank=True)
     last_outbound_at = models.DateTimeField(null=True, blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    starred_at = models.DateTimeField(null=True, blank=True)
+    work_started_at = models.DateTimeField(null=True, blank=True)
+    archived_at = models.DateTimeField(null=True, blank=True)
+    trashed_at = models.DateTimeField(null=True, blank=True)
     snoozed_until = models.DateTimeField(null=True, blank=True)
     merge_suggestion = models.ForeignKey(
         "self",
@@ -543,7 +547,13 @@ class Conversation(DomainScopedModel):
 
     class Meta:
         ordering = ("-last_message_at",)
-        indexes = [models.Index(fields=("domain", "status", "-last_message_at"))]
+        indexes = [
+            models.Index(fields=("domain", "status", "-last_message_at")),
+            models.Index(
+                fields=("domain", "trashed_at", "archived_at", "-last_message_at"),
+                name="inbox_conve_domain__3932b5_idx",
+            ),
+        ]
 
 
 class Message(DomainScopedModel):
@@ -570,6 +580,7 @@ class Message(DomainScopedModel):
     html_body = models.TextField(blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     received_at = models.DateTimeField(db_index=True)
+    viewed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     spam_verdict = models.CharField(max_length=10, choices=Verdict.choices, default=Verdict.UNKNOWN)
     virus_verdict = models.CharField(
         max_length=10, choices=Verdict.choices, default=Verdict.UNKNOWN
@@ -596,7 +607,15 @@ class Message(DomainScopedModel):
         indexes = [
             models.Index(fields=("domain", "-received_at")),
             models.Index(fields=("conversation", "direction", "-received_at")),
+            models.Index(
+                fields=("domain", "direction", "viewed_at"),
+                name="inbox_messa_domain__8dfcf6_idx",
+            ),
         ]
+
+    @property
+    def is_new(self) -> bool:
+        return self.direction == self.Direction.INBOUND and self.viewed_at is None
 
     def clean(self) -> None:
         super().clean()

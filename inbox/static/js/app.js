@@ -361,6 +361,11 @@
 
   document.addEventListener("DOMContentLoaded", initDomainCreate);
 
+  document.addEventListener("change", (event) => {
+    const field = event.target.closest("[data-auto-submit]");
+    if (field?.form) field.form.requestSubmit();
+  });
+
   document.addEventListener("click", (event) => {
     const trigger = event.target.closest("[data-dismiss]");
     if (trigger) document.querySelector(trigger.dataset.dismiss)?.remove();

@@ -20,8 +20,9 @@ from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, Q
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.db.models import Count, IntegerField, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
@@ -56,6 +57,7 @@ from inbox.models import (
     InboundRoute,
     InboundRoutingTransition,
     Message,
+    MessageRecipient,
     Notification,
     OutboundMessage,
     ReplyDraft,
@@ -79,6 +81,7 @@ from inbox.services.billing import (
     price_summary,
     process_event,
 )
+from inbox.services.conversations import apply_conversation_action, mark_conversation_viewed
 from inbox.services.domains import (
     DomainClaimConflict,
     DomainClaimLookupError,
@@ -750,10 +753,80 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def inbox_list(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
-    conversations = Conversation.objects.filter(domain=domain).annotate(
-        message_count=Count("messages")
+    requested_domain = request.GET.get("domain", "").strip()
+    if requested_domain:
+        domain = get_owned_domain(request.user, requested_domain)
+        if request.session.get("domain_id") != str(domain.id):
+            request.session["domain_id"] = str(domain.id)
+    else:
+        domain = current_domain(request)
+
+    folders = {
+        "inbox": "Inbox",
+        "starred": "Starred",
+        "archive": "Archive",
+        "trash": "Trash",
+    }
+    folder = request.GET.get("folder", "inbox")
+    if folder not in folders:
+        folder = "inbox"
+
+    message_totals = (
+        Message.objects.filter(conversation=OuterRef("pk"))
+        .order_by()
+        .values("conversation")
+        .annotate(total=Count("id"))
+        .values("total")[:1]
     )
+    new_message_totals = (
+        Message.objects.filter(
+            conversation=OuterRef("pk"),
+            direction=Message.Direction.INBOUND,
+            viewed_at__isnull=True,
+        )
+        .order_by()
+        .values("conversation")
+        .annotate(total=Count("id"))
+        .values("total")[:1]
+    )
+    latest_message = Message.objects.filter(conversation=OuterRef("pk")).order_by(
+        "-received_at", "-created_at"
+    )
+    conversations = Conversation.objects.filter(domain=domain).annotate(
+        message_count=Coalesce(
+            Subquery(message_totals, output_field=IntegerField()),
+            Value(0),
+        ),
+        new_message_count=Coalesce(
+            Subquery(new_message_totals, output_field=IntegerField()),
+            Value(0),
+        ),
+        preview_from_address=Subquery(latest_message.values("from_address")[:1]),
+        preview_text_body=Subquery(latest_message.values("text_body")[:1]),
+        preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
+    )
+    if folder == "inbox":
+        conversations = conversations.filter(archived_at__isnull=True, trashed_at__isnull=True)
+    elif folder == "starred":
+        conversations = conversations.filter(starred_at__isnull=False, trashed_at__isnull=True)
+    elif folder == "archive":
+        conversations = conversations.filter(archived_at__isnull=False, trashed_at__isnull=True)
+    else:
+        conversations = conversations.filter(trashed_at__isnull=False)
+
+    recipient = request.GET.get("recipient", "").strip().casefold()
+    if recipient:
+        if not MessageRecipient.objects.filter(
+            domain=domain,
+            is_routing_recipient=True,
+            address__iexact=recipient,
+        ).exists():
+            raise Http404
+        conversations = conversations.filter(
+            messages__direction=Message.Direction.INBOUND,
+            messages__recipients__is_routing_recipient=True,
+            messages__recipients__address__iexact=recipient,
+        ).distinct()
     query = request.GET.get("q", "").strip()
     if query:
         conversations = conversations.filter(
@@ -778,14 +851,44 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
     ordered_conversations = conversations.order_by("-last_message_at")
     paginator = Paginator(ordered_conversations, 50)
     page = paginator.get_page(request.GET.get("page"))
+    conversation_ids = [conversation.id for conversation in page.object_list]
+    routing_addresses: dict[uuid.UUID, list[dict[str, str]]] = {}
+    if conversation_ids:
+        recipient_rows = (
+            MessageRecipient.objects.filter(
+                domain=domain,
+                message__conversation_id__in=conversation_ids,
+                message__direction=Message.Direction.INBOUND,
+                is_routing_recipient=True,
+            )
+            .values("message__conversation_id", "address")
+            .order_by("message__conversation_id", "address")
+            .distinct()
+        )
+        for row in recipient_rows:
+            address = row["address"]
+            routing_addresses.setdefault(row["message__conversation_id"], []).append(
+                {
+                    "address": address,
+                    "local_part": address.rsplit("@", 1)[0],
+                }
+            )
+    for conversation in page.object_list:
+        conversation.routing_addresses = routing_addresses.get(conversation.id, [])
+
     pagination_params = request.GET.copy()
     pagination_params.pop("page", None)
+    clear_params = {"domain": str(domain.id)}
+    if folder != "inbox":
+        clear_params["folder"] = folder
     return render(
         request,
         "inbox/inbox_list.html",
         {
             "active_nav": "inbox",
             "domain": domain,
+            "folder": folder,
+            "folder_label": folders[folder],
             "conversations": page.object_list,
             "page_obj": page,
             "pagination_query": pagination_params.urlencode(),
@@ -794,7 +897,10 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
                 "state": state,
                 "classification": classification,
                 "security": security,
+                "recipient": recipient,
             },
+            "has_active_filters": any((query, state, classification, security, recipient)),
+            "clear_filters_url": f"{reverse('inbox')}?{urlencode(clear_params)}",
             "conversation_states": Conversation.Status.choices,
             "classification_categories": Classification.Category.choices,
         },
@@ -804,11 +910,21 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
-    conversation = domain_get_or_404(
-        Conversation.objects,
-        domain=domain,
-        id=conversation_id,
-    )
+    with transaction.atomic():
+        conversation = domain_get_or_404(
+            Conversation.objects.select_for_update(),
+            domain=domain,
+            id=conversation_id,
+        )
+        viewed_messages = mark_conversation_viewed(conversation)
+        if viewed_messages:
+            _audit(
+                domain,
+                request,
+                "conversation.viewed",
+                conversation,
+                {"messages_viewed": viewed_messages},
+            )
     draft = (
         conversation.reply_drafts.select_related("current_revision").order_by("-created_at").first()
     )
@@ -852,13 +968,76 @@ def conversation_status(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
         conversation.resolved_at = (
             timezone.now() if status == Conversation.Status.RESOLVED else None
         )
-        conversation.save(update_fields=("status", "resolved_at", "updated_at"))
+        update_fields = ["status", "resolved_at", "updated_at"]
+        if status == Conversation.Status.RESOLVED:
+            conversation.work_started_at = None
+            update_fields.append("work_started_at")
+        conversation.save(update_fields=update_fields)
         _audit(domain, request, "conversation.status_changed", conversation, {"status": status})
         messages.success(
             request,
             f"Conversation status changed to {conversation.get_status_display()}.",
         )
     return redirect("conversation_detail", conversation_id=conversation.id)
+
+
+@verified_required
+@require_POST
+def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
+    domain = current_domain(request)
+    next_url = _safe_next(request, request.POST.get("next") or reverse("inbox"))
+    if denied := _domain_write_required(request, domain):
+        return denied
+    action = request.POST.get("action", "")
+    event_types = {
+        "star": "conversation.starred",
+        "unstar": "conversation.unstarred",
+        "start": "conversation.work_started",
+        "archive": "conversation.archived",
+        "trash": "conversation.trashed",
+        "restore": "conversation.restored",
+    }
+    feedback = {
+        "star": "Conversation starred.",
+        "unstar": "Conversation unstarred.",
+        "start": "Work started.",
+        "archive": "Conversation moved to Archive.",
+        "trash": "Conversation moved to Trash.",
+        "restore": "Conversation restored to Inbox.",
+    }
+    try:
+        with transaction.atomic():
+            conversation = domain_get_or_404(
+                Conversation.objects.select_for_update(),
+                domain=domain,
+                id=conversation_id,
+            )
+            result = apply_conversation_action(conversation, action)
+            if result.state_changed:
+                _audit(
+                    domain,
+                    request,
+                    event_types[action],
+                    conversation,
+                    {"action": action, "messages_viewed": result.viewed_messages},
+                )
+            elif result.viewed_messages:
+                _audit(
+                    domain,
+                    request,
+                    "conversation.viewed",
+                    conversation,
+                    {"messages_viewed": result.viewed_messages, "source": "start"},
+                )
+    except (KeyError, ValidationError) as exc:
+        error = (
+            exc.messages[0] if isinstance(exc, ValidationError) else "Select a supported action."
+        )
+        messages.error(request, error)
+        return redirect(next_url)
+    if result.changed:
+        messages.success(request, feedback[action])
+    return redirect(next_url)
 
 
 @verified_required
