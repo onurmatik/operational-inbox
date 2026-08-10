@@ -4,10 +4,10 @@ This is the source-of-truth checklist for submitting Operational Inbox to the pu
 Plugin Directory. It intentionally excludes credentials, reviewer passwords, and domain
 verification tokens.
 
-Status as of August 9, 2026: the first review scope is frozen around cross-domain inbox triage,
-reversible organization, reply drafting, exact-revision approval, and explicit resend. Domain
-configuration, API-token management, attachments, reports, and permanent deletion are not exposed
-through MCP.
+Status as of August 10, 2026: the review scope includes safe domain inspection and onboarding,
+cross-domain inbox triage, reversible organization, reply drafting, exact-revision approval, and
+explicit resend. Domain routing transitions, disablement, API-token management, attachments,
+reports, and permanent deletion are not exposed through MCP.
 
 ## Implemented in the repository
 
@@ -15,7 +15,7 @@ through MCP.
 - OAuth 2.1 discovery, public-client registration, PKCE authorization, rotating refresh tokens,
   exact MCP resource binding, and protected tool calls.
 - Public install instructions, MCP documentation, privacy policy, terms, and support pages.
-- Public Agent Plugins 1.0 manifests and two bundled skills under
+- Public Agent Plugins 1.0 manifests and three bundled skills under
   `plugins/operational-inbox`.
 - Production manifest URLs:
   `https://operationalinbox.com/plugins/operational-inbox/plugin.json` and
@@ -26,6 +26,8 @@ through MCP.
 - Tool discovery without credentials and transport-level OAuth challenges on protected calls.
 - Email-content prompt-injection boundary, reversible organization, and exact-revision outbound
   approval.
+- Domain setup boundary that returns generation-fenced instructions while leaving DNS writes to a
+  separately authorized provider tool or the owner.
 
 ## Before portal submission
 
@@ -33,7 +35,7 @@ through MCP.
 - [ ] Verify the production MCP endpoint, OAuth metadata, DCR/PKCE flow, protected resource
   metadata, and all public/legal URLs.
 - [ ] Complete the tool annotation review and generate `chatgpt-app-submission.json` with exactly
-  five positive and three negative reviewer tests.
+  six positive and three negative reviewer tests.
 - [ ] Create a dedicated, already-verified reviewer account with sample inbox data and sufficient
   plan access. It must not require MFA, SMS, email confirmation, a private network, or payment.
 - [ ] Record a public HTTPS demo video covering read, reversible write, draft, exact approval, and
@@ -71,25 +73,26 @@ code + PKCE, and returned only after explicit user consent.
    `OPENAI_APPS_CHALLENGE_TOKEN` environment variable and deploy. Verify that
    `https://operationalinbox.com/.well-known/openai-apps-challenge` returns HTTP 200 with only the
    exact token, then select **Verify Domain**.
-5. Upload `triage-inboxes` and `reply-to-conversations` from the packaged plugin and use the
-   listing metadata from `plugins/operational-inbox/.codex-plugin/plugin.json`.
+5. Upload `setup-domain`, `triage-inboxes`, and `reply-to-conversations` from the packaged plugin
+   and use the listing metadata from `plugins/operational-inbox/.codex-plugin/plugin.json`.
 6. Add these starter prompts:
+   - Connect my domain without disrupting its current mail route.
    - Triage new mail across all my domains.
-   - Organize this mailbox with tags and folders.
    - Draft a reply for the conversation I select.
-7. Import the five positive and three negative tests from `chatgpt-app-submission.json` and run all
-   eight with the reviewer account.
+7. Import the six positive and three negative tests from `chatgpt-app-submission.json` and run all
+   nine with the reviewer account.
 8. Add reviewer login details, demo video, countries and regions, and release notes.
 9. Complete only attestations that are true for the scanned production release, submit for
    review, and record the date and portal status below.
 
 ## Initial release notes
 
-> Initial public submission of Operational Inbox. Includes OAuth-authenticated cross-domain inbox
-> triage, reversible organization, reply drafting, exact-revision approval, and explicit resend,
-> plus the Triage Inboxes and Reply to Conversations skills. Email content is treated as untrusted
-> data; trash does not permanently delete mail, and external sends require explicit approval of the
-> exact current draft.
+> Initial public submission of Operational Inbox. Includes OAuth-authenticated domain inspection
+> and setup planning, cross-domain inbox triage, reversible organization, reply drafting,
+> exact-revision approval, and explicit resend, plus the Setup Domain, Triage Inboxes, and Reply to
+> Conversations skills. Operational Inbox never writes customer DNS; email content is treated as
+> untrusted data, trash does not permanently delete mail, and external sends require explicit
+> approval of the exact current draft.
 
 ## Submission record
 

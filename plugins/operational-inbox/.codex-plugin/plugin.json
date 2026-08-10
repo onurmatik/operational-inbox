@@ -1,7 +1,7 @@
 {
   "name": "operational-inbox",
   "version": "0.1.0",
-  "description": "Review and organize email across many domains and routing addresses.",
+  "description": "Connect domains, then review and organize email across routing addresses.",
   "author": {
     "name": "Operational Inbox",
     "email": "support@operationalinbox.com",
@@ -11,6 +11,8 @@
   "keywords": [
     "email",
     "inbox",
+    "dns",
+    "domain-setup",
     "multi-domain",
     "agents",
     "tags"
@@ -19,11 +21,12 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Operational Inbox",
-    "shortDescription": "Triage multi-domain mail",
-    "longDescription": "Triage authorized mail across domains and routing addresses, use agent-defined workflow tags, apply reversible organization actions, and keep outbound approval separate.",
+    "shortDescription": "Set up and triage domain mail",
+    "longDescription": "Inspect and connect email domains, follow exact DNS setup plans, verify readiness, triage authorized mail, apply reversible organization actions, and keep outbound approval separate.",
     "developerName": "Operational Inbox",
     "category": "Productivity",
     "capabilities": [
+      "Guided domain setup",
       "Cross-domain inbox triage",
       "Usage-derived tags",
       "Reversible inbox organization",
@@ -33,8 +36,8 @@
     "privacyPolicyURL": "https://operationalinbox.com/privacy/",
     "termsOfServiceURL": "https://operationalinbox.com/terms/",
     "defaultPrompt": [
+      "Connect my domain without disrupting its current mail route.",
       "Triage new mail across all my domains.",
-      "Organize this mailbox with tags and folders.",
       "Draft a reply for the conversation I select."
     ],
     "brandColor": "#1A3C2B",

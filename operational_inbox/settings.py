@@ -147,7 +147,7 @@ DEFAULT_FROM_EMAIL = os.getenv(
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", f"{PUBLIC_BASE_URL}/mcp")
 MCP_DOCUMENTATION_URL = os.getenv("MCP_DOCUMENTATION_URL", f"{PUBLIC_BASE_URL}/mcp-docs/")
-MCP_REQUIRED_SCOPES = ["read", "write", "approve_send"]
+MCP_REQUIRED_SCOPES = ["read", "write", "manage_domains", "approve_send"]
 OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED = env_bool(
     "OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED",
     True,
@@ -194,6 +194,10 @@ OAUTH2_PROVIDER = {
     "SCOPES": {
         "read": "Read authorized inboxes, conversations, drafts, and delivery status.",
         "write": "Create drafts and apply reversible inbox organization changes.",
+        "manage_domains": (
+            "Inspect public DNS, start domain onboarding, read setup instructions, "
+            "and request DNS verification."
+        ),
         "approve_send": "Approve an exact draft revision and send or resend email.",
     },
     "DEFAULT_SCOPES": [],

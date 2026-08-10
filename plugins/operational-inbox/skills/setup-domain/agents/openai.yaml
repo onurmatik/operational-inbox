@@ -1,0 +1,11 @@
+interface:
+  display_name: "Setup Domain"
+  short_description: "Inspect and connect an email domain"
+  default_prompt: "Use $setup-domain to inspect and connect my domain to Operational Inbox."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "operational-inbox"
+      description: "Operational Inbox domain inspection, setup, and verification tools"
+      transport: "streamable_http"
+      url: "https://operationalinbox.com/mcp"

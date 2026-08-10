@@ -1143,6 +1143,7 @@ class APIToken(UUIDTimeStampedModel):
     class Scope(models.TextChoices):
         READ = "read", "Read"
         WRITE = "write", "Write"
+        MANAGE_DOMAINS = "manage_domains", "Manage domains"
         APPROVE_SEND = "approve_send", "Approve and send"
 
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")

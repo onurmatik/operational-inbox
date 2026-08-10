@@ -191,6 +191,7 @@
               "enum": [
                 "read",
                 "write",
+                "manage_domains",
                 "approve_send"
               ],
               "type": "string"
@@ -1693,6 +1694,40 @@
           }
         ],
         "summary": "Domains Cancel Routing Transition",
+        "tags": [
+          "Domains"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/setup-plan": {
+      "get": {
+        "operationId": "inbox_api_domains_setup_plan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Domains Setup Plan",
         "tags": [
           "Domains"
         ]

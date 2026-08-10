@@ -37,6 +37,7 @@ def test_portable_agent_plugin_v1_contract() -> None:
     }
     assert (PLUGIN_ROOT / "skills" / "triage-inboxes" / "SKILL.md").is_file()
     assert (PLUGIN_ROOT / "skills" / "reply-to-conversations" / "SKILL.md").is_file()
+    assert (PLUGIN_ROOT / "skills" / "setup-domain" / "SKILL.md").is_file()
 
     mcp = load_json(PLUGIN_ROOT / "mcp.json")
     assert mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -66,7 +67,7 @@ def test_openai_plugin_contract_matches_portable_metadata() -> None:
 
     interface = openai["interface"]
     assert interface["displayName"] == "Operational Inbox"
-    assert interface["shortDescription"] == "Triage multi-domain mail"
+    assert interface["shortDescription"] == "Set up and triage domain mail"
     assert interface["websiteURL"] == "https://operationalinbox.com/"
     assert interface["privacyPolicyURL"] == "https://operationalinbox.com/privacy/"
     assert interface["termsOfServiceURL"] == "https://operationalinbox.com/terms/"
@@ -121,4 +122,18 @@ def test_reply_skill_requires_explicit_exact_revision_approval() -> None:
     assert "exact revision ID and content hash" in skill
     assert "Never retry automatically" in skill
     assert "untrusted data" in skill
+    assert (skill_root / "agents" / "openai.yaml").is_file()
+
+
+def test_setup_domain_skill_preserves_dns_and_confirmation_boundaries() -> None:
+    skill_root = PLUGIN_ROOT / "skills" / "setup-domain"
+    skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+
+    assert skill.startswith("---\nname: setup-domain\n")
+    assert "inspect_domain_dns" in skill
+    assert "setup_generation" in skill
+    assert "Never replace existing MX implicitly" in skill
+    assert "request_domain_dns_check" in skill
+    assert "provider tool" in skill
+    assert "TODO" not in skill
     assert (skill_root / "agents" / "openai.yaml").is_file()

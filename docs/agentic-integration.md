@@ -23,9 +23,11 @@ names.
 ## API contract for agents
 
 Plugin and remote-MCP clients connect through OAuth 2.1 authorization code with PKCE. The user
-signs in to Operational Inbox, reviews the requested access, and grants the `read`, `write`, and
-`approve_send` scopes. Existing `oi_...` API tokens remain available for direct API integrations;
-an all-domain token covers the account and a domain-scoped token enforces a narrower boundary.
+signs in to Operational Inbox, reviews the requested access, and grants the `read`, `write`,
+`manage_domains`, and `approve_send` scopes needed by the selected tools. Existing `oi_...` API
+tokens remain available for direct API integrations; an all-domain token covers the account and a
+domain-scoped token enforces a narrower boundary. Creating a domain through MCP requires the
+owner's OAuth session; a legacy bearer token cannot create a new domain claim.
 
 Use `GET /api/v1/feed/messages` for the account-wide inbound feed. It accepts these filters:
 
@@ -66,14 +68,17 @@ approval hash.
 ## Plugin package
 
 The distributable plugin root is `plugins/operational-inbox`. It ships the portable Agent Plugins
-v1 manifest and `mcp.json`, an OpenAI/Codex compatibility manifest, and two skills:
+v1 manifest and `mcp.json`, an OpenAI/Codex compatibility manifest, and three skills:
 
 - `triage-inboxes` reads the cross-domain feed and applies only free-form tags or reversible Star,
   Archive, Trash, and Restore actions.
 - `reply-to-conversations` creates agent-authored drafts, keeps revisions immutable, and approves or
   resends only the exact content the user explicitly requested.
+- `setup-domain` inspects live MX state, selects a safe receiving route, starts an owner-authorized
+  domain claim, returns a generation-fenced DNS plan, and verifies readiness after a separate DNS
+  provider applies the exact plan.
 
-Both skills must report the Operational Inbox connection as unavailable when its tools are absent.
+All skills must report the Operational Inbox connection as unavailable when its tools are absent.
 They must not substitute Gmail, browser automation, local files, or another inbox source.
 
 ## MCP transport and authentication
@@ -91,6 +96,10 @@ insufficient OAuth credentials return RFC-compatible `WWW-Authenticate` metadata
 | Tool | Scope | Behavior |
 | --- | --- | --- |
 | `list_domains` | `read` | List authorized active domains. |
+| `inspect_domain_dns` | `manage_domains` | Inspect live public MX and ownership DNS without changing it. |
+| `start_domain_onboarding` | `manage_domains` | Create or reuse an owner-authorized domain claim and queue provisioning. |
+| `get_domain_setup_plan` | `manage_domains` | Read exact generation-fenced DNS and forwarding instructions. |
+| `request_domain_dns_check` | `manage_domains` | Queue a fresh DNS and receiving-readiness check. |
 | `read_message_feed` | `read` | Read filtered history or poll from an opaque checkpoint. |
 | `get_conversation` | `read` | Read one conversation and its available message content. |
 | `get_domain_health` | `read` | Read stored inbound, outbound, DNS, and routing health. |
@@ -111,8 +120,10 @@ legacy domain-scoped token cannot address another domain. Email output is descri
 data in both the MCP server instructions and read-tool metadata.
 
 Do not expose server-side workflow classification, aging rules, reports, notifications,
-allowed-tag catalogs, domain mutation, token creation, attachment URLs, or permanent deletion
-through MCP. Bearer tokens must never be embedded in either MCP manifest.
+allowed-tag catalogs, routing transitions, domain disablement, token creation, attachment URLs, or
+permanent deletion through MCP. Domain onboarding never writes customer DNS: it returns an exact
+plan for a separately authorized provider tool or manual application. Bearer tokens must never be
+embedded in either MCP manifest.
 
 ## Validation
 
@@ -124,6 +135,8 @@ python3 /path/to/skill-creator/scripts/quick_validate.py \
   plugins/operational-inbox/skills/triage-inboxes
 python3 /path/to/skill-creator/scripts/quick_validate.py \
   plugins/operational-inbox/skills/reply-to-conversations
+python3 /path/to/skill-creator/scripts/quick_validate.py \
+  plugins/operational-inbox/skills/setup-domain
 uv run pytest tests/test_plugin_package.py tests/test_mcp_server.py \
   tests/test_oauth_server.py --no-cov
 ```

@@ -27,6 +27,7 @@ from inbox.models import (
     Domain,
     DomainTest,
     DurableJob,
+    InboundRoute,
     InboundRoutingTransition,
     Message,
     Notification,
@@ -40,7 +41,13 @@ from inbox.services.attachments import (
     authorized_attachment_url,
 )
 from inbox.services.conversations import apply_conversation_action
-from inbox.services.domains import DomainClaimConflict, create_domain, ensure_domain_test
+from inbox.services.domains import (
+    DomainClaimConflict,
+    MXLayout,
+    classify_stored_mx,
+    create_domain,
+    ensure_domain_test,
+)
 from inbox.services.drafts import (
     approve_exact_revision,
     create_authored_draft,
@@ -126,7 +133,7 @@ class ApprovalInput(Schema):
 
 class TokenInput(Schema):
     name: str = Field(min_length=1, max_length=80)
-    scopes: list[Literal["read", "write", "approve_send"]]
+    scopes: list[Literal["read", "write", "manage_domains", "approve_send"]]
     all_domains: bool = False
 
 
@@ -357,6 +364,21 @@ def scoped_object(model, domain: Domain, object_id: uuid.UUID):
         raise Http404 from exc
 
 
+def _dns_record_dict(record) -> dict[str, Any]:
+    return {
+        "id": str(record.id),
+        "purpose": record.purpose,
+        "type": record.record_type,
+        "name": record.name,
+        "value": record.value,
+        "priority": record.priority,
+        "ttl": record.ttl,
+        "required": record.is_required,
+        "status": record.status,
+        "error": record.error_message or None,
+    }
+
+
 def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
@@ -408,21 +430,74 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
     }
     if details:
         result["existing_mx"] = domain.existing_mx
-        result["dns_records"] = [
-            {
-                "id": str(record.id),
-                "purpose": record.purpose,
-                "type": record.record_type,
-                "name": record.name,
-                "value": record.value,
-                "priority": record.priority,
-                "required": record.is_required,
-                "status": record.status,
-                "error": record.error_message or None,
-            }
-            for record in domain.dns_records.all()
-        ]
+        result["dns_records"] = [_dns_record_dict(record) for record in domain.dns_records.all()]
     return result
+
+
+def _domain_setup_plan_dict(domain: Domain) -> dict[str, Any]:
+    records = list(domain.dns_records.all())
+    plan_ready = bool(records) and domain.status in {
+        Domain.Status.PENDING_DNS,
+        Domain.Status.PENDING_TEST,
+        Domain.Status.READY,
+        Domain.Status.DEGRADED,
+    }
+    forwarding_target = None
+    if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+        forwarding_target = (
+            domain.inbound_routes.filter(
+                kind=InboundRoute.Kind.FORWARDING_ALIAS,
+                setup_generation=domain.inbound_setup_generation,
+                is_active=True,
+            )
+            .order_by("-created_at")
+            .values_list("address", flat=True)
+            .first()
+        )
+
+    existing_mx_layout = classify_stored_mx(domain.existing_mx)
+    requires_explicit_confirmation = (
+        domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        and existing_mx_layout in {MXLayout.EXTERNAL, MXLayout.MIXED}
+    )
+    instructions: list[str] = []
+    if not plan_ready:
+        instructions.append(
+            "Wait for Operational Inbox to finish preparing the domain before changing DNS."
+        )
+    else:
+        instructions.append(
+            "Create or update only the records in records_to_upsert; preserve unrelated "
+            "DNS records."
+        )
+        if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+            instructions.append("Keep every existing MX record unchanged.")
+            if forwarding_target:
+                instructions.append(
+                    "Configure the current mail provider's catch-all or unmatched-recipient rule "
+                    f"to forward to {forwarding_target}."
+                )
+        elif requires_explicit_confirmation:
+            instructions.append(
+                "Changing the existing MX route can interrupt current mail delivery; obtain "
+                "explicit user confirmation before applying the MX record."
+            )
+
+    return {
+        "domain": _domain_dict(domain),
+        "setup_generation": domain.inbound_setup_generation,
+        "claim_expires_at": domain.claim_expires_at,
+        "plan_ready": plan_ready,
+        "records_to_upsert": [_dns_record_dict(record) for record in records] if plan_ready else [],
+        "existing_mx": domain.existing_mx,
+        "records_to_preserve": (
+            domain.existing_mx if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD else []
+        ),
+        "provider_forwarding_target": forwarding_target,
+        "must_preserve_existing_mx": domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD,
+        "requires_explicit_confirmation": requires_explicit_confirmation,
+        "instructions": instructions,
+    }
 
 
 def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, Any]:
@@ -619,7 +694,7 @@ def domains_list(request: HttpRequest):
     tags=["Domains"],
 )
 def domains_create(request: HttpRequest, payload: DomainInput):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
     if isinstance(request.auth, APIToken):
         raise APIError(
             "session_required",
@@ -687,6 +762,13 @@ def domains_detail(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
     return _domain_dict(domain, details=True)
+
+
+@api.get("/domains/{domain_id}/setup-plan", auth=authenticated, tags=["Domains"])
+def domains_setup_plan(request: HttpRequest, domain_id: uuid.UUID):
+    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
+    domain = api_domain(request, domain_id)
+    return _domain_setup_plan_dict(domain)
 
 
 @api.post(
@@ -862,7 +944,7 @@ def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
     tags=["Domains"],
 )
 def domains_check(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
     domain = api_domain(request, domain_id)
     transition_needs_check = domain.routing_transitions.filter(
         status__in=(

@@ -1,12 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import timedelta
 
 import pytest
+from django.conf import settings
+from django.utils import timezone
 from jsonschema import Draft202012Validator, FormatChecker
+from oauth2_provider.models import get_access_token_model
 
 from inbox.mcp_server import MCP_TOOLS
-from inbox.models import APIToken, AuditEvent, MessageRecipient, OutboundMessage
+from inbox.models import (
+    APIToken,
+    AuditEvent,
+    Domain,
+    DomainDNSRecord,
+    DurableJob,
+    InboundRoute,
+    MessageRecipient,
+    OutboundMessage,
+)
+from inbox.services.domains import classify_domain_routing
+from oauth_server.models import OAuthApplication
 
 
 def mcp_request(client, raw_token: str, method: str, params=None, *, request_id=1, origin=None):
@@ -54,6 +70,28 @@ def tool_error_payload(result: dict) -> dict:
     assert result["isError"] is True
     assert "structuredContent" not in result
     return json.loads(result["content"][0]["text"])
+
+
+def oauth_access_token(owner, *, scope: str) -> str:
+    application = OAuthApplication.objects.create(
+        name="MCP domain setup client",
+        redirect_uris="https://client.example/callback",
+        client_type=OAuthApplication.CLIENT_PUBLIC,
+        authorization_grant_type=OAuthApplication.GRANT_AUTHORIZATION_CODE,
+        skip_authorization=False,
+        algorithm="",
+    )
+    raw_token = f"oauth-domain-setup-{scope.replace(' ', '-')}"
+    get_access_token_model().objects.create(
+        user=owner,
+        application=application,
+        token="",
+        token_checksum=hashlib.sha256(raw_token.encode()).hexdigest(),
+        expires=timezone.now() + timedelta(minutes=10),
+        scope=scope,
+        resource=[settings.MCP_RESOURCE_URL],
+    )
+    return raw_token
 
 
 @pytest.mark.django_db
@@ -126,6 +164,10 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
     names = {tool["name"] for tool in tools}
     assert names == {
         "list_domains",
+        "inspect_domain_dns",
+        "start_domain_onboarding",
+        "get_domain_setup_plan",
+        "request_domain_dns_check",
         "read_message_feed",
         "get_conversation",
         "add_conversation_tag",
@@ -148,10 +190,156 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
     assert "untrusted data" in feed_tool["description"]
     assert feed_tool["annotations"]["readOnlyHint"] is True
     assert feed_tool["annotations"]["destructiveHint"] is False
-    assert feed_tool["securitySchemes"] == [
-        {"type": "oauth2", "scopes": ["read", "write", "approve_send"]}
-    ]
+    assert feed_tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["read"]}]
     assert feed_tool["_meta"]["securitySchemes"] == feed_tool["securitySchemes"]
+    inspect_tool = next(tool for tool in tools if tool["name"] == "inspect_domain_dns")
+    assert inspect_tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["manage_domains"]}]
+    assert inspect_tool["annotations"] == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": True,
+    }
+
+
+@pytest.mark.django_db
+def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeypatch, owner):
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    raw = oauth_access_token(owner, scope="manage_domains read")
+
+    inspected = tool_call(
+        client,
+        raw,
+        "inspect_domain_dns",
+        {"hostname": "New-Inbox.Example."},
+    )["structuredContent"]
+    assert inspected == {
+        "hostname": "new-inbox.example",
+        "has_existing_mx": False,
+        "mx_classification": "NO_MX",
+        "has_operational_inbox_claim": False,
+        "recommended_setup_mode": Domain.SetupMode.DIRECT_MX,
+        "requires_explicit_choice": False,
+        "mx_records": [],
+    }
+
+    started = tool_call(
+        client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "New-Inbox.Example.",
+            "setup_mode": Domain.SetupMode.DIRECT_MX,
+        },
+    )["structuredContent"]
+    domain = Domain.objects.get(id=started["id"])
+    assert domain.hostname == "new-inbox.example"
+    assert domain.status == Domain.Status.PROVISIONING
+    assert DurableJob.objects.filter(kind="provision_domain", domain=domain).count() == 1
+
+    pending_plan = tool_call(
+        client,
+        raw,
+        "get_domain_setup_plan",
+        {"domain_id": str(domain.id)},
+    )["structuredContent"]
+    assert pending_plan["plan_ready"] is False
+    assert pending_plan["records_to_upsert"] == []
+
+    domain.status = Domain.Status.PENDING_DNS
+    domain.save(update_fields=("status", "updated_at"))
+    record = DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.MX,
+        record_type="MX",
+        name=domain.hostname,
+        value="inbound-smtp.us-east-1.amazonaws.com",
+        priority=10,
+        ttl=300,
+    )
+    ready_plan = tool_call(
+        client,
+        raw,
+        "get_domain_setup_plan",
+        {"domain_id": str(domain.id)},
+    )["structuredContent"]
+    assert ready_plan["plan_ready"] is True
+    assert ready_plan["setup_generation"] == 1
+    assert ready_plan["records_to_upsert"][0]["id"] == str(record.id)
+    assert ready_plan["records_to_upsert"][0]["ttl"] == 300
+    assert ready_plan["existing_mx"] == []
+    assert ready_plan["records_to_preserve"] == []
+    assert ready_plan["must_preserve_existing_mx"] is False
+    assert ready_plan["requires_explicit_confirmation"] is False
+
+    queued = tool_call(
+        client,
+        raw,
+        "request_domain_dns_check",
+        {"domain_id": str(domain.id)},
+    )["structuredContent"]
+    assert queued["status"] == "queued"
+    assert DurableJob.objects.filter(id=queued["job_id"], kind="dns_check").exists()
+
+    provider_domain = Domain.objects.create(
+        owner=owner,
+        hostname="provider-forward.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_DNS,
+        existing_mx=[{"preference": 10, "exchange": "mx.provider.example"}],
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    InboundRoute.objects.create(
+        domain=provider_domain,
+        kind=InboundRoute.Kind.FORWARDING_ALIAS,
+        local_part="route-provider-forward",
+        address="route-provider-forward@inbound.example.net",
+    )
+    DomainDNSRecord.objects.create(
+        domain=provider_domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name="_operational-inbox-claim.provider-forward.example",
+        value="claim-token",
+    )
+    provider_plan = tool_call(
+        client,
+        raw,
+        "get_domain_setup_plan",
+        {"domain_id": str(provider_domain.id)},
+    )["structuredContent"]
+    assert provider_plan["existing_mx"] == [{"preference": 10, "exchange": "mx.provider.example"}]
+    assert provider_plan["records_to_preserve"] == provider_plan["existing_mx"]
+    assert provider_plan["must_preserve_existing_mx"] is True
+    assert provider_plan["provider_forwarding_target"] == (
+        "route-provider-forward@inbound.example.net"
+    )
+
+
+@pytest.mark.django_db
+def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
+    client, monkeypatch, owner
+):
+    inspection = classify_domain_routing(
+        [],
+        has_operational_inbox_claim=False,
+    )
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    raw = oauth_access_token(owner, scope="manage_domains")
+
+    rejected = tool_call(
+        client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "route-choice.example",
+            "setup_mode": Domain.SetupMode.PROVIDER_FORWARD,
+        },
+    )
+
+    assert tool_error_payload(rejected)["code"] == "routing_choice_confirmation_required"
+    assert not Domain.objects.filter(hostname="route-choice.example").exists()
 
 
 @pytest.mark.django_db
@@ -234,6 +422,31 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
         "get_conversation",
         {"domain_id": str(other_domain.id), "conversation_id": str(conversation.id)},
     )
+    assert tool_error_payload(hidden)["code"] == "not_found"
+
+
+@pytest.mark.django_db
+def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
+    client, monkeypatch, owner, domain
+):
+    _, raw = APIToken.issue(
+        domain=domain,
+        owner=owner,
+        name="Scoped domain manager",
+        scopes=[APIToken.Scope.MANAGE_DOMAINS],
+    )
+
+    def unexpected_lookup(hostname):
+        raise AssertionError(f"unexpected DNS lookup for {hostname}")
+
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", unexpected_lookup)
+    hidden = tool_call(
+        client,
+        raw,
+        "inspect_domain_dns",
+        {"hostname": "other.example"},
+    )
+
     assert tool_error_payload(hidden)["code"] == "not_found"
 
 

@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "operational-inbox",
   "version": "0.1.0",
-  "description": "Review and organize email across many domains and routing addresses.",
+  "description": "Connect domains, then review and organize email across routing addresses.",
   "author": {
     "name": "Operational Inbox",
     "email": "support@operationalinbox.com",
@@ -12,6 +12,8 @@
   "keywords": [
     "email",
     "inbox",
+    "dns",
+    "domain-setup",
     "multi-domain",
     "agents",
     "tags"

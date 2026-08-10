@@ -41,7 +41,7 @@ English.
   timeout handling that never retries an ambiguous submission automatically.
 - Django Ninja `/api/v1`, an all-domain inbound message feed, CSRF-protected session access, and
   once-displayed hashed bearer tokens that can be account- or domain-scoped with `read`, `write`,
-  and `approve_send` scopes.
+  `manage_domains`, and `approve_send` scopes.
 - SQLite WAL deployment, encrypted integrity-checked backups, configurable retention, private S3
   storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps configuration, and a
   locked `origin/main` deployment flow.
@@ -359,8 +359,9 @@ Authorization: Bearer oi_<one-time-secret>
 ```
 
 Only the hash and a short lookup prefix are stored. The raw token is displayed once. Tokens are
-independently revocable and limited to `read`, `write`, and/or `approve_send`. A token can cover
-one domain or all current and future active domains owned by the account.
+independently revocable and limited to `read`, `write`, `manage_domains`, and/or `approve_send`. A
+token can cover one domain or all current and future active domains owned by the account. Creating
+a new domain through MCP still requires the owner's OAuth session rather than a legacy bearer token.
 
 Conversation lists use opaque signed history cursors. The message feed also returns an opaque
 checkpoint: persist it and pass it as `after` to poll only messages received since the last
@@ -381,11 +382,14 @@ envelope:
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
-the `triage-inboxes` and `reply-to-conversations` skills, and portable/Codex MCP configuration.
+the `setup-domain`, `triage-inboxes`, and `reply-to-conversations` skills, and portable/Codex MCP
+configuration.
 The stateless Streamable HTTP endpoint is `/mcp`. Plugin clients connect with OAuth 2.1
 authorization code + PKCE; existing Operational Inbox API bearer tokens remain supported for
 direct integrations. Initialization and tool discovery are public, while every tool call enforces
-its `read`, `write`, or `approve_send` scope. Prompt-capable clients can begin with the public
+its `read`, `write`, `manage_domains`, or `approve_send` scope. Domain setup tools inspect public
+DNS, create an owner-authorized claim, return exact provider-neutral instructions, and verify the
+result; they never write customer DNS. Prompt-capable clients can begin with the public
 [`INSTALL.md`](INSTALL.md); repeat use should install the plugin through the repo marketplace.
 See
 [`docs/agentic-integration.md`](docs/agentic-integration.md) for the package

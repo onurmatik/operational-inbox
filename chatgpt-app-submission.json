@@ -3,8 +3,8 @@
   "schema_version": 1,
   "app_info": {
     "display_name": "Operational Inbox",
-    "subtitle": "Triage and reply to email",
-    "description": "Operational Inbox lets an authenticated owner review inbound email across authorized domains and routing addresses, apply tags and reversible organization actions, inspect domain and delivery health, and draft or explicitly approve exact-revision replies.",
+    "subtitle": "Set up, triage, and reply",
+    "description": "Operational Inbox lets an authenticated owner inspect and connect email domains, obtain exact DNS setup plans, verify readiness, review inbound email across routing addresses, apply reversible organization actions, and draft or explicitly approve exact-revision replies.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -18,6 +18,54 @@
         "read_only_justification": "Only reads the active domains authorized for the authenticated Operational Inbox owner.",
         "open_world_justification": "Retrieves stored Operational Inbox domain state without contacting or modifying third-party systems.",
         "destructive_justification": "Does not create, change, disable, or delete a domain or its mail."
+      }
+    },
+    "inspect_domain_dns": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads live public MX and Operational Inbox ownership DNS for the requested hostname.",
+        "open_world_justification": "Queries public DNS outside Operational Inbox to classify the current mail route and recommend a safe setup mode.",
+        "destructive_justification": "Does not create a domain claim or write, remove, or replace any DNS record."
+      }
+    },
+    "start_domain_onboarding": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Creates or reuses private Operational Inbox domain state and queues provisioning work.",
+        "open_world_justification": "Provisioning can create or inspect Operational Inbox-managed email infrastructure, although it never writes customer DNS.",
+        "destructive_justification": "Creates a time-limited, safely disableable domain claim without deleting mail or customer DNS."
+      }
+    },
+    "get_domain_setup_plan": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads the current stored setup generation, exact DNS records, forwarding target, and safety flags.",
+        "open_world_justification": "Returns an Operational Inbox plan without contacting or changing a DNS provider.",
+        "destructive_justification": "Does not apply the plan, edit DNS, change routing, or disable the domain."
+      }
+    },
+    "request_domain_dns_check": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Queues a check and can update stored domain and DNS health from its observations.",
+        "open_world_justification": "Reads public DNS and Operational Inbox-managed receiving infrastructure after setup.",
+        "destructive_justification": "Does not write DNS, remove records, change the selected route, or send email."
       }
     },
     "read_message_feed": {
@@ -178,6 +226,14 @@
     }
   },
   "test_cases": [
+    {
+      "description": "Inspect and start a safe domain onboarding flow.",
+      "user_prompt": "Use Operational Inbox to inspect new-inbox.example, connect it using the recommended mail route, and show me the exact DNS setup plan without changing DNS yet.",
+      "file_attachment_urls": null,
+      "tools_triggered": "inspect_domain_dns, start_domain_onboarding, get_domain_setup_plan",
+      "expected_output": "Classifies the live MX route, uses the safe recommendation unless an explicit choice is required, starts one owner-authorized claim, and returns only the current generation-fenced plan without claiming DNS was changed.",
+      "expected_output_url": null
+    },
     {
       "description": "Review new inbound mail across every authorized domain.",
       "user_prompt": "Use Operational Inbox to show me the new inbound messages across all my authorized domains and flag anything suspicious or quarantined.",
