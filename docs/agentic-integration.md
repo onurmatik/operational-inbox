@@ -83,15 +83,19 @@ They must not substitute Gmail, browser automation, local files, or another inbo
 
 ## MCP transport and authentication
 
-The stateless Streamable HTTP endpoint is `POST /mcp`. `GET /mcp` returns `405` because the server
-does not provide a standalone SSE stream. The endpoint supports MCP initialization, ping, tool
-discovery, and tool calls with JSON responses. It rejects untrusted browser origins.
+The official MCP Python SDK 2.x serves the stateless Streamable HTTP endpoint at `/mcp` from a
+dedicated ASGI process. JSON-RPC requests use `POST`; an accepted `GET` can open the transport's
+standalone SSE stream, while a `GET` that does not accept `text/event-stream` returns `406`. The
+SDK handles protocol negotiation, ping, tool discovery, tool calls, MCP metadata, and the
+`2025-11-25` and `2026-07-28` request formats. The transport rejects untrusted hosts and browser
+origins.
 
 Agent Plugins v1 leaves remote credentials to the client. The package contains no token or literal
-authorization header. MCP initialization and tool discovery are public so a client can discover
-the OAuth security scheme. Tool calls require either an OAuth access token bound exactly to
+authorization header. Protocol and tool discovery are public so a client can discover the OAuth
+security scheme. Tool calls require either an OAuth access token bound exactly to
 `https://operationalinbox.com/mcp` or a legacy Operational Inbox API bearer token. Missing and
-insufficient OAuth credentials return RFC-compatible `WWW-Authenticate` metadata challenges.
+insufficient OAuth credentials return RFC-compatible challenges in the MCP tool result's
+`_meta["mcp/www_authenticate"]` field.
 
 | Tool | Scope | Behavior |
 | --- | --- | --- |

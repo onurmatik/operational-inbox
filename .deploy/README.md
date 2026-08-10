@@ -41,7 +41,10 @@ cd .deploy
 python3 -m fabric deploy
 ```
 
-Deployment stops the cold Gunicorn service, acquires all cron locks, creates an encrypted and
-integrity-checked SQLite backup when the database exists, runs migrations, collects static
-files, runs `check --deploy`, and restarts the socket. Backups are stored under
-`/var/backups/operationalinbox` for 30 days.
+Deployment stops the cold Gunicorn service and the dedicated MCP Uvicorn service, acquires all
+cron locks, creates an encrypted and integrity-checked SQLite backup when the database exists,
+runs migrations, collects static files, and runs `check --deploy`. It then installs the checked-in
+`operationalinbox-mcp.service`, adds the managed `/mcp` Nginx proxy include, validates Nginx, and
+restarts both runtimes. MCP listens only on loopback port `8012`; public traffic remains on
+`https://operationalinbox.com/mcp`. Backups are stored under `/var/backups/operationalinbox` for
+30 days.

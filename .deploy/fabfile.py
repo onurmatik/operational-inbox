@@ -42,6 +42,10 @@ DEPLOY_HOST = os.environ.get("DEPLOY_HOST", "46.225.14.95")
 KEY_FILENAME = os.environ.get("KEY_FILENAME", "hetzner-stage")
 DEPLOY_USER = os.environ.get("DEPLOY_USER", "root")
 APP_USER = os.environ.get("APP_USER", "ubuntu")
+MCP_SERVICE = f"{PROJECT_NAME}-mcp.service"
+MCP_SYSTEMD_PATH = f"/etc/systemd/system/{MCP_SERVICE}"
+MCP_NGINX_SNIPPET = f"/etc/nginx/snippets/{PROJECT_NAME}-mcp.conf"
+NGINX_SITE = f"/etc/nginx/sites-available/{PROJECT_NAME}.conf"
 
 PROJECT_DIR = f"/srv/apps/{PROJECT_NAME}"
 VENV_DIR = f"{PROJECT_DIR}/venv"
@@ -235,6 +239,63 @@ fi
     app_run(connection, f"bash -lc {quote(command)}")
 
 
+def install_mcp_runtime(connection: Connection) -> None:
+    template = (DEPLOY_DIR / "systemd" / "operationalinbox-mcp.service").read_text()
+    rendered = (
+        template.replace("__APP_USER__", APP_USER)
+        .replace("__PROJECT_DIR__", PROJECT_DIR)
+        .replace("__VENV_DIR__", VENV_DIR)
+    )
+    temporary_unit = connection.run("mktemp", hide=True).stdout.strip()
+    try:
+        connection.put(BytesIO(rendered.encode()), remote=temporary_unit)
+        connection.sudo(
+            f"install -o root -g root -m 0644 {quote(temporary_unit)} {quote(MCP_SYSTEMD_PATH)}"
+        )
+    finally:
+        connection.run(f"rm -f {quote(temporary_unit)}", warn=True, hide=True)
+
+    connection.sudo(
+        f"install -o root -g root -m 0644 "
+        f"{quote(PROJECT_DIR + '/.deploy/nginx/operationalinbox-mcp.conf')} "
+        f"{quote(MCP_NGINX_SNIPPET)}"
+    )
+    connection.sudo(
+        "python3 "
+        f"{quote(PROJECT_DIR + '/.deploy/scripts/install_mcp_proxy.py')} "
+        f"{quote(NGINX_SITE)} {quote(MCP_NGINX_SNIPPET)}"
+    )
+    connection.sudo("systemctl daemon-reload")
+    connection.sudo(f"systemctl enable {quote(MCP_SERVICE)}")
+
+
+def verify_mcp_runtime(connection: Connection) -> None:
+    script = """
+import json
+import urllib.request
+
+payload = json.dumps({
+    "jsonrpc": "2.0",
+    "id": "deploy-check",
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {"name": "deploy-check", "version": "1.0"},
+    },
+}).encode()
+request = urllib.request.Request(
+    "http://127.0.0.1:8012/mcp",
+    data=payload,
+    headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+)
+with urllib.request.urlopen(request, timeout=10) as response:
+    result = json.load(response)["result"]
+assert result["serverInfo"]["name"] == "operational-inbox"
+""".strip()
+    app_run(connection, f"{quote(VENV_DIR + '/bin/python')} -c {quote(script)}")
+
+
 @task
 def deploy(_context) -> None:
     """Deploy the origin/main release to the StageOps Hetzner host."""
@@ -297,10 +358,16 @@ def deploy(_context) -> None:
     app_run(connection, f"{quote(VENV_DIR + '/bin/pip')} install -r requirements.txt")
 
     connection.sudo(
-        f"systemctl stop app@{PROJECT_NAME}.socket app@{PROJECT_NAME}.service",
+        f"systemctl stop app@{PROJECT_NAME}.socket app@{PROJECT_NAME}.service {quote(MCP_SERVICE)}",
         warn=True,
     )
     deploy_under_locks(connection)
+    install_mcp_runtime(connection)
+    connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
+    connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}")
+    verify_mcp_runtime(connection)
+    connection.sudo("nginx -t")
+    connection.sudo("systemctl reload nginx")
     connection.sudo(
         f"systemctl reset-failed app@{PROJECT_NAME}.service app@{PROJECT_NAME}.socket",
         warn=True,

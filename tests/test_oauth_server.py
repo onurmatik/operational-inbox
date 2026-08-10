@@ -12,7 +12,9 @@ from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 from oauth2_provider.models import get_access_token_model
+from starlette.testclient import TestClient
 
+from inbox.mcp_application import create_mcp_application
 from inbox.models import AuditEvent
 from oauth_server.cleanup import clear_expired_refresh_families, clear_stale_dynamic_clients
 from oauth_server.models import OAuthApplication, OAuthRefreshFamily
@@ -41,6 +43,43 @@ def oauth_access_token(application, user, *, scope: str) -> str:
         resource=[settings.MCP_RESOURCE_URL],
     )
     return raw_token
+
+
+@pytest.fixture
+def mcp_client():
+    with TestClient(create_mcp_application(), base_url="http://testserver") as client:
+        yield client
+
+
+def call_mcp(mcp_client, raw_token: str, name: str, arguments: dict, *, request_id: int):
+    method = "tools/call"
+    return mcp_client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": {
+                "name": name,
+                "arguments": arguments,
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "test",
+                        "version": "1.0",
+                    },
+                },
+            },
+        },
+        headers={
+            "Authorization": f"Bearer {raw_token}",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Method": method,
+            "MCP-Name": name,
+            "MCP-Protocol-Version": "2026-07-28",
+        },
+    )
 
 
 @pytest.mark.django_db
@@ -121,7 +160,7 @@ def test_dynamic_registration_accepts_only_public_pkce_clients(client):
 
 
 @pytest.mark.django_db(transaction=True)
-def test_authorization_code_pkce_token_can_call_mcp(client, owner, domain):
+def test_authorization_code_pkce_token_can_call_mcp(client, mcp_client, owner, domain):
     application = public_application()
     client.force_login(owner)
     verifier = "operational-inbox-test-pkce-verifier-0000000000000000000000"
@@ -167,18 +206,12 @@ def test_authorization_code_pkce_token_can_call_mcp(client, owner, domain):
         stored.token_checksum == hashlib.sha256(token_payload["access_token"].encode()).hexdigest()
     )
 
-    response = client.post(
-        "/mcp",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "list_domains", "arguments": {}},
-            }
-        ),
-        content_type="application/json",
-        headers={"Authorization": f"Bearer {token_payload['access_token']}"},
+    response = call_mcp(
+        mcp_client,
+        token_payload["access_token"],
+        "list_domains",
+        {},
+        request_id=1,
     )
     assert response.status_code == 200
     assert response.json()["result"]["structuredContent"]["items"][0]["id"] == str(domain.id)
@@ -223,8 +256,8 @@ def test_authorization_code_pkce_token_can_call_mcp(client, owner, domain):
     assert replay.json()["error"] == "invalid_grant"
 
 
-@pytest.mark.django_db
-def test_oauth_scope_step_up_and_agent_audit(client, owner, domain, conversation):
+@pytest.mark.django_db(transaction=True)
+def test_oauth_scope_step_up_and_agent_audit(mcp_client, owner, domain, conversation):
     application = public_application()
     read_token = oauth_access_token(application, owner, scope="read")
     arguments = {
@@ -232,37 +265,25 @@ def test_oauth_scope_step_up_and_agent_audit(client, owner, domain, conversation
         "conversation_id": str(conversation.id),
         "action": "star",
     }
-    denied = client.post(
-        "/mcp",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "apply_conversation_action", "arguments": arguments},
-            }
-        ),
-        content_type="application/json",
-        headers={"Authorization": f"Bearer {read_token}"},
+    denied = call_mcp(
+        mcp_client,
+        read_token,
+        "apply_conversation_action",
+        arguments,
+        request_id=1,
     )
-    assert denied.status_code == 403
-    challenge = denied["WWW-Authenticate"]
+    assert denied.status_code == 200
+    challenge = denied.json()["result"]["_meta"]["mcp/www_authenticate"][0]
     assert 'error="insufficient_scope"' in challenge
     assert 'error_description="Required scope: write"' in challenge
 
     write_token = oauth_access_token(application, owner, scope="write")
-    changed = client.post(
-        "/mcp",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": "apply_conversation_action", "arguments": arguments},
-            }
-        ),
-        content_type="application/json",
-        headers={"Authorization": f"Bearer {write_token}"},
+    changed = call_mcp(
+        mcp_client,
+        write_token,
+        "apply_conversation_action",
+        arguments,
+        request_id=2,
     )
     assert changed.status_code == 200
     assert changed.json()["result"]["structuredContent"]["changed"] is True

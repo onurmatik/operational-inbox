@@ -384,12 +384,13 @@ The agent-first plugin package lives at
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
 the `setup-domain`, `triage-inboxes`, and `reply-to-conversations` skills, and portable/Codex MCP
 configuration.
-The stateless Streamable HTTP endpoint is `/mcp`. Plugin clients connect with OAuth 2.1
-authorization code + PKCE; existing Operational Inbox API bearer tokens remain supported for
-direct integrations. Initialization and tool discovery are public, while every tool call enforces
-its `read`, `write`, `manage_domains`, or `approve_send` scope. Domain setup tools inspect public
-DNS, create an owner-authorized claim, return exact provider-neutral instructions, and verify the
-result; they never write customer DNS. Prompt-capable clients can begin with the public
+The official MCP Python SDK 2.x serves a stateless Streamable HTTP endpoint at `/mcp` from a
+dedicated ASGI process. Plugin clients connect with OAuth 2.1 authorization code + PKCE; existing
+Operational Inbox API bearer tokens remain supported for direct integrations. Protocol discovery
+is public, while every tool call enforces its `read`, `write`, `manage_domains`, or `approve_send`
+scope. Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
+provider-neutral instructions, and verify the result; they never write customer DNS.
+Prompt-capable clients can begin with the public
 [`INSTALL.md`](INSTALL.md); repeat use should install the plugin through the repo marketplace.
 See
 [`docs/agentic-integration.md`](docs/agentic-integration.md) for the package

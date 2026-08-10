@@ -23,7 +23,7 @@ reports, and permanent deletion are not exposed through MCP.
 - OpenAI/Codex manifest with a 512 x 512 logo, legal URLs, remote MCP server, and starter prompts.
 - MCP Registry metadata in `server.json` for optional registry publication.
 - Domain challenge endpoint backed by `OPENAI_APPS_CHALLENGE_TOKEN`.
-- Tool discovery without credentials and transport-level OAuth challenges on protected calls.
+- Tool discovery without credentials and MCP `mcp/www_authenticate` challenges on protected calls.
 - Email-content prompt-injection boundary, reversible organization, and exact-revision outbound
   approval.
 - Domain setup boundary that returns generation-fenced instructions while leaving DNS writes to a

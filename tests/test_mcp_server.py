@@ -9,7 +9,9 @@ from django.conf import settings
 from django.utils import timezone
 from jsonschema import Draft202012Validator, FormatChecker
 from oauth2_provider.models import get_access_token_model
+from starlette.testclient import TestClient
 
+from inbox.mcp_application import create_mcp_application
 from inbox.mcp_server import MCP_TOOLS
 from inbox.models import (
     APIToken,
@@ -25,24 +27,42 @@ from inbox.services.domains import classify_domain_routing
 from oauth_server.models import OAuthApplication
 
 
-def mcp_request(client, raw_token: str, method: str, params=None, *, request_id=1, origin=None):
+@pytest.fixture
+def mcp_client():
+    with TestClient(create_mcp_application(), base_url="http://testserver") as client:
+        yield client
+
+
+def mcp_request(
+    client, raw_token: str | None, method: str, params=None, *, request_id=1, origin=None
+):
+    protocol_version = "2025-11-25" if method == "initialize" else "2026-07-28"
     headers = {
-        "Authorization": f"Bearer {raw_token}",
         "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": protocol_version,
     }
+    request_params = dict(params or {})
+    if method != "initialize":
+        headers["MCP-Method"] = method
+        if method == "tools/call" and isinstance(request_params.get("name"), str):
+            headers["MCP-Name"] = request_params["name"]
+        request_params["_meta"] = {
+            "io.modelcontextprotocol/protocolVersion": protocol_version,
+            "io.modelcontextprotocol/clientCapabilities": {},
+            "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1.0"},
+        }
+    if raw_token is not None:
+        headers["Authorization"] = f"Bearer {raw_token}"
     if origin is not None:
         headers["Origin"] = origin
     return client.post(
         "/mcp",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params or {},
-            }
-        ),
-        content_type="application/json",
+        json={
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": request_params,
+        },
         headers=headers,
     )
 
@@ -94,37 +114,49 @@ def oauth_access_token(owner, *, scope: str) -> str:
     return raw_token
 
 
-@pytest.mark.django_db
-def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(client, owner):
-    unauthenticated = client.post(
-        "/mcp",
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-        content_type="application/json",
+@pytest.mark.django_db(transaction=True)
+def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client, owner):
+    unauthenticated = mcp_request(
+        mcp_client,
+        None,
+        "initialize",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"},
+        },
     )
     assert unauthenticated.status_code == 200
     assert unauthenticated.json()["result"]["serverInfo"]["name"] == "operational-inbox"
 
-    tool_call = client.post(
-        "/mcp",
-        data=json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": "list_domains", "arguments": {}},
-            }
-        ),
-        content_type="application/json",
+    tool_response = mcp_request(
+        mcp_client,
+        None,
+        "tools/call",
+        {"name": "list_domains", "arguments": {}},
+        request_id=2,
     )
-    assert tool_call.status_code == 401
-    challenge = tool_call["WWW-Authenticate"]
+    assert tool_response.status_code == 200
+    challenge = tool_response.json()["result"]["_meta"]["mcp/www_authenticate"][0]
     assert 'error="invalid_token"' in challenge
     assert (
         'resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp"'
         in challenge
     )
-    assert tool_call.json()["result"]["_meta"]["mcp/www_authenticate"] == [challenge]
-    assert client.get("/mcp").status_code == 405
+    assert tool_response.json()["result"]["isError"] is True
+    assert mcp_client.get("/mcp", headers={"Accept": "application/json"}).status_code == 406
+    preflight = mcp_client.options(
+        "/mcp",
+        headers={
+            "Origin": "https://chatgpt.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": (
+                "authorization,content-type,mcp-method,mcp-name,mcp-protocol-version"
+            ),
+        },
+    )
+    assert preflight.status_code == 200
+    assert "mcp-method" in preflight.headers["Access-Control-Allow-Headers"].lower()
 
     _, raw = APIToken.issue(
         domain=None,
@@ -133,7 +165,7 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(client, own
         scopes=[APIToken.Scope.READ],
     )
     blocked = mcp_request(
-        client,
+        mcp_client,
         raw,
         "initialize",
         origin="https://attacker.example",
@@ -141,8 +173,8 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(client, own
     assert blocked.status_code == 403
 
 
-@pytest.mark.django_db
-def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
+@pytest.mark.django_db(transaction=True)
+def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
     _, read_raw = APIToken.issue(
         domain=None,
         owner=owner,
@@ -150,16 +182,20 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
         scopes=[APIToken.Scope.READ],
     )
     initialized = mcp_request(
-        client,
+        mcp_client,
         read_raw,
         "initialize",
-        {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test"}},
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"},
+        },
     )
     assert initialized.status_code == 200
     assert initialized.json()["result"]["protocolVersion"] == "2025-11-25"
-    assert initialized.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
+    assert initialized.json()["result"]["capabilities"]["tools"] == {"listChanged": False}
 
-    listed = mcp_request(client, read_raw, "tools/list")
+    listed = mcp_request(mcp_client, read_raw, "tools/list")
     tools = listed.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
     assert names == {
@@ -201,15 +237,15 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(client, owner):
     }
 
 
-@pytest.mark.django_db
-def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeypatch, owner):
+@pytest.mark.django_db(transaction=True)
+def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(mcp_client, monkeypatch, owner):
     inspection = classify_domain_routing([], has_operational_inbox_claim=False)
     monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     raw = oauth_access_token(owner, scope="manage_domains read")
 
     inspected = tool_call(
-        client,
+        mcp_client,
         raw,
         "inspect_domain_dns",
         {"hostname": "New-Inbox.Example."},
@@ -225,7 +261,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
     }
 
     started = tool_call(
-        client,
+        mcp_client,
         raw,
         "start_domain_onboarding",
         {
@@ -239,7 +275,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
     assert DurableJob.objects.filter(kind="provision_domain", domain=domain).count() == 1
 
     pending_plan = tool_call(
-        client,
+        mcp_client,
         raw,
         "get_domain_setup_plan",
         {"domain_id": str(domain.id)},
@@ -259,7 +295,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
         ttl=300,
     )
     ready_plan = tool_call(
-        client,
+        mcp_client,
         raw,
         "get_domain_setup_plan",
         {"domain_id": str(domain.id)},
@@ -274,7 +310,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
     assert ready_plan["requires_explicit_confirmation"] is False
 
     queued = tool_call(
-        client,
+        mcp_client,
         raw,
         "request_domain_dns_check",
         {"domain_id": str(domain.id)},
@@ -304,7 +340,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
         value="claim-token",
     )
     provider_plan = tool_call(
-        client,
+        mcp_client,
         raw,
         "get_domain_setup_plan",
         {"domain_id": str(provider_domain.id)},
@@ -317,9 +353,9 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(client, monkeyp
     )
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
-    client, monkeypatch, owner
+    mcp_client, monkeypatch, owner
 ):
     inspection = classify_domain_routing(
         [],
@@ -329,7 +365,7 @@ def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
     raw = oauth_access_token(owner, scope="manage_domains")
 
     rejected = tool_call(
-        client,
+        mcp_client,
         raw,
         "start_domain_onboarding",
         {
@@ -342,9 +378,9 @@ def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
     assert not Domain.objects.filter(hostname="route-choice.example").exists()
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
-    client, owner, domain, conversation, inbound_message
+    mcp_client, owner, domain, conversation, inbound_message
 ):
     _, read_raw = APIToken.issue(
         domain=domain,
@@ -352,11 +388,11 @@ def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
         name="Domain reader",
         scopes=[APIToken.Scope.READ],
     )
-    feed = tool_call(client, read_raw, "read_message_feed", {"new_only": True})
+    feed = tool_call(mcp_client, read_raw, "read_message_feed", {"new_only": True})
     assert feed["isError"] is False
     assert [item["id"] for item in feed["structuredContent"]["items"]] == [str(inbound_message.id)]
     denied = tool_call(
-        client,
+        mcp_client,
         read_raw,
         "apply_conversation_action",
         {
@@ -374,7 +410,7 @@ def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
         scopes=[APIToken.Scope.WRITE],
     )
     changed = tool_call(
-        client,
+        mcp_client,
         write_raw,
         "apply_conversation_action",
         {
@@ -394,9 +430,9 @@ def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
     ).exists()
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_mcp_domain_scoping_hides_other_owner_conversations(
-    client, owner, domain, conversation, django_user_model
+    mcp_client, owner, domain, conversation, django_user_model
 ):
     other_owner = django_user_model.objects.create_user(
         email="other-mcp@example.com",
@@ -417,7 +453,7 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
         scopes=[APIToken.Scope.READ],
     )
     hidden = tool_call(
-        client,
+        mcp_client,
         raw,
         "get_conversation",
         {"domain_id": str(other_domain.id), "conversation_id": str(conversation.id)},
@@ -425,9 +461,9 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
     assert tool_error_payload(hidden)["code"] == "not_found"
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
-    client, monkeypatch, owner, domain
+    mcp_client, monkeypatch, owner, domain
 ):
     _, raw = APIToken.issue(
         domain=domain,
@@ -441,7 +477,7 @@ def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
 
     monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", unexpected_lookup)
     hidden = tool_call(
-        client,
+        mcp_client,
         raw,
         "inspect_domain_dns",
         {"hostname": "other.example"},
@@ -450,9 +486,9 @@ def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
     assert tool_error_payload(hidden)["code"] == "not_found"
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_mcp_agent_authored_draft_requires_exact_approval(
-    client, owner, domain, conversation, inbound_message
+    mcp_client, owner, domain, conversation, inbound_message
 ):
     MessageRecipient.objects.create(
         domain=domain,
@@ -468,7 +504,7 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
         scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE, APIToken.Scope.APPROVE_SEND],
     )
     created = tool_call(
-        client,
+        mcp_client,
         raw,
         "create_reply_draft",
         {
@@ -483,7 +519,7 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
 
     stale_hash = "0" * 64
     rejected = tool_call(
-        client,
+        mcp_client,
         raw,
         "approve_and_send_reply",
         {
@@ -497,7 +533,7 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
     assert not OutboundMessage.objects.exists()
 
     approved = tool_call(
-        client,
+        mcp_client,
         raw,
         "approve_and_send_reply",
         {

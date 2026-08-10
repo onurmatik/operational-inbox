@@ -14,11 +14,13 @@ dependencies = [
   "django-sesame>=3.2.3,<3.3",
   "dnspython>=2.7,<3",
   "gunicorn>=23,<24",
+  "mcp>=2.0,<2.1",
   "nh3>=0.2.20,<1",
   "openai>=1.99,<3",
   "pydantic>=2.11,<3",
   "python-dotenv>=1.0,<2",
   "stripe>=12,<15",
+  "uvicorn>=0.35,<1",
   "whitenoise>=6.8,<7",
 ]
 

@@ -59,7 +59,7 @@ class UserManager(BaseUserManager["User"]):
         return self._create_user(email, password, **extra_fields)
 
 
-class User(AbstractUser):
+class User(AbstractUser):  # type: ignore[django-manager-missing]  # Custom OAuth relation.
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     username = None
     email = models.EmailField(unique=True)
