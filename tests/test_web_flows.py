@@ -1075,6 +1075,9 @@ def test_authenticated_application_pages_render(
     assert b"Mailboxes" in dashboard.content
     assert b"Needs attention" not in dashboard.content
     assert b"Notifications" not in dashboard.content
+    assert b"Domain readiness" not in dashboard.content
+    assert b"Recent audited activity" not in dashboard.content
+    assert b"Audit activity needs attention" not in dashboard.content
 
     domains = client.get(reverse("domains"))
     assert b"Direct routing to Operational Inbox" in domains.content
@@ -1085,6 +1088,60 @@ def test_authenticated_application_pages_render(
     assert b"previous delivery outcome may be unknown" in detail.content
     assert b"SES acceptance" not in detail.content
     assert b"previous SES outcome" not in detail.content
+
+
+@pytest.mark.django_db
+def test_dashboard_only_surfaces_readiness_and_audit_when_they_need_attention(
+    client, owner, domain
+):
+    client.force_login(owner)
+    AuditEvent.objects.create(
+        domain=domain,
+        actor_type=AuditEvent.ActorType.OWNER,
+        actor_id=owner.id,
+        event_type="conversation.viewed",
+        object_type="Domain",
+        object_id=domain.id,
+        request_id="dashboard-normal-audit",
+    )
+
+    healthy = client.get(reverse("dashboard"))
+
+    assert healthy.status_code == 200
+    assert b"Domain readiness" not in healthy.content
+    assert b"Recent audited activity" not in healthy.content
+    assert b"Audit activity needs attention" not in healthy.content
+
+    domain.status = Domain.Status.PENDING_DNS
+    domain.inbound_ready = False
+    domain.save(update_fields=("status", "inbound_ready", "updated_at"))
+
+    pending = client.get(reverse("dashboard"))
+
+    assert b"Domain readiness needs attention" in pending.content
+    assert b"Current domain status: Pending DNS." in pending.content
+    assert reverse("domain_detail", args=[domain.id]).encode() in pending.content
+    assert b"Audit activity needs attention" not in pending.content
+
+    domain.status = Domain.Status.READY
+    domain.inbound_ready = True
+    domain.save(update_fields=("status", "inbound_ready", "updated_at"))
+    AuditEvent.objects.create(
+        domain=domain,
+        actor_type=AuditEvent.ActorType.AGENT,
+        actor_id=owner.id,
+        event_type="agent.draft_failed",
+        object_type="AgentRun",
+        request_id="dashboard-failed-audit",
+        metadata={"error_code": "openai_error"},
+    )
+
+    failed_audit = client.get(reverse("dashboard"))
+
+    assert b"Domain readiness needs attention" not in failed_audit.content
+    assert b"Audit activity needs attention" in failed_audit.content
+    assert b"agent.draft_failed" in failed_audit.content
+    assert reverse("audit").encode() in failed_audit.content
 
 
 @pytest.mark.django_db

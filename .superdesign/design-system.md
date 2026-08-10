@@ -93,7 +93,7 @@ Breadcrumbs include organization and project where ambiguity is possible. Cross-
 
 - Authentication pages use a centered 440px technical form with corner markers, a short trust statement, and no application rail.
 - Onboarding is a numbered, resumable sequence. Show limits before the user reaches them.
-- Dashboard is an operational overview of new mail, routing-address activity, quarantine, domain readiness, and recent audited activity; it does not infer tasks.
+- Dashboard is an operational overview of new mail, routing-address activity, and quarantine. Domain readiness and recent audit activity stay hidden when healthy; actionable readiness or audit failures appear as compact alerts beneath the page header. It does not infer tasks.
 - Inbox supports query, domain/routing-address/tag/security filters, pagination, and a complete unfiltered baseline. Tags are usage-derived free-form labels, never an account-level allowed list.
 - Conversation view favors the timeline and includes a compact internal tag editor. It has no Open/Waiting/Resolved or Start work controls.
 - Quarantine view never offers direct preview or download. It explains the verdict and records any administrative action.

@@ -7,11 +7,36 @@
     <p class="mt-1 text-sm text-muted">New mail, routing coverage, and platform health without workflow assumptions.</p>
   </div>
 
-  <section class="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Operational metrics">
+  {% if domain_readiness_alert or audit_alert_events %}
+    <section class="mt-6 space-y-3" aria-label="Operational alerts">
+      {% if domain_readiness_alert %}
+        <div role="alert" class="flex flex-col gap-3 border p-4 text-sm sm:flex-row sm:items-center sm:justify-between {% if domain_readiness_alert.severity == 'danger' %}border-coral-strong/40 bg-coral-soft text-coral-strong{% else %}border-gold-strong/40 bg-gold-soft text-gold-strong{% endif %}">
+          <div class="flex items-start gap-3">
+            <span aria-hidden="true" class="inline-flex size-6 shrink-0 items-center justify-center border border-current font-mono text-xs font-bold">!</span>
+            <div><p class="font-semibold">Domain readiness needs attention</p><p class="mt-1">{{ domain_readiness_alert.message }}</p></div>
+          </div>
+          <a href="{% url 'domain_detail' domain.id %}" class="inline-flex min-h-10 shrink-0 items-center font-semibold underline">Manage domain →</a>
+        </div>
+      {% endif %}
+      {% if audit_alert_events %}
+        <div role="alert" class="flex flex-col gap-3 border border-coral-strong/40 bg-coral-soft p-4 text-sm text-coral-strong sm:flex-row sm:items-center sm:justify-between">
+          <div class="flex items-start gap-3">
+            <span aria-hidden="true" class="inline-flex size-6 shrink-0 items-center justify-center border border-current font-mono text-xs font-bold">!</span>
+            <div>
+              <p class="font-semibold">Audit activity needs attention</p>
+              <p class="mt-1">{% if audit_alert_events|length == 1 %}A recent audit failure needs attention.{% else %}{{ audit_alert_events|length }} recent audit failures need attention.{% endif %} Latest: <span class="font-mono text-xs">{{ audit_alert_events.0.public_event_type }}</span></p>
+            </div>
+          </div>
+          <a href="{% url 'audit' %}" class="inline-flex min-h-10 shrink-0 items-center font-semibold underline">Review audit →</a>
+        </div>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="mt-6 grid gap-3 sm:grid-cols-3" aria-label="Operational metrics">
     <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">New messages</p><p class="mt-2 font-mono text-3xl">{{ metrics.new_messages }}</p><p class="mt-1 text-xs text-muted">Unviewed inbound mail in Inbox</p></div>
     <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Mailboxes</p><p class="mt-2 font-mono text-3xl">{{ metrics.mailboxes }}</p><p class="mt-1 text-xs text-muted">Observed routing addresses</p></div>
     <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Quarantined</p><p class="mt-2 font-mono text-3xl">{{ metrics.quarantined }}</p><p class="mt-1 text-xs text-muted">Message content remains locked</p></div>
-    <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domain readiness</p><p class="mt-2 font-mono text-3xl">{{ metrics.domains_ready }} / {{ metrics.domains_total }}</p><p class="mt-1 text-xs text-muted">Inbound and outbound tracked separately</p></div>
   </section>
 
   <section class="mt-8">
@@ -33,8 +58,4 @@
     </div>
   </section>
 
-  <div class="mt-8 grid gap-8 xl:grid-cols-2">
-    <section><div class="mb-3 flex items-center justify-between"><h2 class="font-heading text-lg font-semibold">Domain readiness</h2><a href="{% url 'domains' %}" class="text-sm font-semibold text-forest">Manage</a></div><div class="oi-panel divide-y divide-line">{% for domain in domains %}<a href="{% url 'domain_detail' domain.id %}" class="flex items-center justify-between p-4 hover:bg-paper/60"><div><p class="font-mono text-xs font-semibold">{{ domain.hostname }}</p><p class="mt-1 text-xs text-muted">Inbound {{ domain.inbound_ready|yesno:"ready,not ready" }} · Outbound {{ domain.outbound_ready|yesno:"ready,not ready" }}</p></div><span class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{{ domain.get_status_display }}</span></a>{% endfor %}</div></section>
-    <section><div class="mb-3 flex items-center justify-between"><h2 class="font-heading text-lg font-semibold">Recent audited activity</h2><a href="{% url 'audit' %}" class="text-sm font-semibold text-forest">Full audit</a></div><div class="oi-panel divide-y divide-line font-mono text-xs">{% for event in audit_events %}<div class="grid grid-cols-[7rem_1fr] gap-3 p-3"><time class="text-muted">{{ event.created_at|date:"m-d H:i:s" }}</time><p><strong>{{ event.get_actor_type_display }}</strong> <span class="text-muted">{{ event.public_event_type }}</span> <span class="text-forest">{{ event.object_type }}</span></p></div>{% empty %}<p class="p-6 text-sm text-muted">Audit events will appear as settings and messages change.</p>{% endfor %}</div></section>
-  </div>
 {% endblock %}

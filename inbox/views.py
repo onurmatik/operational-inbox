@@ -124,6 +124,17 @@ ACTIVE_ROUTING_TRANSITION_STATUSES = (
     InboundRoutingTransition.Status.FAILED,
 )
 
+RECENT_AUDIT_EVENT_LIMIT = 6
+AUDIT_PROBLEM_EVENT_TYPES = frozenset(
+    {
+        "agent.draft_failed",
+        "agent.report_failed",
+        "domain.outbound_provision_failed",
+        "domain.provision_failed",
+    }
+)
+AUDIT_PROBLEM_STATUSES = frozenset({"BOUNCED", "COMPLAINED", "FAILED", "UNKNOWN"})
+
 
 def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | None:
     transitions = sorted(
@@ -136,6 +147,39 @@ def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | Non
         reverse=True,
     )
     return transitions[0] if transitions else None
+
+
+def _domain_readiness_alert(domain: Domain) -> dict[str, str] | None:
+    inbound_problem = not domain.inbound_ready
+    outbound_problem = (
+        domain.outbound_status != Domain.OutboundStatus.DISABLED and not domain.outbound_ready
+    )
+    if not inbound_problem and not outbound_problem:
+        return None
+
+    danger = domain.status in {Domain.Status.ERROR, Domain.Status.DEGRADED} or (
+        domain.outbound_status in {Domain.OutboundStatus.ERROR, Domain.OutboundStatus.DEGRADED}
+    )
+    if domain.error_code:
+        message = domain.public_error_message
+    elif domain.outbound_error_code:
+        message = domain.public_outbound_error_message
+    elif inbound_problem:
+        message = (
+            f"{domain.hostname} is not ready to receive mail. "
+            f"Current domain status: {domain.get_status_display()}."
+        )
+    else:
+        message = (
+            f"{domain.hostname} is not ready to send mail. "
+            f"Current sending status: {domain.get_outbound_status_display()}."
+        )
+    return {"severity": "danger" if danger else "warning", "message": message}
+
+
+def _audit_event_has_problem(event: AuditEvent) -> bool:
+    status = str(event.metadata.get("status", "")).upper()
+    return event.event_type in AUDIT_PROBLEM_EVENT_TYPES or status in AUDIT_PROBLEM_STATUSES
 
 
 def _active_domain_test(
@@ -726,10 +770,15 @@ def dashboard(request: HttpRequest) -> HttpResponse:
         .prefetch_related("conversation__tags", "recipients")
         .order_by("-received_at")[:8]
     )
+    recent_audit_events = list(AuditEvent.objects.filter(domain=domain)[:RECENT_AUDIT_EVENT_LIMIT])
     context = {
         "active_nav": "overview",
         "domain": domain,
         "recent_messages": recent_messages,
+        "domain_readiness_alert": _domain_readiness_alert(domain),
+        "audit_alert_events": [
+            event for event in recent_audit_events if _audit_event_has_problem(event)
+        ],
         "metrics": {
             "new_messages": messages_qs.filter(
                 direction=Message.Direction.INBOUND,
@@ -745,11 +794,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
             .values("address")
             .distinct()
             .count(),
-            "domains_ready": int(domain.status == Domain.Status.READY),
-            "domains_total": 1,
         },
-        "domains": [domain],
-        "audit_events": AuditEvent.objects.filter(domain=domain)[:6],
     }
     return render(request, "inbox/dashboard.html", context)
 
