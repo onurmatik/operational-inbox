@@ -87,28 +87,33 @@ def test_cross_tenant_web_object_returns_404(client, owner, organization, projec
 
 
 @pytest.mark.django_db
-def test_api_bearer_scope_and_cross_tenant_404(client, owner, organization, project):
-    _, raw = APIToken.issue(
-        domain=organization,
-        owner=owner,
-        name="Read only",
-        scopes=[APIToken.Scope.READ],
-    )
+def test_api_bearer_has_global_access_and_cross_tenant_404(
+    client, monkeypatch, owner, organization, project
+):
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    _, raw = APIToken.issue(owner=owner)
     response = client.get(
         "/api/v1/domains",
         headers={"Authorization": f"Bearer {raw}"},
     )
     assert response.status_code == 200
     assert response.json()["items"][0]["id"] == str(organization.id)
-    forbidden = client.post(
+    created = client.post(
         "/api/v1/domains",
-        data={"hostname": "forbidden.example", "setup_mode": "DIRECT_MX"},
+        data={"hostname": "created-by-token.example", "setup_mode": "DIRECT_MX"},
         content_type="application/json",
         headers={"Authorization": f"Bearer {raw}"},
     )
-    assert forbidden.status_code == 403
-    assert forbidden.json()["code"] == "insufficient_scope"
-    assert forbidden.json()["request_id"]
+    assert created.status_code == 202
+    assert Domain.objects.get(hostname="created-by-token.example").owner == owner
+    token_rotation = client.post(
+        "/api/v1/token",
+        data={},
+        content_type="application/json",
+        headers={"Authorization": f"Bearer {raw}"},
+    )
+    assert token_rotation.status_code == 401
+    assert token_rotation.json()["code"] == "authentication_required"
 
     other_id = "11111111-1111-4111-8111-111111111111"
     hidden = client.get(

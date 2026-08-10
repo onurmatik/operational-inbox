@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django import forms
 
-from inbox.models import APIToken, Domain, RetentionPolicy, User
+from inbox.models import Domain, RetentionPolicy, User
 from inbox.services.domains import normalize_hostname
 
 
@@ -100,24 +100,6 @@ class RetentionForm(StyledFormMixin, forms.ModelForm):
 class DraftRevisionForm(StyledFormMixin, forms.Form):
     subject = forms.CharField(max_length=998)
     body_text = forms.CharField(max_length=20000, widget=forms.Textarea(attrs={"rows": 14}))
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._style_fields()
-
-
-class APITokenForm(StyledFormMixin, forms.Form):
-    name = forms.CharField(max_length=80)
-    all_domains = forms.BooleanField(
-        required=False,
-        label="Allow access to all current and future domains",
-        help_text="Leave off to keep this token limited to the active domain.",
-    )
-    scopes = forms.MultipleChoiceField(
-        choices=APIToken.Scope.choices,
-        widget=forms.CheckboxSelectMultiple,
-        initial=[APIToken.Scope.READ],
-    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

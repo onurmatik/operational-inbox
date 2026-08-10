@@ -2,6 +2,7 @@
 {% load static %}
 {% block body %}
   <div class="min-h-screen lg:grid lg:grid-cols-[224px_minmax(0,1fr)]">
+    <button id="sidebar-backdrop" type="button" class="fixed inset-0 z-40 hidden bg-ink/20 lg:hidden" aria-label="Close navigation"></button>
     <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-50 hidden w-56 flex-col border-r border-line bg-white lg:flex">
       <a href="{% url 'dashboard' %}" class="flex h-14 items-center gap-3 border-b border-line px-4 font-heading text-[17px] font-semibold tracking-tight">
         <img src="{% static 'img/logo.svg' %}" alt="" class="size-7">
@@ -9,16 +10,21 @@
       </a>
       <nav class="flex-1 overflow-y-auto py-4 text-sm" aria-label="Primary navigation">
         <a href="{% url 'dashboard' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'overview' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▦</span>Overview</a>
-        <a href="{{ nav_current_inbox_url }}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'inbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
-          <span aria-hidden="true">▤</span>
-          Inbox
-          {% if nav_quarantine_count %}<span class="ml-auto bg-quarantine-soft px-1.5 font-mono text-[10px] text-quarantine-strong">{{ nav_quarantine_count }}</span>{% endif %}
-        </a>
-        <a href="{% url 'outbox' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'outbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
-          <span aria-hidden="true">⇥</span>
-          Outbox
-          {% if nav_outbound_problem_count %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_outbound_problem_count }}</span>{% endif %}
-        </a>
+        {% if current_domain %}
+          <a href="{{ nav_current_inbox_url }}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'inbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
+            <span aria-hidden="true">▤</span>
+            Inbox
+            {% if nav_quarantine_count %}<span class="ml-auto bg-quarantine-soft px-1.5 font-mono text-[10px] text-quarantine-strong">{{ nav_quarantine_count }}</span>{% endif %}
+          </a>
+          <a href="{% url 'outbox' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'outbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
+            <span aria-hidden="true">⇥</span>
+            Outbox
+            {% if nav_outbound_problem_count %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_outbound_problem_count }}</span>{% endif %}
+          </a>
+        {% else %}
+          <span class="flex min-h-10 cursor-not-allowed items-center gap-3 px-4 text-muted opacity-50" aria-disabled="true" title="Connect a domain to use Inbox"><span aria-hidden="true">▤</span>Inbox</span>
+          <span class="flex min-h-10 cursor-not-allowed items-center gap-3 px-4 text-muted opacity-50" aria-disabled="true" title="Connect a domain to use Outbox"><span aria-hidden="true">⇥</span>Outbox</span>
+        {% endif %}
         {% if nav_inbox_tree %}
           <div class="border-b border-line bg-paper/30 px-2 pb-3 pt-2">
             <p class="mb-1 px-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domains</p>
@@ -50,21 +56,72 @@
             </div>
           </div>
         {% endif %}
-        <p class="mb-1 mt-5 px-4 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Settings</p>
-        <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'domains' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◎</span>Domains</a>
-        <a href="{% url 'retention_settings' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'retention' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◷</span>Retention</a>
-        <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'api_tokens' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">⌁</span>API tokens</a>
-        <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'audit' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">≡</span>Audit</a>
-        <a href="{% url 'billing' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'billing' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">◈</span>Plan &amp; billing<span class="ml-auto oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span></a>
       </nav>
-      <div class="border-t border-line p-4">
-        <p class="truncate text-xs font-semibold">{{ request.user.email }}</p>
-        <form method="post" action="{% url 'logout' %}" class="mt-2">{% csrf_token %}<button class="text-xs font-semibold text-muted hover:text-forest">Sign out</button></form>
-      </div>
     </aside>
+
     <div class="min-w-0 lg:col-start-2">
+      <header class="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-white px-4 sm:px-6 lg:px-8">
+        <div class="flex min-w-0 items-center gap-3">
+          <button id="sidebar-toggle" type="button" class="oi-button-secondary min-h-9 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">
+            <span aria-hidden="true">☰</span><span class="sr-only">Open navigation</span>
+          </button>
+          <div class="hidden min-w-0 items-center gap-3 sm:flex">
+            <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">{% if current_domain %}Active domain{% else %}Domain{% endif %}</span>
+            <span class="h-4 w-px bg-line" aria-hidden="true"></span>
+            <span class="truncate text-sm font-semibold">{{ current_domain.hostname|default:"No domain connected" }}</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 sm:gap-3">
+          <div class="relative" data-dropdown>
+            <button id="settings-menu-button" type="button" class="oi-button-secondary min-h-9 px-3 {% if active_nav == 'domains' or active_nav == 'retention' or active_nav == 'api_tokens' or active_nav == 'audit' %}border-forest text-forest{% endif %}" aria-label="Settings" title="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu" data-dropdown-button>
+              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.7 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.5 4.7a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.08.37.3.72.6 1 .3.28.7.42 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"></path></svg>
+              <span class="hidden sm:inline">Settings</span>
+              <span class="text-xs text-muted" aria-hidden="true">⌄</span>
+            </button>
+            <div id="settings-menu" class="absolute right-0 top-[calc(100%+8px)] z-[60] hidden w-72 border border-line-strong bg-white p-1 shadow-[0_12px_32px_rgba(17,41,29,0.12)]" role="menu" aria-labelledby="settings-menu-button" data-dropdown-panel>
+              <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'domains' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">◎</span><span>Domains</span></a>
+              <div class="my-1 border-t border-line" role="separator"></div>
+              {% if current_domain %}
+                <a href="{% url 'retention_settings' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'retention' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">◷</span><span>Retention</span></a>
+              {% else %}
+                <span class="flex cursor-not-allowed items-start gap-3 px-3 py-2 text-sm text-muted opacity-50" role="menuitem" aria-disabled="true"><span class="mt-0.5 w-4 text-center" aria-hidden="true">◷</span><span><span class="block">Retention</span><span class="font-mono text-[10px] uppercase tracking-[0.06em]">Requires a domain</span></span></span>
+              {% endif %}
+              <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'api_tokens' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">⌁</span><span>API token</span></a>
+              {% if current_domain %}
+                <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'audit' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">≡</span><span>Audit</span></a>
+              {% else %}
+                <span class="flex cursor-not-allowed items-start gap-3 px-3 py-2 text-sm text-muted opacity-50" role="menuitem" aria-disabled="true"><span class="mt-0.5 w-4 text-center" aria-hidden="true">≡</span><span><span class="block">Audit</span><span class="font-mono text-[10px] uppercase tracking-[0.06em]">Requires a domain</span></span></span>
+                <div class="mt-1 border-t border-line bg-paper/50 p-3">
+                  <p class="text-xs leading-5 text-muted">Connect a domain to unlock domain-scoped settings.</p>
+                  <a href="{% url 'domain_create' %}" class="mt-2 inline-flex min-h-8 items-center text-xs font-semibold text-forest hover:underline" role="menuitem">Connect domain →</a>
+                </div>
+              {% endif %}
+            </div>
+          </div>
+
+          <div class="relative" data-dropdown>
+            <button id="profile-menu-button" type="button" class="flex min-h-9 items-center gap-2 border border-line bg-paper px-2 transition-colors hover:border-line-strong" aria-haspopup="menu" aria-expanded="false" aria-controls="profile-menu" aria-label="Open account menu" data-dropdown-button>
+              <span class="flex size-6 items-center justify-center bg-forest font-mono text-[10px] font-semibold text-white" aria-hidden="true">{{ request.user.email|first|upper }}</span>
+              <span class="text-xs text-muted" aria-hidden="true">⌄</span>
+            </button>
+            <div id="profile-menu" class="absolute right-0 top-[calc(100%+8px)] z-[60] hidden w-64 border border-line-strong bg-white p-1 shadow-[0_12px_32px_rgba(17,41,29,0.12)]" role="menu" aria-labelledby="profile-menu-button" data-dropdown-panel>
+              <div class="mb-1 border-b border-line px-3 py-2">
+                <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Signed in as</p>
+                <p class="mt-1 truncate text-xs font-semibold">{{ request.user.email }}</p>
+              </div>
+              <a href="{% url 'billing' %}" class="flex min-h-11 items-center justify-between gap-3 px-3 py-2 text-sm {% if active_nav == 'billing' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem">
+                <span>{% if plan_entitlements.is_pro %}Manage plan{% elif active_nav == 'billing' and not billing_configured %}Plan &amp; billing{% else %}Upgrade to Pro{% endif %}</span>
+                <span class="oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span>
+              </a>
+              <div class="my-1 border-t border-line" role="separator"></div>
+              <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit" class="flex min-h-10 w-full items-center gap-3 px-3 py-2 text-left text-sm font-semibold text-coral-strong hover:bg-coral-soft" role="menuitem"><span aria-hidden="true">↪</span>Sign out</button></form>
+            </div>
+          </div>
+        </div>
+      </header>
+
       <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
-        <button id="sidebar-toggle" type="button" class="oi-button-secondary mb-6 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">Menu</button>
         {% if active_nav != 'overview' and current_domain and not current_domain_writable %}
           <div class="mb-6 border border-gold-strong/40 bg-gold-soft p-4 text-sm text-gold-strong">
             <strong>This domain is read-only on Free.</strong> New mail continues to arrive, but changes require <a href="{% url 'billing' %}" class="underline">Operational Inbox Pro</a>.
@@ -74,15 +131,4 @@
       </main>
     </div>
   </div>
-  <script>
-    document.addEventListener("DOMContentLoaded", () => {
-      const button = document.getElementById("sidebar-toggle");
-      const sidebar = document.getElementById("app-sidebar");
-      button?.addEventListener("click", () => {
-        const open = sidebar.classList.toggle("hidden") === false;
-        sidebar.classList.toggle("flex", open);
-        button.setAttribute("aria-expanded", String(open));
-      });
-    });
-  </script>
 {% endblock %}

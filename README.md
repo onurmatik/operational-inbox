@@ -40,8 +40,8 @@ English.
   never retries an ambiguous submission automatically. New inbound mail is not assigned a built-in
   workflow state or repeatedly classified into an application-owned work queue.
 - Django Ninja `/api/v1`, an all-domain inbound message feed, CSRF-protected session access, and
-  once-displayed hashed bearer tokens that can be account- or domain-scoped with `read`, `write`,
-  `manage_domains`, and `send` scopes.
+  one once-displayed, hashed personal bearer token with full operational access across all current
+  and future domains.
 - SQLite WAL deployment, encrypted integrity-checked backups, configurable retention, private S3
   storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps configuration, and a
   locked `origin/main` deployment flow.
@@ -103,7 +103,7 @@ retry; malformed or permanently invalid input leaves an inspectable quarantine e
 ## Tenant and data model
 
 All tenant records use UUID primary keys and carry a `domain_id`. Tenant resolution begins with
-the authenticated domain owner or an owner-/domain-scoped bearer token
+the authenticated domain owner or that owner's global personal bearer token
 before an object identifier is accepted. Cross-tenant web and API lookups return `404`, and S3
 keys and AWS implementation details are never exposed in API errors.
 
@@ -355,10 +355,12 @@ a bearer token:
 Authorization: Bearer oi_<one-time-secret>
 ```
 
-Only the hash and a short lookup prefix are stored. The raw token is displayed once. Tokens are
-independently revocable and limited to `read`, `write`, `manage_domains`, and/or `send`. A
-token can cover one domain or all current and future active domains owned by the account. Creating
-a new domain through MCP still requires the owner's OAuth session rather than a legacy bearer token.
+Only the hash and a short lookup prefix are stored. The raw token is displayed once. Each user has
+at most one active personal token; regenerating it revokes the previous token atomically. The token
+inherits the owner's operational access across every current and future domain, including domain
+onboarding. Token creation, regeneration, and revocation still require the owner's browser session.
+OAuth agent connections continue to use explicit `read`, `write`, `manage_domains`, and `send`
+consent scopes.
 
 Conversation lists use opaque signed history cursors. The message feed also returns an opaque
 checkpoint: persist it and pass it as `after` to poll only messages received since the last

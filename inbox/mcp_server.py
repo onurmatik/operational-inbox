@@ -38,7 +38,7 @@ from inbox.api import (
     outbound_status,
     require_scope,
 )
-from inbox.models import APIToken, Domain
+from inbox.models import AccessScope, Domain
 from inbox.services.domains import (
     DomainClaimLookupError,
     DomainRoutingInspection,
@@ -638,8 +638,8 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "description": (
             "Create or reuse an Operational Inbox domain claim and queue provisioning. Use the "
             "setup mode recommended by inspect_domain_dns. Set routing_choice_confirmed only after "
-            "the user explicitly chooses an ambiguous or non-recommended route. OAuth owner access "
-            "is required; legacy API tokens cannot create domains."
+            "the user explicitly chooses an ambiguous or non-recommended route. OAuth connections "
+            "and personal API tokens can create domains for their owner."
         ),
         "inputSchema": _object_schema(
             {
@@ -1034,28 +1034,28 @@ MCP_TOOLS: list[dict[str, Any]] = [
 ]
 
 MCP_TOOL_SCOPES = {
-    "list_domains": APIToken.Scope.READ,
-    "inspect_domain_dns": APIToken.Scope.MANAGE_DOMAINS,
-    "start_domain_onboarding": APIToken.Scope.MANAGE_DOMAINS,
-    "get_domain_setup_plan": APIToken.Scope.MANAGE_DOMAINS,
-    "request_domain_dns_check": APIToken.Scope.MANAGE_DOMAINS,
-    "read_message_feed": APIToken.Scope.READ,
-    "get_conversation": APIToken.Scope.READ,
-    "add_conversation_tag": APIToken.Scope.WRITE,
-    "remove_conversation_tag": APIToken.Scope.WRITE,
-    "apply_conversation_action": APIToken.Scope.WRITE,
-    "get_domain_health": APIToken.Scope.READ,
-    "get_outbound_status": APIToken.Scope.READ,
-    "list_outbound": APIToken.Scope.READ,
-    "get_outbound_control": APIToken.Scope.READ,
-    "set_outbound_paused": APIToken.Scope.SEND,
-    "enable_outbound_sending": APIToken.Scope.MANAGE_DOMAINS,
-    "list_audit_events": APIToken.Scope.READ,
-    "create_reply_draft": APIToken.Scope.WRITE,
-    "get_reply_draft": APIToken.Scope.READ,
-    "revise_reply_draft": APIToken.Scope.WRITE,
-    "send_reply": APIToken.Scope.SEND,
-    "resend_outbound": APIToken.Scope.SEND,
+    "list_domains": AccessScope.READ,
+    "inspect_domain_dns": AccessScope.MANAGE_DOMAINS,
+    "start_domain_onboarding": AccessScope.MANAGE_DOMAINS,
+    "get_domain_setup_plan": AccessScope.MANAGE_DOMAINS,
+    "request_domain_dns_check": AccessScope.MANAGE_DOMAINS,
+    "read_message_feed": AccessScope.READ,
+    "get_conversation": AccessScope.READ,
+    "add_conversation_tag": AccessScope.WRITE,
+    "remove_conversation_tag": AccessScope.WRITE,
+    "apply_conversation_action": AccessScope.WRITE,
+    "get_domain_health": AccessScope.READ,
+    "get_outbound_status": AccessScope.READ,
+    "list_outbound": AccessScope.READ,
+    "get_outbound_control": AccessScope.READ,
+    "set_outbound_paused": AccessScope.SEND,
+    "enable_outbound_sending": AccessScope.MANAGE_DOMAINS,
+    "list_audit_events": AccessScope.READ,
+    "create_reply_draft": AccessScope.WRITE,
+    "get_reply_draft": AccessScope.READ,
+    "revise_reply_draft": AccessScope.WRITE,
+    "send_reply": AccessScope.SEND,
+    "resend_outbound": AccessScope.SEND,
 }
 
 
@@ -1152,19 +1152,11 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
     if name == "list_domains":
         return domains_list(request)
     if name == "inspect_domain_dns":
-        require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
+        require_scope(request, AccessScope.MANAGE_DOMAINS)
         hostname = _optional_string(arguments, "hostname")
         if hostname is None:
             raise APIError("validation_error", "hostname is required.")
         normalized = _validated_hostname(hostname)
-        auth = getattr(request, "auth", None)
-        if (
-            isinstance(auth, APIToken)
-            and auth.domain_id is not None
-            and auth.domain is not None
-            and normalized != auth.domain.hostname
-        ):
-            raise APIError("not_found", "The requested resource was not found.", status=404)
         inspection = _inspect_domain_dns(normalized)
         return _serialize_domain_inspection(normalized, inspection)
     if name == "start_domain_onboarding":

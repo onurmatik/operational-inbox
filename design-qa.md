@@ -28,7 +28,7 @@
 - Typography: Space Grotesk headings, Inter body text, and JetBrains Mono labels preserve the approved hierarchy, weights, line height, and tracking.
 - Spacing: the plan panel, price block, benefit dividers, full-width CTA, and comparison panel align to the approved vertical rhythm at desktop size.
 - Color and shape: existing paper, surface, ink, forest, muted, line, and gold tokens are used directly; no new palette, radius language, shadow, or gradient was introduced.
-- Copy: the offer highlights the verified 20-domain limit, unlimited routed addresses, the all-domain agent feed, scoped API access, optional drafts, and approved outbound sending without overstating mailbox provisioning.
+- Copy: the offer highlights the verified 20-domain limit, unlimited routed addresses, the all-domain agent feed, personal API access, optional drafts, and approved outbound sending without overstating mailbox provisioning.
 - Accessibility: price comparison uses semantic deletion markup, highlights are a labeled list, the checkout remains a semantic POST form, and existing focus-visible behavior is preserved.
 
 ### Behavior and validation

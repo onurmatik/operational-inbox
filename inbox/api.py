@@ -18,6 +18,7 @@ from ninja.security import HttpBearer, django_auth
 from pydantic import Field
 
 from inbox.models import (
+    AccessScope,
     APIToken,
     Attachment,
     AuditEvent,
@@ -205,38 +206,16 @@ class OutboundControlOutput(Schema):
     limits: OutboundLimitsOutput
 
 
-class TokenInput(Schema):
-    name: str = Field(min_length=1, max_length=80)
-    scopes: list[Literal["read", "write", "manage_domains", "send"]]
-    all_domains: bool = False
-
-
 class ScopedBearer(HttpBearer):
     def authenticate(self, request: HttpRequest, token: str) -> APIToken | None:
         if not token.startswith("oi_") or len(token) < 40:
             return None
-        candidates = (
-            APIToken.objects.filter(
-                prefix=token[:10],
-                revoked_at__isnull=True,
-                owner__is_active=True,
-                owner__email_verified_at__isnull=False,
-            )
-            .filter(
-                Q(domain__isnull=True)
-                | Q(
-                    domain__status__in=[
-                        Domain.Status.PROVISIONING,
-                        Domain.Status.PENDING_DNS,
-                        Domain.Status.PENDING_TEST,
-                        Domain.Status.READY,
-                        Domain.Status.ERROR,
-                        Domain.Status.DEGRADED,
-                    ]
-                )
-            )
-            .select_related("domain", "owner")
-        )
+        candidates = APIToken.objects.filter(
+            prefix=token[:10],
+            revoked_at__isnull=True,
+            owner__is_active=True,
+            owner__email_verified_at__isnull=False,
+        ).select_related("owner")
         for candidate in candidates:
             if candidate.is_active and candidate.matches(token):
                 APIToken.objects.filter(id=candidate.id).update(last_used_at=timezone.now())
@@ -355,8 +334,6 @@ def require_scope(request: HttpRequest, scope: str) -> None:
                 "Operational Inbox Pro is required for API access.",
                 status=403,
             )
-        if not auth.has_scope(scope):
-            raise APIError("insufficient_scope", "This token lacks the required scope.", status=403)
         return
     user = request.user
     if not user.is_authenticated or not user.is_email_verified:
@@ -384,7 +361,7 @@ def record_api_audit(
     audit_metadata = dict(metadata or {})
     if is_token:
         audit_metadata["api_token_id"] = str(auth.id)
-        audit_metadata["api_token_name"] = auth.name
+        audit_metadata["api_token_prefix"] = auth.prefix
     elif oauth_client_id is not None:
         audit_metadata["oauth_client_id"] = oauth_client_id
     AuditEvent.objects.create(
@@ -402,10 +379,6 @@ def record_api_audit(
 def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
     auth = request.auth
     if isinstance(auth, APIToken):
-        if auth.domain_id is not None and auth.domain_id != domain_id:
-            raise Http404
-        if auth.domain_id is not None:
-            return auth.domain
         try:
             return Domain.objects.exclude(status=Domain.Status.DISABLED).get(
                 id=domain_id,
@@ -423,8 +396,6 @@ def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
 
 def api_domains_queryset(request: HttpRequest):
     auth = request.auth
-    if isinstance(auth, APIToken) and auth.domain_id is not None:
-        return Domain.objects.filter(id=auth.domain_id)
     owner = auth.owner if isinstance(auth, APIToken) else request.user
     return Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED)
 
@@ -810,7 +781,7 @@ def api_health(request: HttpRequest) -> dict[str, str]:
 
 @api.get("/domains", auth=authenticated, tags=["Domains"])
 def domains_list(request: HttpRequest):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domains = api_domains_queryset(request)
     return {"items": [_domain_dict(item) for item in domains]}
 
@@ -822,16 +793,10 @@ def domains_list(request: HttpRequest):
     tags=["Domains"],
 )
 def domains_create(request: HttpRequest, payload: DomainInput):
-    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
-    if isinstance(request.auth, APIToken):
-        raise APIError(
-            "session_required",
-            "Creating domains requires an owner session.",
-            status=403,
-        )
+    require_scope(request, AccessScope.MANAGE_DOMAINS)
     try:
         domain = create_domain(
-            owner=request.user,
+            owner=_api_owner(request),
             hostname=payload.hostname,
             setup_mode=payload.setup_mode,
         )
@@ -887,14 +852,14 @@ def domains_create(request: HttpRequest, payload: DomainInput):
 
 @api.get("/domains/{domain_id}", auth=authenticated, tags=["Domains"])
 def domains_detail(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     return _domain_dict(domain, details=True)
 
 
 @api.get("/domains/{domain_id}/setup-plan", auth=authenticated, tags=["Domains"])
 def domains_setup_plan(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
+    require_scope(request, AccessScope.MANAGE_DOMAINS)
     domain = api_domain(request, domain_id)
     return _domain_setup_plan_dict(domain)
 
@@ -906,7 +871,7 @@ def domains_setup_plan(request: HttpRequest, domain_id: uuid.UUID):
     tags=["Domains"],
 )
 def domains_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     try:
         domain, job, started = retry_domain_provisioning(domain)
@@ -945,7 +910,7 @@ def domains_start_routing_transition(
     domain_id: uuid.UUID,
     payload: RoutingTransitionInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     try:
         transition, started = begin_routing_transition(domain, payload.target_mode)
@@ -998,7 +963,7 @@ def domains_start_routing_transition(
     tags=["Domains"],
 )
 def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
@@ -1037,7 +1002,7 @@ def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID
     tags=["Domains"],
 )
 def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
+    require_scope(request, AccessScope.MANAGE_DOMAINS)
     domain = api_domain(request, domain_id)
     try:
         domain, job, started = request_outbound_provisioning(domain)
@@ -1072,7 +1037,7 @@ def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
     tags=["Domains"],
 )
 def domains_check(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
+    require_scope(request, AccessScope.MANAGE_DOMAINS)
     domain = api_domain(request, domain_id)
     transition_needs_check = domain.routing_transitions.filter(
         status__in=(
@@ -1129,7 +1094,7 @@ def domains_check(request: HttpRequest, domain_id: uuid.UUID):
     tags=["Domains"],
 )
 def domains_test(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
@@ -1187,7 +1152,7 @@ def domains_test(request: HttpRequest, domain_id: uuid.UUID):
     tags=["Domains"],
 )
 def domains_disable(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     domain.status = Domain.Status.DISABLED
     domain.inbound_ready = False
@@ -1239,7 +1204,7 @@ def conversations_list(
     security: Literal["suspicious", "quarantined"] | None = None,
     q: str | None = None,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     queryset = Conversation.objects.filter(domain=domain).annotate(
         new_message_count=Count(
@@ -1312,7 +1277,7 @@ def messages_feed(
     new_only: bool = False,
     security: Literal["suspicious", "quarantined"] | None = None,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     if cursor and after:
         raise APIError(
             "invalid_cursor",
@@ -1417,7 +1382,7 @@ def messages_feed(
     tags=["Conversations"],
 )
 def conversations_detail(request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(
         Conversation.objects.prefetch_related("tags"),
@@ -1438,7 +1403,7 @@ def conversations_action(
     conversation_id: uuid.UUID,
     payload: ConversationActionInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     event_types = {
         "star": "conversation.starred",
@@ -1477,7 +1442,7 @@ def conversations_tags_add(
     conversation_id: uuid.UUID,
     payload: ConversationTagInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     try:
@@ -1509,7 +1474,7 @@ def conversations_tags_remove(
     conversation_id: uuid.UUID,
     tag_id: uuid.UUID,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     tag = scoped_object(ConversationTag, domain, tag_id)
@@ -1539,7 +1504,7 @@ def classifications_override(
     message_id: uuid.UUID,
     payload: ClassificationInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     message = scoped_object(Message, domain, message_id)
     with transaction.atomic():
@@ -1585,7 +1550,7 @@ def drafts_create_authored(
     conversation_id: uuid.UUID,
     payload: RevisionInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
@@ -1621,7 +1586,7 @@ def drafts_create_authored(
     tags=["Drafts"],
 )
 def drafts_detail(request: HttpRequest, domain_id: uuid.UUID, draft_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     revision = draft.current_revision
@@ -1653,7 +1618,7 @@ def drafts_revise(
     draft_id: uuid.UUID,
     payload: RevisionInput,
 ):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
@@ -1686,7 +1651,7 @@ def drafts_send(
     draft_id: uuid.UUID,
     payload: SendInput,
 ):
-    require_scope(request, APIToken.Scope.SEND)
+    require_scope(request, AccessScope.SEND)
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
@@ -1732,7 +1697,7 @@ def outbound_list(
     cursor: str | None = None,
     limit: int = 50,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domains = api_domains_queryset(request)
     if domain_id is not None:
         domain = api_domain(request, domain_id)
@@ -1764,15 +1729,6 @@ def outbound_list(
     return {"items": [_outbound_dict(item) for item in items], "next_cursor": next_cursor}
 
 
-def _require_account_wide_token(request: HttpRequest) -> None:
-    if isinstance(request.auth, APIToken) and request.auth.domain_id is not None:
-        raise APIError(
-            "all_domains_required",
-            "Account-wide sending controls require an all-domains token.",
-            status=403,
-        )
-
-
 @api.get(
     "/outbound/control",
     auth=authenticated,
@@ -1780,8 +1736,7 @@ def _require_account_wide_token(request: HttpRequest) -> None:
     tags=["Outbound"],
 )
 def outbound_control_get(request: HttpRequest):
-    require_scope(request, APIToken.Scope.READ)
-    _require_account_wide_token(request)
+    require_scope(request, AccessScope.READ)
     return _outbound_control_dict(_api_owner(request))
 
 
@@ -1792,8 +1747,7 @@ def outbound_control_get(request: HttpRequest):
     tags=["Outbound"],
 )
 def outbound_control_set(request: HttpRequest, payload: OutboundControlInput):
-    require_scope(request, APIToken.Scope.SEND)
-    _require_account_wide_token(request)
+    require_scope(request, AccessScope.SEND)
     owner = _api_owner(request)
     set_outbound_paused(owner, paused=payload.paused)
     for domain in api_domains_queryset(request):
@@ -1813,7 +1767,7 @@ def outbound_control_set(request: HttpRequest, payload: OutboundControlInput):
     tags=["Outbound"],
 )
 def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     outbound = scoped_object(
         OutboundMessage.objects.prefetch_related("delivery_events"), domain, outbound_id
@@ -1828,7 +1782,7 @@ def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
     tags=["Outbound"],
 )
 def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.SEND)
+    require_scope(request, AccessScope.SEND)
     domain = api_domain(request, domain_id)
     original = scoped_object(OutboundMessage, domain, outbound_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
@@ -1861,7 +1815,7 @@ def reports_list(
     cursor: str | None = None,
     limit: int = 50,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     reports, next_cursor = _paginate_queryset(
         Report.objects.filter(domain=domain),
@@ -1896,7 +1850,7 @@ def notifications_list(
     cursor: str | None = None,
     limit: int = 50,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     notifications, next_cursor = _paginate_queryset(
         Notification.objects.filter(domain=domain, channel=Notification.Channel.IN_APP),
@@ -1927,7 +1881,7 @@ def notifications_list(
     tags=["Notifications"],
 )
 def notifications_read(request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, AccessScope.WRITE)
     domain = api_domain(request, domain_id)
     notification = scoped_object(Notification, domain, notification_id)
     notification.status = Notification.Status.READ
@@ -1944,7 +1898,7 @@ def audit_list(
     cursor: str | None = None,
     limit: int = 50,
 ):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     events, next_cursor = _paginate_queryset(
         AuditEvent.objects.filter(domain=domain),
@@ -1977,7 +1931,7 @@ def audit_list(
     tags=["Attachments"],
 )
 def attachments_url(request: HttpRequest, domain_id: uuid.UUID, attachment_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.READ)
+    require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     attachment = scoped_object(Attachment, domain, attachment_id)
     try:
@@ -1990,43 +1944,17 @@ def attachments_url(request: HttpRequest, domain_id: uuid.UUID, attachment_id: u
     return {"url": authorized.url, "expires_in": authorized.expires_in}
 
 
-@api.post(
-    "/domains/{domain_id}/tokens",
-    auth=authenticated,
-    response={201: dict},
-    tags=["Tokens"],
-)
-def tokens_create(request: HttpRequest, domain_id: uuid.UUID, payload: TokenInput):
-    require_scope(request, APIToken.Scope.WRITE)
-    domain = api_domain(request, domain_id)
-    if isinstance(request.auth, APIToken):
-        raise APIError(
-            "session_required", "API tokens must be created from an owner session.", status=403
-        )
-    try:
-        token, raw = APIToken.issue(
-            domain=None if payload.all_domains else domain,
-            owner=request.user,
-            name=payload.name,
-            scopes=list(payload.scopes),
-        )
-    except DjangoValidationError as exc:
-        raise APIError("validation_error", "; ".join(exc.messages)) from exc
-    record_api_audit(
-        request,
-        domain,
-        "api_token.created",
-        token,
-        {"scopes": token.scopes, "all_domains": token.domain_id is None},
-    )
+@api.post("/token", auth=django_auth, response={201: dict}, tags=["Token"])
+def token_rotate(request: HttpRequest):
+    require_scope(request, AccessScope.WRITE)
+    token, raw = APIToken.issue(owner=request.user)
     return Status(
         201,
         {
             "id": str(token.id),
             "token": raw,
             "prefix": token.prefix,
-            "scopes": token.scopes,
-            "all_domains": token.domain_id is None,
+            "access": "all_operational_actions",
             "shown_once": True,
         },
     )

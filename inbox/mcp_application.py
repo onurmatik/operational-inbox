@@ -139,7 +139,7 @@ class OperationalInboxTokenVerifier(TokenVerifier):
             return AccessToken(
                 token=raw_token,
                 client_id=f"api-token:{api_token.id}",
-                scopes=list(api_token.scopes),
+                scopes=list(settings.MCP_REQUIRED_SCOPES),
                 expires_at=expires_at,
                 resource=settings.MCP_RESOURCE_URL,
                 subject=str(api_token.owner_id),
@@ -177,7 +177,7 @@ def _django_request(access_token: AccessToken, request_id: str) -> HttpRequest:
         api_token_id = claims.get("api_token_id")
         if not isinstance(api_token_id, str):
             raise ValueError("Invalid API token identity.")
-        api_token = APIToken.objects.select_related("domain", "owner").get(id=api_token_id)
+        api_token = APIToken.objects.select_related("owner").get(id=api_token_id)
         request.auth = api_token  # type: ignore[attr-defined]
         request.user = api_token.owner
         return request

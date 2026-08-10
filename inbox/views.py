@@ -35,7 +35,6 @@ from sesame.utils import get_parameters
 from sesame.views import LoginView as SesameLoginView
 
 from inbox.forms import (
-    APITokenForm,
     DomainForm,
     DraftRevisionForm,
     RetentionForm,
@@ -259,6 +258,11 @@ def _safe_next(request: HttpRequest, value: str | None) -> str:
     ):
         return fallback
     return value
+
+
+def _domain_required_redirect(request: HttpRequest, feature: str) -> HttpResponse:
+    messages.info(request, f"Connect a domain to use {feature}.")
+    return redirect("domains")
 
 
 def _take_rate_limit_slot(
@@ -1862,11 +1866,7 @@ def retention_settings(request: HttpRequest) -> HttpResponse:
     try:
         domain = current_domain(request)
     except Http404:
-        return render(
-            request,
-            "inbox/settings_retention.html",
-            {"active_nav": "retention", "domain_required": True},
-        )
+        return _domain_required_redirect(request, "retention settings")
     retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
     if request.method == "POST" and not for_user(request.user).custom_settings:
@@ -1888,31 +1888,18 @@ def retention_settings(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def api_tokens(request: HttpRequest) -> HttpResponse:
-    try:
-        domain = current_domain(request)
-    except Http404:
-        return render(
-            request,
-            "inbox/api_tokens.html",
-            {"active_nav": "api_tokens", "domain_required": True},
-        )
-    form = APITokenForm(request.POST or None)
     if request.method == "POST" and not for_user(request.user).api:
         return _upgrade_required(request, "API access")
-    if request.method == "POST" and form.is_valid():
-        token, raw = APIToken.issue(
-            domain=None if form.cleaned_data["all_domains"] else domain,
+    if request.method == "POST":
+        had_token = APIToken.objects.filter(
             owner=request.user,
-            name=form.cleaned_data["name"],
-            scopes=form.cleaned_data["scopes"],
-        )
+            revoked_at__isnull=True,
+        ).exists()
+        _, raw = APIToken.issue(owner=request.user)
         request.session["new_api_token"] = raw
-        _audit(
-            domain,
+        messages.success(
             request,
-            "api_token.created",
-            token,
-            {"scopes": token.scopes, "all_domains": token.domain_id is None},
+            "Personal API token regenerated." if had_token else "Personal API token created.",
         )
         return redirect("api_tokens")
     new_token = request.session.pop("new_api_token", None)
@@ -1921,10 +1908,7 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
         "inbox/api_tokens.html",
         {
             "active_nav": "api_tokens",
-            "form": form,
-            "tokens": APIToken.objects.filter(owner=request.user)
-            .filter(Q(domain=domain) | Q(domain__isnull=True))
-            .order_by("-created_at"),
+            "token": APIToken.objects.filter(owner=request.user).order_by("-created_at").first(),
             "new_token": new_token,
         },
     )
@@ -1933,20 +1917,16 @@ def api_tokens(request: HttpRequest) -> HttpResponse:
 @verified_required
 @require_POST
 def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
-    if not for_user(request.user).api:
-        return _upgrade_required(request, "API access")
-    token = (
-        APIToken.objects.filter(owner=request.user, id=token_id)
-        .filter(Q(domain=domain) | Q(domain__isnull=True))
-        .first()
-    )
+    token = APIToken.objects.filter(
+        owner=request.user,
+        id=token_id,
+        revoked_at__isnull=True,
+    ).first()
     if token is None:
         raise Http404
     token.revoked_at = timezone.now()
     token.save(update_fields=("revoked_at", "updated_at"))
-    _audit(domain, request, "api_token.revoked", token)
-    messages.success(request, "API token revoked.")
+    messages.success(request, "Personal API token revoked.")
     return redirect("api_tokens")
 
 
@@ -1955,11 +1935,7 @@ def audit_log(request: HttpRequest) -> HttpResponse:
     try:
         domain = current_domain(request)
     except Http404:
-        return render(
-            request,
-            "inbox/audit.html",
-            {"active_nav": "audit", "domain_required": True},
-        )
+        return _domain_required_redirect(request, "audit history")
     return render(
         request,
         "inbox/audit.html",

@@ -651,13 +651,10 @@ def test_session_api_resource_surface(
     assert read.status_code == 200
     assert client.get(f"{base}/audit").json()["items"]
 
-    token = client.post(
-        f"{base}/tokens",
-        data={"name": "Full API", "scopes": ["read", "write", "send"]},
-        content_type="application/json",
-    )
+    token = client.post("/api/v1/token", data={}, content_type="application/json")
     assert token.status_code == 201
     assert token.json()["token"].startswith("oi_")
+    assert token.json()["access"] == "all_operational_actions"
     assert AuditEvent.objects.filter(
         domain=organization,
         event_type="conversation.tag_added",
@@ -672,10 +669,6 @@ def test_session_api_resource_surface(
     assert AuditEvent.objects.filter(
         domain=organization,
         event_type="classification.overridden",
-    ).exists()
-    assert AuditEvent.objects.filter(
-        domain=organization,
-        event_type="api_token.created",
     ).exists()
 
 
@@ -729,7 +722,7 @@ def test_api_opaque_cursor_and_invalid_cursor_contract(
 
 
 @pytest.mark.django_db
-def test_cross_domain_message_feed_filters_checkpoints_and_token_scope(
+def test_cross_domain_message_feed_filters_checkpoints_and_personal_token(
     client,
     owner,
     organization,
@@ -866,12 +859,7 @@ def test_cross_domain_message_feed_filters_checkpoints_and_token_scope(
     assert delta.json()["checkpoint"] != payload["checkpoint"]
 
     client.logout()
-    global_token, global_raw = APIToken.issue(
-        domain=None,
-        owner=owner,
-        name="All-domain agent",
-        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE],
-    )
+    global_token, global_raw = APIToken.issue(owner=owner)
     global_feed = client.get(
         "/api/v1/feed/messages",
         headers={"Authorization": f"Bearer {global_raw}"},
@@ -893,15 +881,4 @@ def test_cross_domain_message_feed_filters_checkpoints_and_token_scope(
         event_type="conversation.starred",
     )
     assert agent_event.actor_type == AuditEvent.ActorType.AGENT
-    assert agent_event.metadata["api_token_name"] == global_token.name
-    _, scoped_raw = APIToken.issue(
-        domain=organization,
-        owner=owner,
-        name="One-domain agent",
-        scopes=[APIToken.Scope.READ],
-    )
-    scoped_feed = client.get(
-        "/api/v1/feed/messages",
-        headers={"Authorization": f"Bearer {scoped_raw}"},
-    )
-    assert {item["domain"]["id"] for item in scoped_feed.json()["items"]} == {str(organization.id)}
+    assert agent_event.metadata["api_token_prefix"] == global_token.prefix

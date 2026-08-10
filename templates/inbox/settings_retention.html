@@ -6,17 +6,13 @@
     <h1 class="mt-1 font-heading text-3xl font-semibold">Retention</h1>
     <p class="mt-1 text-sm text-muted">Control how long raw mail, attachments, normalized content, and operational metadata are retained.</p>
   </div>
-  {% if domain_required %}
-    {% include "inbox/_domain_required.html" with domain_required_heading="Connect a domain to configure retention" domain_required_body="Retention settings are configured per domain. Connect your first domain to define your storage and purge policies." domain_required_note="Default policy: 90d raw · 365d normalized · 730d metadata" %}
-  {% else %}
-    <section class="mt-7 max-w-3xl oi-panel p-6">
-      <h2 class="font-heading text-lg font-semibold">Retention policy</h2>
-      <p class="mt-2 text-sm text-muted">Defaults: raw MIME and attachments 90 days; normalized content 365 days; redacted audit and delivery metadata 730 days.</p>
-      <form method="post" class="mt-5 grid gap-5 sm:grid-cols-2">
-        {% csrf_token %}
-        {% for field in retention_form %}<div><label for="{{ field.id_for_label }}" class="oi-label">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>{% endfor %}
-        <button class="oi-button-primary sm:col-span-2">Save retention policy</button>
-      </form>
-    </section>
-  {% endif %}
+  <section class="mt-7 max-w-3xl oi-panel p-6">
+    <h2 class="font-heading text-lg font-semibold">Retention policy</h2>
+    <p class="mt-2 text-sm text-muted">Defaults: raw MIME and attachments 90 days; normalized content 365 days; redacted audit and delivery metadata 730 days.</p>
+    <form method="post" class="mt-5 grid gap-5 sm:grid-cols-2">
+      {% csrf_token %}
+      {% for field in retention_form %}<div><label for="{{ field.id_for_label }}" class="oi-label">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>{% endfor %}
+      <button class="oi-button-primary sm:col-span-2">Save retention policy</button>
+    </form>
+  </section>
 {% endblock %}

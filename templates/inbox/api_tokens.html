@@ -1,24 +1,23 @@
 {% extends "app_base.html" %}
-{% block title %}API tokens · Operational Inbox{% endblock %}
+{% block title %}Personal API token · Operational Inbox{% endblock %}
 {% block content %}
   <div class="border-b border-line pb-6">
     <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Agent and API access</p>
-    <h1 class="mt-1 font-heading text-3xl font-semibold">API tokens</h1>
-    <p class="mt-1 text-sm text-muted">Tokens are hashed at rest, scoped, and shown exactly once. Owner-scoped tokens can review every current and future domain through the cross-domain feed.</p>
+    <h1 class="mt-1 font-heading text-3xl font-semibold">Personal API token</h1>
+    <p class="mt-1 text-sm text-muted">One token provides access to every operational action across all your current and future domains.</p>
   </div>
-  {% if domain_required %}
-    {% include "inbox/_domain_required.html" with domain_required_heading="Connect a domain to manage API access" domain_required_body="API tokens provide access to domain inboxes. Connect your first domain before creating scoped credentials." domain_required_note="Tokens are hashed at rest · scoped · shown once" %}
-  {% else %}
-    {% if new_token %}<div class="mt-6 border border-coral-strong/40 bg-coral-soft p-5"><p class="font-semibold text-coral-strong">Copy this token now. It will not be shown again.</p><div class="mt-3 flex gap-2"><code id="new-token" class="min-w-0 flex-1 break-all bg-white p-3 font-mono text-xs">{{ new_token }}</code><button type="button" class="oi-button-secondary" data-copy-token>Copy</button></div></div>{% endif %}
-    <div class="mt-7 grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
-      <section class="oi-panel divide-y divide-line">
-        {% for token in tokens %}<div class="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between"><div><div class="flex gap-2"><strong>{{ token.name }}</strong>{% if token.is_active %}<span class="oi-status oi-status-ready">Active</span>{% else %}<span class="oi-status oi-status-danger">Revoked/expired</span>{% endif %}</div><p class="mt-2 font-mono text-xs text-muted">{{ token.prefix }}… · {{ token.scopes|join:", " }} · {% if token.domain_id %}{{ token.domain.hostname }} only{% else %}all domains{% endif %} · created {{ token.created_at|date:"Y-m-d" }}</p></div>{% if token.is_active %}<form method="post" action="{% url 'api_token_revoke' token.id %}">{% csrf_token %}<button class="oi-button-secondary text-coral-strong">Revoke</button></form>{% endif %}</div>{% empty %}<p class="p-6 text-sm text-muted">No API tokens exist.</p>{% endfor %}
-      </section>
-      <section class="oi-panel p-5">
-        <h2 class="font-heading text-lg font-semibold">Create token</h2>
-        <form method="post" class="mt-4 space-y-5">{% csrf_token %}{% for field in form %}<div><label class="oi-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<p class="mt-1 text-xs text-muted">{{ field.help_text }}</p>{% endif %}{% for error in field.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>{% endfor %}<button class="oi-button-primary w-full">Create and reveal once</button></form>
-      </section>
-    </div>
-    <script>document.querySelector("[data-copy-token]")?.addEventListener("click",async e=>{await navigator.clipboard.writeText(document.getElementById("new-token").textContent.trim());e.currentTarget.textContent="Copied"});</script>
-  {% endif %}
+  {% if new_token %}<div class="mt-6 border border-coral-strong/40 bg-coral-soft p-5"><p class="font-semibold text-coral-strong">Copy this token now. It will not be shown again.</p><div class="mt-3 flex gap-2"><code id="new-token" class="min-w-0 flex-1 break-all bg-white p-3 font-mono text-xs">{{ new_token }}</code><button type="button" class="oi-button-secondary" data-copy-token>Copy</button></div></div>{% endif %}
+  <div class="mt-7 grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
+    <section class="oi-panel p-5">
+      <h2 class="font-heading text-lg font-semibold">Latest token</h2>
+      {% if token %}<div class="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div class="flex gap-2"><strong>Personal API token</strong>{% if token.is_active %}<span class="oi-status oi-status-ready">Active</span>{% else %}<span class="oi-status oi-status-danger">Revoked/expired</span>{% endif %}</div><p class="mt-2 font-mono text-xs text-muted">{{ token.prefix }}… · all operational actions · all domains · created {{ token.created_at|date:"Y-m-d" }}</p>{% if token.last_used_at %}<p class="mt-1 text-xs text-muted">Last used {{ token.last_used_at|date:"Y-m-d H:i" }}</p>{% endif %}</div>{% if token.is_active %}<form method="post" action="{% url 'api_token_revoke' token.id %}">{% csrf_token %}<button class="oi-button-secondary text-coral-strong">Revoke</button></form>{% endif %}</div>{% else %}<p class="mt-4 text-sm text-muted">No personal API token exists.</p>{% endif %}
+    </section>
+    <section class="oi-panel p-5">
+      <h2 class="font-heading text-lg font-semibold">{% if token.is_active %}Regenerate token{% else %}Create token{% endif %}</h2>
+      <p class="mt-2 text-sm leading-6 text-muted">{% if token.is_active %}The current token will stop working immediately when the new token is created.{% else %}The token will carry your operational access and can connect your first domain through the API.{% endif %}</p>
+      <form method="post" class="mt-5">{% csrf_token %}<button class="oi-button-primary w-full">{% if token.is_active %}Regenerate and reveal once{% else %}Create and reveal once{% endif %}</button></form>
+      <p class="mt-3 font-mono text-[10px] uppercase leading-4 tracking-[0.08em] text-muted">Hashed at rest · global access · shown once</p>
+    </section>
+  </div>
+  <script>document.querySelector("[data-copy-token]")?.addEventListener("click",async e=>{await navigator.clipboard.writeText(document.getElementById("new-token").textContent.trim());e.currentTarget.textContent="Copied"});</script>
 {% endblock %}

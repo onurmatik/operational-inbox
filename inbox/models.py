@@ -10,7 +10,7 @@ from django.conf import settings
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -1166,61 +1166,55 @@ class AuditEvent(DomainScopedModel):
         raise ValidationError("Audit events are append-only.")
 
 
-class APIToken(UUIDTimeStampedModel):
-    class Scope(models.TextChoices):
-        READ = "read", "Read"
-        WRITE = "write", "Write"
-        MANAGE_DOMAINS = "manage_domains", "Manage domains"
-        SEND = "send", "Send"
+class AccessScope(models.TextChoices):
+    READ = "read", "Read"
+    WRITE = "write", "Write"
+    MANAGE_DOMAINS = "manage_domains", "Manage domains"
+    SEND = "send", "Send"
 
+
+class APIToken(UUIDTimeStampedModel):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
-    domain = models.ForeignKey(
-        Domain,
-        on_delete=models.CASCADE,
-        related_name="+",
-        null=True,
-        blank=True,
-    )
-    name = models.CharField(max_length=80)
     prefix = models.CharField(max_length=12, db_index=True)
     token_hash = models.CharField(max_length=64, unique=True)
-    scopes = models.JSONField(default=list)
     last_used_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner",),
+                condition=Q(revoked_at__isnull=True),
+                name="uniq_active_api_token_per_owner",
+            )
+        ]
 
     @classmethod
     def issue(
         cls,
         *,
-        domain: Domain | None,
         owner: User,
-        name: str,
-        scopes: list[str],
         expires_at: Any = None,
     ) -> tuple[APIToken, str]:
-        allowed = {choice for choice, _ in cls.Scope.choices}
-        if not scopes or not set(scopes).issubset(allowed):
-            raise ValidationError({"scopes": "Select one or more valid token scopes."})
-        if domain is not None and owner.id != domain.owner_id:
-            raise ValidationError({"owner": "Only the domain owner can create API tokens."})
         raw = f"oi_{secrets.token_urlsafe(36)}"
-        token = cls.objects.create(
-            domain=domain,
-            owner=owner,
-            name=name,
-            prefix=raw[:10],
-            token_hash=token_digest(raw),
-            scopes=sorted(set(scopes)),
-            expires_at=expires_at,
-        )
+        now = timezone.now()
+        with transaction.atomic():
+            User.objects.select_for_update().get(id=owner.id)
+            cls.objects.filter(owner=owner, revoked_at__isnull=True).update(
+                revoked_at=now,
+                updated_at=now,
+            )
+            token = cls.objects.create(
+                owner=owner,
+                prefix=raw[:10],
+                token_hash=token_digest(raw),
+                expires_at=expires_at,
+            )
         return token, raw
 
     def matches(self, raw_token: str) -> bool:
         return hmac.compare_digest(self.token_hash, token_digest(raw_token))
-
-    def has_scope(self, scope: str) -> bool:
-        return scope in self.scopes
 
     @property
     def is_active(self) -> bool:

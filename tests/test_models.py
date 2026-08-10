@@ -40,18 +40,17 @@ def test_domain_scoped_models_validate_related_domain(owner, organization, proje
 
 
 @pytest.mark.django_db
-def test_api_token_is_hashed_scoped_and_shown_once(owner, organization):
-    token, raw = APIToken.issue(
-        domain=organization,
-        owner=owner,
-        name="Automation",
-        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE],
-    )
+def test_api_token_is_hashed_global_and_rotated(owner):
+    token, raw = APIToken.issue(owner=owner)
     assert raw.startswith("oi_")
     assert raw not in token.token_hash
     assert token.matches(raw)
-    assert token.has_scope("read")
-    assert not token.has_scope("send")
+    replacement, replacement_raw = APIToken.issue(owner=owner)
+    token.refresh_from_db()
+    assert token.revoked_at is not None
+    assert not token.is_active
+    assert replacement.matches(replacement_raw)
+    assert APIToken.objects.filter(owner=owner, revoked_at__isnull=True).get() == replacement
     token.expires_at = timezone.now() - timedelta(seconds=1)
     assert not token.is_active
 

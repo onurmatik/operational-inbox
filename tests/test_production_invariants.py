@@ -562,20 +562,21 @@ def test_signup_rate_limit_is_durable_and_returns_retry_after(client):
 
 
 @pytest.mark.django_db
-def test_disabled_tenant_invalidates_bearer_token(client, owner, organization):
-    _, raw = APIToken.issue(
-        domain=organization,
-        owner=owner,
-        name="Read",
-        scopes=[APIToken.Scope.READ],
-    )
+def test_disabled_domain_is_hidden_without_invalidating_global_token(client, owner, organization):
+    _, raw = APIToken.issue(owner=owner)
     organization.status = Domain.Status.DISABLED
     organization.save(update_fields=("status", "updated_at"))
     response = client.get(
         f"/api/v1/domains/{organization.id}",
         headers={"Authorization": f"Bearer {raw}"},
     )
-    assert response.status_code == 401
+    assert response.status_code == 404
+    domains = client.get(
+        "/api/v1/domains",
+        headers={"Authorization": f"Bearer {raw}"},
+    )
+    assert domains.status_code == 200
+    assert domains.json()["items"] == []
 
 
 @pytest.mark.django_db

@@ -490,40 +490,6 @@
         ],
         "title": "SendInput",
         "type": "object"
-      },
-      "TokenInput": {
-        "properties": {
-          "all_domains": {
-            "default": false,
-            "title": "All Domains",
-            "type": "boolean"
-          },
-          "name": {
-            "maxLength": 80,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "scopes": {
-            "items": {
-              "enum": [
-                "read",
-                "write",
-                "manage_domains",
-                "send"
-              ],
-              "type": "string"
-            },
-            "title": "Scopes",
-            "type": "array"
-          }
-        },
-        "required": [
-          "name",
-          "scopes"
-        ],
-        "title": "TokenInput",
-        "type": "object"
       }
     },
     "securitySchemes": {
@@ -2056,59 +2022,6 @@
         ]
       }
     },
-    "/api/v1/domains/{domain_id}/tokens": {
-      "post": {
-        "operationId": "inbox_api_tokens_create",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TokenInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Tokens Create",
-        "tags": [
-          "Tokens"
-        ]
-      }
-    },
     "/api/v1/feed/messages": {
       "get": {
         "operationId": "inbox_api_messages_feed",
@@ -2479,6 +2392,35 @@
         "summary": "Outbound Control Set",
         "tags": [
           "Outbound"
+        ]
+      }
+    },
+    "/api/v1/token": {
+      "post": {
+        "operationId": "inbox_api_token_rotate",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Created"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          }
+        ],
+        "summary": "Token Rotate",
+        "tags": [
+          "Token"
         ]
       }
     }

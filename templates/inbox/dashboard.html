@@ -40,7 +40,7 @@
   </section>
 
   <section class="mt-8">
-    <div class="mb-3 flex items-center justify-between"><h2 class="font-heading text-lg font-semibold">Recent inbound mail</h2><a href="{{ nav_current_inbox_url }}" class="text-sm font-semibold text-forest hover:underline">View inbox →</a></div>
+    <div class="mb-3 flex items-center justify-between"><h2 class="font-heading text-lg font-semibold">Recent inbound mail</h2>{% if current_domain %}<a href="{{ nav_current_inbox_url }}" class="text-sm font-semibold text-forest hover:underline">View inbox →</a>{% else %}<a href="{% url 'domain_create' %}" class="text-sm font-semibold text-forest hover:underline">Connect domain →</a>{% endif %}</div>
     <div class="oi-panel overflow-x-auto">
       <table class="w-full min-w-[720px] text-left text-sm">
         <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase tracking-[0.08em] text-muted"><tr><th class="px-4 py-3 font-medium">Message</th><th class="px-4 py-3 font-medium">Mailbox &amp; tags</th><th class="px-4 py-3 font-medium">Received</th><th class="px-4 py-3"><span class="sr-only">Open</span></th></tr></thead>

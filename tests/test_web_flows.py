@@ -9,7 +9,7 @@ from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
-from inbox.forms import APITokenForm, DomainForm
+from inbox.forms import DomainForm
 from inbox.models import (
     APIToken,
     Attachment,
@@ -74,9 +74,6 @@ def test_choice_widgets_do_not_receive_text_input_styles():
     assert 'type="radio" name="setup_mode" value="DIRECT_MX" class="oi-input"' not in str(
         domain_form["setup_mode"]
     )
-
-    assert "class" not in APITokenForm().fields["scopes"].widget.attrs
-    assert "class" not in APITokenForm().fields["all_domains"].widget.attrs
 
 
 @pytest.mark.django_db
@@ -1094,25 +1091,46 @@ def test_authenticated_application_pages_render(
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    ("route_name", "empty_state_heading"),
+    "route_name",
     [
-        ("retention_settings", "Connect a domain to configure retention"),
-        ("api_tokens", "Connect a domain to manage API access"),
-        ("audit", "Connect a domain to view audit history"),
+        "retention_settings",
+        "audit",
     ],
 )
-def test_domain_scoped_settings_explain_when_an_active_domain_is_required(
-    client, owner, route_name, empty_state_heading
+def test_domain_scoped_settings_redirect_when_an_active_domain_is_required(
+    client, owner, route_name
 ):
     client.force_login(owner)
 
     response = client.get(reverse(route_name))
 
+    assert response.status_code == 302
+    assert response.url == reverse("domains")
+
+    followed = client.get(reverse(route_name), follow=True)
+    assert followed.status_code == 200
+    assert followed.redirect_chain == [(reverse("domains"), 302)]
+    assert b"Connect a domain to use" in followed.content
+    assert b"Domain required" not in followed.content
+
+
+@pytest.mark.django_db
+def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(client, owner):
+    client.force_login(owner)
+
+    response = client.get(reverse("domain_create"))
+
     assert response.status_code == 200
-    assert empty_state_heading.encode() in response.content
-    assert b"Domain required" in response.content
+    assert b'id="settings-menu-button"' in response.content
+    assert b'id="profile-menu-button"' in response.content
+    assert b"No domain connected" in response.content
+    assert response.content.count(b'aria-disabled="true"') == 4
+    assert b"Requires a domain" in response.content
     assert reverse("domain_create").encode() in response.content
-    assert reverse(route_name).encode() in response.content
+    assert b"Connect domain" in response.content
+    assert reverse("retention_settings").encode() not in response.content
+    assert reverse("api_tokens").encode() in response.content
+    assert reverse("audit").encode() not in response.content
 
 
 @pytest.mark.django_db
@@ -1233,9 +1251,15 @@ def test_dashboard_aggregates_all_domains_and_opens_recent_mail_in_its_domain(
     assert b"across all connected domains" in response.content
     assert domain.hostname.encode() in response.content
     assert second.hostname.encode() in response.content
-    assert b'<header class="sticky top-0' not in response.content
+    assert b'<header class="sticky top-0' in response.content
     assert b"Upgrade to connect domain" not in response.content
     assert b'id="sidebar-toggle"' in response.content
+    assert b'id="settings-menu-button"' in response.content
+    assert b'id="profile-menu-button"' in response.content
+    assert b"Manage plan" in response.content
+    assert response.content.index(b'id="settings-menu-button"') > response.content.index(
+        b"</aside>"
+    )
     detail_url = (
         f"{reverse('conversation_detail', args=[second_conversation.id])}?domain={second.id}"
     )
@@ -1248,7 +1272,7 @@ def test_dashboard_aggregates_all_domains_and_opens_recent_mail_in_its_domain(
 
 
 @pytest.mark.django_db
-def test_conversation_tags_and_all_domain_api_token_web_actions(
+def test_conversation_tags_and_personal_api_token_web_actions(
     client, owner, organization, project, conversation
 ):
     client.force_login(owner)
@@ -1261,25 +1285,32 @@ def test_conversation_tags_and_all_domain_api_token_web_actions(
     )
     assert tagged.status_code == 302
     assert conversation.tags.filter(normalized_name="customer-request").exists()
-    create = client.post(
-        reverse("api_tokens"),
-        {
-            "name": "Web automation",
-            "scopes": ["read", "write"],
-            "all_domains": "on",
-        },
-    )
+    create = client.post(reverse("api_tokens"), {})
     assert create.status_code == 302
-    token = APIToken.objects.get(name="Web automation")
-    assert token.domain_id is None
+    token = APIToken.objects.get(owner=owner, revoked_at__isnull=True)
     reveal = client.get(reverse("api_tokens"))
     assert reveal.status_code == 200
     assert b"shown again" in reveal.content
+    assert b"all operational actions" in reveal.content
     assert b'id="new-token"' not in client.get(reverse("api_tokens")).content
     revoke = client.post(reverse("api_token_revoke", args=[token.id]))
     assert revoke.status_code == 302
     token.refresh_from_db()
     assert token.revoked_at is not None
+
+
+@pytest.mark.django_db
+def test_personal_api_token_can_be_created_before_first_domain(client, owner, organization):
+    organization.delete()
+    client.force_login(owner)
+
+    page = client.get(reverse("api_tokens"))
+    created = client.post(reverse("api_tokens"), {})
+
+    assert page.status_code == 200
+    assert b"can connect your first domain" in page.content
+    assert created.status_code == 302
+    assert APIToken.objects.filter(owner=owner, revoked_at__isnull=True).count() == 1
 
 
 @pytest.mark.django_db

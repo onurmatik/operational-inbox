@@ -11,7 +11,7 @@ Primary journeys:
 - DNS verification, test delivery, and separate inbound/outbound readiness.
 - Cross-domain inbox review, complete search, conversation inspection, quarantine handling, and free-form conversation tags.
 - Draft review, immutable revision editing, exact approval, and outbound delivery tracking.
-- Retention, audit history, and domain- or owner-scoped API-token settings.
+- Retention, audit history, and one owner-wide personal API token.
 
 ## Visual direction
 

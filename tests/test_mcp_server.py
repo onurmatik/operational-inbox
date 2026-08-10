@@ -159,12 +159,7 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client,
     assert preflight.status_code == 200
     assert "mcp-method" in preflight.headers["Access-Control-Allow-Headers"].lower()
 
-    _, raw = APIToken.issue(
-        domain=None,
-        owner=owner,
-        name="MCP read",
-        scopes=[APIToken.Scope.READ],
-    )
+    _, raw = APIToken.issue(owner=owner)
     blocked = mcp_request(
         mcp_client,
         raw,
@@ -176,12 +171,7 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client,
 
 @pytest.mark.django_db(transaction=True)
 def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
-    _, read_raw = APIToken.issue(
-        domain=None,
-        owner=owner,
-        name="MCP read",
-        scopes=[APIToken.Scope.READ],
-    )
+    _, read_raw = APIToken.issue(owner=owner)
     initialized = mcp_request(
         mcp_client,
         read_raw,
@@ -247,7 +237,7 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(mcp_client, mon
     inspection = classify_domain_routing([], has_operational_inbox_claim=False)
     monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
-    raw = oauth_access_token(owner, scope="manage_domains read")
+    _, raw = APIToken.issue(owner=owner)
 
     inspected = tool_call(
         mcp_client,
@@ -384,39 +374,16 @@ def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mcp_feed_is_scoped_and_write_tools_enforce_scope(
+def test_mcp_personal_token_has_full_operational_access(
     mcp_client, owner, domain, conversation, inbound_message
 ):
-    _, read_raw = APIToken.issue(
-        domain=domain,
-        owner=owner,
-        name="Domain reader",
-        scopes=[APIToken.Scope.READ],
-    )
-    feed = tool_call(mcp_client, read_raw, "read_message_feed", {"new_only": True})
+    _, raw = APIToken.issue(owner=owner)
+    feed = tool_call(mcp_client, raw, "read_message_feed", {"new_only": True})
     assert feed["isError"] is False
     assert [item["id"] for item in feed["structuredContent"]["items"]] == [str(inbound_message.id)]
-    denied = tool_call(
-        mcp_client,
-        read_raw,
-        "apply_conversation_action",
-        {
-            "domain_id": str(domain.id),
-            "conversation_id": str(conversation.id),
-            "action": "star",
-        },
-    )
-    assert tool_error_payload(denied)["code"] == "insufficient_scope"
-
-    _, write_raw = APIToken.issue(
-        domain=domain,
-        owner=owner,
-        name="Domain organizer",
-        scopes=[APIToken.Scope.WRITE],
-    )
     changed = tool_call(
         mcp_client,
-        write_raw,
+        raw,
         "apply_conversation_action",
         {
             "domain_id": str(domain.id),
@@ -451,12 +418,7 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
         status=domain.status,
         claim_expires_at=domain.claim_expires_at,
     )
-    _, raw = APIToken.issue(
-        domain=domain,
-        owner=owner,
-        name="Scoped MCP",
-        scopes=[APIToken.Scope.READ],
-    )
+    _, raw = APIToken.issue(owner=owner)
     hidden = tool_call(
         mcp_client,
         raw,
@@ -467,28 +429,19 @@ def test_mcp_domain_scoping_hides_other_owner_conversations(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
-    mcp_client, monkeypatch, owner, domain
-):
-    _, raw = APIToken.issue(
-        domain=domain,
-        owner=owner,
-        name="Scoped domain manager",
-        scopes=[APIToken.Scope.MANAGE_DOMAINS],
-    )
-
-    def unexpected_lookup(hostname):
-        raise AssertionError(f"unexpected DNS lookup for {hostname}")
-
-    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", unexpected_lookup)
-    hidden = tool_call(
+def test_mcp_personal_token_can_inspect_any_hostname(mcp_client, monkeypatch, owner, domain):
+    _, raw = APIToken.issue(owner=owner)
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    result = tool_call(
         mcp_client,
         raw,
         "inspect_domain_dns",
         {"hostname": "other.example"},
     )
 
-    assert tool_error_payload(hidden)["code"] == "not_found"
+    assert result["isError"] is False
+    assert result["structuredContent"]["hostname"] == "other.example"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -502,12 +455,7 @@ def test_mcp_agent_authored_draft_sends_under_delegated_scope(
         address="privacy@example.com",
         is_routing_recipient=True,
     )
-    _, raw = APIToken.issue(
-        domain=None,
-        owner=owner,
-        name="Reply agent",
-        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE, APIToken.Scope.SEND],
-    )
+    _, raw = APIToken.issue(owner=owner)
     created = tool_call(
         mcp_client,
         raw,

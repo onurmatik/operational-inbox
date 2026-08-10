@@ -28,6 +28,133 @@
     },
   };
 
+  const initAppShell = () => {
+    const dropdowns = [...document.querySelectorAll("[data-dropdown]")];
+
+    const menuItems = (dropdown) => [
+      ...dropdown.querySelectorAll('[role="menuitem"]:not([aria-disabled="true"])'),
+    ];
+
+    const closeDropdown = (dropdown, { restoreFocus = false } = {}) => {
+      const button = dropdown.querySelector("[data-dropdown-button]");
+      const panel = dropdown.querySelector("[data-dropdown-panel]");
+      if (!button || !panel || panel.classList.contains("hidden")) return;
+      panel.classList.add("hidden");
+      button.setAttribute("aria-expanded", "false");
+      if (restoreFocus) button.focus();
+    };
+
+    const closeOtherDropdowns = (activeDropdown) => {
+      dropdowns.forEach((dropdown) => {
+        if (dropdown !== activeDropdown) closeDropdown(dropdown);
+      });
+    };
+
+    const openDropdown = (dropdown, { focus = "none" } = {}) => {
+      const button = dropdown.querySelector("[data-dropdown-button]");
+      const panel = dropdown.querySelector("[data-dropdown-panel]");
+      if (!button || !panel) return;
+      closeOtherDropdowns(dropdown);
+      panel.classList.remove("hidden");
+      button.setAttribute("aria-expanded", "true");
+      const items = menuItems(dropdown);
+      if (focus === "first") items[0]?.focus();
+      if (focus === "last") items.at(-1)?.focus();
+    };
+
+    dropdowns.forEach((dropdown) => {
+      const button = dropdown.querySelector("[data-dropdown-button]");
+      const panel = dropdown.querySelector("[data-dropdown-panel]");
+      if (!button || !panel) return;
+
+      button.addEventListener("click", () => {
+        if (panel.classList.contains("hidden")) openDropdown(dropdown);
+        else closeDropdown(dropdown);
+      });
+      button.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+        event.preventDefault();
+        openDropdown(dropdown, { focus: event.key === "ArrowDown" ? "first" : "last" });
+      });
+      panel.addEventListener("keydown", (event) => {
+        const items = menuItems(dropdown);
+        const currentIndex = items.indexOf(document.activeElement);
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeDropdown(dropdown, { restoreFocus: true });
+          return;
+        }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) || !items.length)
+          return;
+        event.preventDefault();
+        if (event.key === "Home") items[0].focus();
+        else if (event.key === "End") items.at(-1).focus();
+        else if (event.key === "ArrowDown") items[(currentIndex + 1) % items.length].focus();
+        else items[(currentIndex - 1 + items.length) % items.length].focus();
+      });
+      panel.addEventListener("click", (event) => {
+        if (event.target.closest("a, button")) closeDropdown(dropdown);
+      });
+    });
+
+    document.addEventListener("click", (event) => {
+      dropdowns.forEach((dropdown) => {
+        if (!dropdown.contains(event.target)) closeDropdown(dropdown);
+      });
+    });
+    document.addEventListener("focusin", (event) => {
+      dropdowns.forEach((dropdown) => {
+        if (!dropdown.contains(event.target)) closeDropdown(dropdown);
+      });
+    });
+
+    const sidebarButton = document.getElementById("sidebar-toggle");
+    const sidebar = document.getElementById("app-sidebar");
+    const backdrop = document.getElementById("sidebar-backdrop");
+    if (!sidebarButton || !sidebar || !backdrop) return;
+
+    const closeSidebar = ({ restoreFocus = false } = {}) => {
+      sidebar.classList.add("hidden");
+      sidebar.classList.remove("flex");
+      backdrop.classList.add("hidden");
+      document.body.classList.remove("overflow-hidden");
+      sidebarButton.setAttribute("aria-expanded", "false");
+      if (restoreFocus) sidebarButton.focus();
+    };
+
+    const openSidebar = () => {
+      closeOtherDropdowns(null);
+      sidebar.classList.remove("hidden");
+      sidebar.classList.add("flex");
+      backdrop.classList.remove("hidden");
+      document.body.classList.add("overflow-hidden");
+      sidebarButton.setAttribute("aria-expanded", "true");
+    };
+
+    sidebarButton.addEventListener("click", () => {
+      if (sidebar.classList.contains("hidden")) openSidebar();
+      else closeSidebar();
+    });
+    backdrop.addEventListener("click", () => closeSidebar({ restoreFocus: true }));
+    sidebar.addEventListener("click", (event) => {
+      if (window.innerWidth < 1024 && event.target.closest("a")) closeSidebar();
+    });
+    window.addEventListener("resize", () => {
+      if (window.innerWidth >= 1024) closeSidebar();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const openDropdownElement = dropdowns.find(
+        (dropdown) => !dropdown.querySelector("[data-dropdown-panel]")?.classList.contains("hidden")
+      );
+      if (openDropdownElement) {
+        closeDropdown(openDropdownElement, { restoreFocus: true });
+        return;
+      }
+      if (!sidebar.classList.contains("hidden")) closeSidebar({ restoreFocus: true });
+    });
+  };
+
   const initDomainCreate = () => {
     const form = document.querySelector("[data-domain-create]");
     if (!form) return;
@@ -359,6 +486,7 @@
     if (inputValue()) checkMx();
   };
 
+  document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
 
   document.addEventListener("change", (event) => {
