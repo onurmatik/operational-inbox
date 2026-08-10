@@ -147,7 +147,7 @@ DEFAULT_FROM_EMAIL = os.getenv(
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 MCP_RESOURCE_URL = os.getenv("MCP_RESOURCE_URL", f"{PUBLIC_BASE_URL}/mcp")
 MCP_DOCUMENTATION_URL = os.getenv("MCP_DOCUMENTATION_URL", f"{PUBLIC_BASE_URL}/mcp-docs/")
-MCP_REQUIRED_SCOPES = ["read", "write", "manage_domains", "approve_send"]
+MCP_REQUIRED_SCOPES = ["read", "write", "manage_domains", "send"]
 OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED = env_bool(
     "OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED",
     True,
@@ -198,7 +198,10 @@ OAUTH2_PROVIDER = {
             "Inspect public DNS, start domain onboarding, read setup instructions, "
             "and request DNS verification."
         ),
-        "approve_send": "Approve an exact draft revision and send or resend email.",
+        "send": (
+            "Send exact agent-authored reply revisions and explicitly resend failed or "
+            "unknown attempts."
+        ),
     },
     "DEFAULT_SCOPES": [],
     "AUTHORIZATION_CODE_EXPIRE_SECONDS": OAUTH_AUTHORIZATION_CODE_EXPIRE_SECONDS,
@@ -259,10 +262,12 @@ AWS_SES_CONFIGURATION_SET = os.getenv("AWS_SES_CONFIGURATION_SET", "operational-
 AWS_SES_RECEIPT_RULE_SET = os.getenv("AWS_SES_RECEIPT_RULE_SET", "operational-inbox")
 AWS_SES_RECEIPT_RULE = os.getenv("AWS_SES_RECEIPT_RULE", "operational-inbox-allowlist")
 AWS_SES_SYSTEM_IDENTITY = os.getenv("AWS_SES_SYSTEM_IDENTITY", "operationalinbox.com")
+OUTBOUND_RATE_LIMIT_PER_MINUTE = env_int("OUTBOUND_RATE_LIMIT_PER_MINUTE", 30)
+OUTBOUND_DAILY_ACCOUNT_LIMIT = env_int("OUTBOUND_DAILY_ACCOUNT_LIMIT", 500)
+OUTBOUND_DAILY_DOMAIN_LIMIT = env_int("OUTBOUND_DAILY_DOMAIN_LIMIT", 200)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_TRIAGE_MODEL = os.getenv("OPENAI_TRIAGE_MODEL", "gpt-5.6-luna")
-OPENAI_DRAFT_MODEL = os.getenv("OPENAI_DRAFT_MODEL", "gpt-5.6-terra")
 OPENAI_REPORT_MODEL = os.getenv("OPENAI_REPORT_MODEL", "gpt-5.6-terra")
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")

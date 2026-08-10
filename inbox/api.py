@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from django.core import signing
@@ -49,17 +49,21 @@ from inbox.services.domains import (
     ensure_domain_test,
 )
 from inbox.services.drafts import (
-    approve_exact_revision,
     create_authored_draft,
-    create_draft,
     resend_outbound,
     revise_draft,
+    send_exact_revision,
 )
 from inbox.services.entitlements import for_user
 from inbox.services.jobs import (
     enqueue_job,
     request_outbound_provisioning,
     retry_domain_provisioning,
+)
+from inbox.services.outbound import (
+    get_outbound_control,
+    outbound_usage,
+    set_outbound_paused,
 )
 from inbox.services.routing_transitions import (
     ACTIVE_TRANSITION_STATUSES,
@@ -126,14 +130,84 @@ class RevisionInput(Schema):
     body_text: str = Field(min_length=1, max_length=20000)
 
 
-class ApprovalInput(Schema):
+class SendInput(Schema):
     revision_id: uuid.UUID
     content_hash: str = Field(min_length=64, max_length=64)
 
 
+class OutboundControlInput(Schema):
+    paused: bool
+
+
+class PublicErrorOutput(Schema):
+    code: str
+    message: str
+
+
+class DeliveryEventOutput(Schema):
+    id: uuid.UUID
+    event_type: str
+    occurred_at: datetime
+
+
+OutboundStatus = Literal[
+    "QUEUED",
+    "SUBMITTING",
+    "ACCEPTED",
+    "DELIVERED",
+    "FAILED",
+    "UNKNOWN",
+    "BOUNCED",
+    "COMPLAINED",
+]
+
+
+class OutboundOutput(Schema):
+    id: uuid.UUID
+    domain_id: uuid.UUID
+    conversation_id: uuid.UUID
+    status: OutboundStatus
+    attempt: int
+    authorization_mode: Literal["OWNER_APPROVAL", "DELEGATED_SCOPE"]
+    from_address: str
+    to_address: str
+    subject: str
+    created_at: datetime
+    accepted_at: datetime | None
+    delivered_at: datetime | None
+    failed_at: datetime | None
+    error: PublicErrorOutput | None
+    events: list[DeliveryEventOutput]
+
+
+class OutboundReferenceOutput(Schema):
+    outbound_id: uuid.UUID
+    status: OutboundStatus
+
+
+class OutboundListOutput(Schema):
+    items: list[OutboundOutput]
+    next_cursor: str | None
+
+
+class OutboundLimitsOutput(Schema):
+    minute: int
+    day: int
+    domain_day: int
+
+
+class OutboundControlOutput(Schema):
+    paused: bool
+    paused_at: datetime | None
+    minute_count: int
+    day_count: int
+    by_domain: dict[str, int]
+    limits: OutboundLimitsOutput
+
+
 class TokenInput(Schema):
     name: str = Field(min_length=1, max_length=80)
-    scopes: list[Literal["read", "write", "manage_domains", "approve_send"]]
+    scopes: list[Literal["read", "write", "manage_domains", "send"]]
     all_domains: bool = False
 
 
@@ -362,6 +436,60 @@ def scoped_object(model, domain: Domain, object_id: uuid.UUID):
         return queryset.get(id=object_id, domain=domain)
     except (model_class.DoesNotExist, ValueError) as exc:
         raise Http404 from exc
+
+
+def _api_owner(request: HttpRequest):
+    return request.auth.owner if isinstance(request.auth, APIToken) else request.user
+
+
+def _validation_code(exc: DjangoValidationError, fallback: str) -> str:
+    if hasattr(exc, "error_list") and exc.error_list:
+        return exc.error_list[0].code or fallback
+    return fallback
+
+
+def _outbound_dict(outbound: OutboundMessage) -> dict[str, Any]:
+    return {
+        "id": outbound.id,
+        "domain_id": outbound.domain_id,
+        "conversation_id": outbound.conversation_id,
+        "status": outbound.status,
+        "attempt": outbound.attempt_number,
+        "authorization_mode": outbound.authorization_mode,
+        "from_address": outbound.from_address,
+        "to_address": outbound.to_address,
+        "subject": outbound.subject,
+        "created_at": outbound.created_at,
+        "accepted_at": outbound.accepted_at,
+        "delivered_at": outbound.delivered_at,
+        "failed_at": outbound.failed_at,
+        "error": (
+            {"code": outbound.error_code, "message": outbound.public_error_message}
+            if outbound.error_code
+            else None
+        ),
+        "events": [
+            {
+                "id": event.id,
+                "event_type": event.event_type,
+                "occurred_at": event.occurred_at,
+            }
+            for event in outbound.delivery_events.all()
+        ],
+    }
+
+
+def _outbound_control_dict(user) -> dict[str, Any]:
+    control = get_outbound_control(user)
+    usage = outbound_usage(user)
+    return {
+        "paused": control.is_paused,
+        "paused_at": control.paused_at,
+        "minute_count": usage["minute"],
+        "day_count": usage["day"],
+        "by_domain": usage["by_domain"],
+        "limits": usage["limits"],
+    }
 
 
 def _dns_record_dict(record) -> dict[str, Any]:
@@ -909,7 +1037,7 @@ def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID
     tags=["Domains"],
 )
 def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
+    require_scope(request, APIToken.Scope.MANAGE_DOMAINS)
     domain = api_domain(request, domain_id)
     try:
         domain, job, started = request_outbound_provisioning(domain)
@@ -1446,38 +1574,6 @@ def classifications_override(
 
 
 @api.post(
-    "/domains/{domain_id}/conversations/{conversation_id}/drafts",
-    auth=authenticated,
-    response={201: dict},
-    tags=["Drafts"],
-)
-def drafts_generate(request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.WRITE)
-    domain = api_domain(request, domain_id)
-    conversation = scoped_object(Conversation, domain, conversation_id)
-    message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
-    if message is None:
-        raise APIError("no_inbound_message", "No inbound message is available for drafting.")
-    try:
-        draft = create_draft(message)
-    except Exception as exc:
-        raise APIError(
-            "draft_unavailable",
-            "A draft could not be generated. The message remains unchanged.",
-            status=503,
-        ) from exc
-    record_api_audit(request, domain, "draft.generated", draft)
-    return Status(
-        201,
-        {
-            "id": str(draft.id),
-            "revision_id": str(draft.current_revision_id),
-            "content_hash": draft.current_revision.content_hash,
-        },
-    )
-
-
-@api.post(
     "/domains/{domain_id}/conversations/{conversation_id}/drafts/authored",
     auth=authenticated,
     response={201: dict},
@@ -1579,30 +1675,32 @@ def drafts_revise(
 
 
 @api.post(
-    "/domains/{domain_id}/drafts/{draft_id}/approval",
+    "/domains/{domain_id}/drafts/{draft_id}/send",
     auth=authenticated,
-    response={202: dict},
+    response={202: OutboundReferenceOutput},
     tags=["Drafts"],
 )
-def drafts_approve(
+def drafts_send(
     request: HttpRequest,
     domain_id: uuid.UUID,
     draft_id: uuid.UUID,
-    payload: ApprovalInput,
+    payload: SendInput,
 ):
-    require_scope(request, APIToken.Scope.APPROVE_SEND)
+    require_scope(request, APIToken.Scope.SEND)
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
-        outbound = approve_exact_revision(
+        outbound = send_exact_revision(
             draft=draft,
             revision_id=payload.revision_id,
             content_hash=payload.content_hash,
             owner=owner,
         )
     except DjangoValidationError as exc:
-        raise APIError("stale_revision", "; ".join(exc.messages), status=409) from exc
+        code = _validation_code(exc, "stale_revision")
+        status = 429 if code.startswith("outbound_") and code != "outbound_paused" else 409
+        raise APIError(code, "; ".join(exc.messages), status=status) from exc
     enqueue_job(
         kind="send_outbound",
         idempotency_key=f"outbound:{outbound.id}",
@@ -1612,51 +1710,134 @@ def drafts_approve(
     record_api_audit(
         request,
         domain,
-        "draft.approved_and_queued",
+        "draft.sent_with_delegated_scope",
         outbound,
         {"revision_id": str(payload.revision_id)},
     )
-    return Status(202, {"outbound_id": str(outbound.id), "status": outbound.status})
+    return Status(202, {"outbound_id": outbound.id, "status": outbound.status})
+
+
+@api.get(
+    "/outbound",
+    auth=authenticated,
+    response=OutboundListOutput,
+    tags=["Outbound"],
+)
+def outbound_list(
+    request: HttpRequest,
+    domain_id: uuid.UUID | None = None,
+    status: str | None = None,
+    recipient: str | None = None,
+    time_range: Literal["1h", "24h", "7d", "30d", "all"] = "24h",
+    cursor: str | None = None,
+    limit: int = 50,
+):
+    require_scope(request, APIToken.Scope.READ)
+    domains = api_domains_queryset(request)
+    if domain_id is not None:
+        domain = api_domain(request, domain_id)
+        domains = domains.filter(id=domain.id)
+    queryset = OutboundMessage.objects.filter(domain__in=domains).prefetch_related(
+        "delivery_events"
+    )
+    if status:
+        if status not in OutboundMessage.Status.values:
+            raise APIError("invalid_status", "Select a supported outbound status.")
+        queryset = queryset.filter(status=status)
+    if recipient:
+        queryset = queryset.filter(to_address__icontains=recipient.strip())
+    windows = {
+        "1h": timedelta(hours=1),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+    }
+    if time_range != "all":
+        queryset = queryset.filter(created_at__gte=timezone.now() - windows[time_range])
+    items, next_cursor = _paginate_queryset(
+        queryset,
+        cursor=cursor,
+        limit=limit,
+        timestamp_field="created_at",
+        collection="outbound",
+    )
+    return {"items": [_outbound_dict(item) for item in items], "next_cursor": next_cursor}
+
+
+def _require_account_wide_token(request: HttpRequest) -> None:
+    if isinstance(request.auth, APIToken) and request.auth.domain_id is not None:
+        raise APIError(
+            "all_domains_required",
+            "Account-wide sending controls require an all-domains token.",
+            status=403,
+        )
+
+
+@api.get(
+    "/outbound/control",
+    auth=authenticated,
+    response=OutboundControlOutput,
+    tags=["Outbound"],
+)
+def outbound_control_get(request: HttpRequest):
+    require_scope(request, APIToken.Scope.READ)
+    _require_account_wide_token(request)
+    return _outbound_control_dict(_api_owner(request))
+
+
+@api.post(
+    "/outbound/control",
+    auth=authenticated,
+    response=OutboundControlOutput,
+    tags=["Outbound"],
+)
+def outbound_control_set(request: HttpRequest, payload: OutboundControlInput):
+    require_scope(request, APIToken.Scope.SEND)
+    _require_account_wide_token(request)
+    owner = _api_owner(request)
+    set_outbound_paused(owner, paused=payload.paused)
+    for domain in api_domains_queryset(request):
+        record_api_audit(
+            request,
+            domain,
+            "outbound.paused" if payload.paused else "outbound.resumed",
+            domain,
+        )
+    return _outbound_control_dict(owner)
 
 
 @api.get(
     "/domains/{domain_id}/outbound/{outbound_id}",
     auth=authenticated,
+    response=OutboundOutput,
     tags=["Outbound"],
 )
 def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
     require_scope(request, APIToken.Scope.READ)
     domain = api_domain(request, domain_id)
-    outbound = scoped_object(OutboundMessage, domain, outbound_id)
-    return {
-        "id": str(outbound.id),
-        "status": outbound.status,
-        "attempt": outbound.attempt_number,
-        "accepted_at": outbound.accepted_at,
-        "delivered_at": outbound.delivered_at,
-        "error": (
-            {"code": outbound.error_code, "message": outbound.public_error_message}
-            if outbound.error_code
-            else None
-        ),
-    }
+    outbound = scoped_object(
+        OutboundMessage.objects.prefetch_related("delivery_events"), domain, outbound_id
+    )
+    return _outbound_dict(outbound)
 
 
 @api.post(
     "/domains/{domain_id}/outbound/{outbound_id}/resend",
     auth=authenticated,
-    response={202: dict},
+    response={202: OutboundReferenceOutput},
     tags=["Outbound"],
 )
 def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
-    require_scope(request, APIToken.Scope.APPROVE_SEND)
+    require_scope(request, APIToken.Scope.SEND)
     domain = api_domain(request, domain_id)
     original = scoped_object(OutboundMessage, domain, outbound_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         resend = resend_outbound(original, owner=owner)
     except DjangoValidationError as exc:
-        raise APIError("resend_not_allowed", "; ".join(exc.messages), status=409) from exc
+        code = _validation_code(exc, "resend_not_allowed")
+        status = 429 if code.startswith("outbound_") and code != "outbound_paused" else 409
+        raise APIError(code, "; ".join(exc.messages), status=status) from exc
     enqueue_job(
         kind="send_outbound",
         idempotency_key=f"outbound:{resend.id}",
@@ -1670,7 +1851,7 @@ def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
         resend,
         {"original_id": str(original.id)},
     )
-    return Status(202, {"outbound_id": str(resend.id), "status": resend.status})
+    return Status(202, {"outbound_id": resend.id, "status": resend.status})
 
 
 @api.get("/domains/{domain_id}/reports", auth=authenticated, tags=["Reports"])

@@ -5,6 +5,8 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from inbox.mcp_server import MCP_TOOLS
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = REPOSITORY_ROOT / "plugins" / "operational-inbox"
 
@@ -38,6 +40,7 @@ def test_portable_agent_plugin_v1_contract() -> None:
     assert (PLUGIN_ROOT / "skills" / "triage-inboxes" / "SKILL.md").is_file()
     assert (PLUGIN_ROOT / "skills" / "reply-to-conversations" / "SKILL.md").is_file()
     assert (PLUGIN_ROOT / "skills" / "setup-domain" / "SKILL.md").is_file()
+    assert (PLUGIN_ROOT / "skills" / "monitor-outbound-delivery" / "SKILL.md").is_file()
 
     mcp = load_json(PLUGIN_ROOT / "mcp.json")
     assert mcp["$schema"] == "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
@@ -67,7 +70,7 @@ def test_openai_plugin_contract_matches_portable_metadata() -> None:
 
     interface = openai["interface"]
     assert interface["displayName"] == "Operational Inbox"
-    assert interface["shortDescription"] == "Set up and triage domain mail"
+    assert interface["shortDescription"] == "Set up, triage, and operate replies"
     assert interface["websiteURL"] == "https://operationalinbox.com/"
     assert interface["privacyPolicyURL"] == "https://operationalinbox.com/privacy/"
     assert interface["termsOfServiceURL"] == "https://operationalinbox.com/terms/"
@@ -97,6 +100,13 @@ def test_repo_marketplace_and_mcp_registry_point_to_the_release() -> None:
     assert registry["icons"][0]["sizes"] == ["512x512"]
 
 
+def test_public_submission_covers_the_current_tool_surface() -> None:
+    submission = load_json(REPOSITORY_ROOT / "chatgpt-app-submission.json")
+    assert set(submission["tools"]) == {tool["name"] for tool in MCP_TOOLS}
+    assert len(submission["test_cases"]) == 6
+    assert len(submission["negative_test_cases"]) == 3
+
+
 def test_triage_inboxes_skill_preserves_agent_first_safety_boundary() -> None:
     skill_root = PLUGIN_ROOT / "skills" / "triage-inboxes"
     skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
@@ -113,15 +123,28 @@ def test_triage_inboxes_skill_preserves_agent_first_safety_boundary() -> None:
     assert (skill_root / "agents" / "openai.yaml").is_file()
 
 
-def test_reply_skill_requires_explicit_exact_revision_approval() -> None:
+def test_reply_skill_uses_delegated_exact_revision_send() -> None:
     skill_root = PLUGIN_ROOT / "skills" / "reply-to-conversations"
     skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
 
     assert skill.startswith("---\nname: reply-to-conversations\n")
-    assert "explicit user request" in skill
-    assert "exact revision ID and content hash" in skill
-    assert "Never retry automatically" in skill
+    assert "second per-message approval" in skill
+    assert "revision ID and hash" in skill
+    assert "Never retry a failed or unknown attempt automatically" in skill
     assert "untrusted data" in skill
+    assert (skill_root / "agents" / "openai.yaml").is_file()
+
+
+def test_outbound_monitor_skill_keeps_retry_and_scope_focused() -> None:
+    skill_root = PLUGIN_ROOT / "skills" / "monitor-outbound-delivery"
+    skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+
+    assert skill.startswith("---\nname: monitor-outbound-delivery\n")
+    assert "list_outbound" in skill
+    assert "set_outbound_paused" in skill
+    assert "Never resend automatically" in skill
+    assert "bulk, marketing" in skill
+    assert "TODO" not in skill
     assert (skill_root / "agents" / "openai.yaml").is_file()
 
 

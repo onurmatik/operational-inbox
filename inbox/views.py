@@ -89,7 +89,6 @@ from inbox.services.domains import (
 )
 from inbox.services.drafts import (
     approve_exact_revision,
-    create_draft,
     resend_outbound,
     revise_draft,
 )
@@ -99,6 +98,11 @@ from inbox.services.jobs import (
     enqueue_job,
     request_outbound_provisioning,
     retry_domain_provisioning,
+)
+from inbox.services.outbound import (
+    get_outbound_control,
+    outbound_usage,
+    set_outbound_paused,
 )
 from inbox.services.routing_transitions import (
     begin_routing_transition,
@@ -960,6 +964,115 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
     )
 
 
+OUTBOUND_PROBLEM_STATUSES = {
+    OutboundMessage.Status.FAILED,
+    OutboundMessage.Status.UNKNOWN,
+    OutboundMessage.Status.BOUNCED,
+    OutboundMessage.Status.COMPLAINED,
+}
+
+
+@verified_required
+def outbox(request: HttpRequest) -> HttpResponse:
+    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
+    outbound = (
+        OutboundMessage.objects.filter(domain__in=domains)
+        .select_related("domain", "conversation")
+        .prefetch_related("delivery_events")
+    )
+    selected_domain = request.GET.get("domain", "").strip()
+    selected_status = request.GET.get("status", "").strip().upper()
+    recipient = request.GET.get("recipient", "").strip()
+    selected_range = request.GET.get("time", "24h")
+    if selected_domain:
+        try:
+            selected = domains.get(id=selected_domain)
+        except (Domain.DoesNotExist, ValidationError, ValueError) as exc:
+            raise Http404 from exc
+        outbound = outbound.filter(domain=selected)
+    if selected_status in OutboundMessage.Status.values:
+        outbound = outbound.filter(status=selected_status)
+    else:
+        selected_status = ""
+    if recipient:
+        outbound = outbound.filter(to_address__icontains=recipient)
+    windows = {
+        "1h": timedelta(hours=1),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+    }
+    if selected_range not in {*windows, "all"}:
+        selected_range = "24h"
+    if selected_range != "all":
+        outbound = outbound.filter(created_at__gte=timezone.now() - windows[selected_range])
+    page = Paginator(outbound.order_by("-created_at"), 50).get_page(request.GET.get("page"))
+    pagination_params = request.GET.copy()
+    pagination_params.pop("page", None)
+    recent = OutboundMessage.objects.filter(
+        domain__in=domains, created_at__gte=timezone.now() - timedelta(hours=24)
+    )
+    control = get_outbound_control(request.user)
+    usage = outbound_usage(request.user)
+    domain_usage = [
+        {
+            "domain": domain,
+            "count": usage["by_domain"].get(str(domain.id), 0),
+        }
+        for domain in domains
+    ]
+    return render(
+        request,
+        "inbox/outbox.html",
+        {
+            "active_nav": "outbox",
+            "domains": domains,
+            "page": page,
+            "statuses": OutboundMessage.Status.choices,
+            "selected_domain": selected_domain,
+            "selected_status": selected_status,
+            "recipient": recipient,
+            "selected_range": selected_range,
+            "pagination_query": pagination_params.urlencode(),
+            "control": control,
+            "usage": usage,
+            "domain_usage": domain_usage,
+            "metrics": {
+                "queued": recent.filter(status=OutboundMessage.Status.QUEUED).count(),
+                "in_flight": recent.filter(
+                    status__in={
+                        OutboundMessage.Status.SUBMITTING,
+                        OutboundMessage.Status.ACCEPTED,
+                    }
+                ).count(),
+                "delivered": recent.filter(status=OutboundMessage.Status.DELIVERED).count(),
+                "problems": recent.filter(status__in=OUTBOUND_PROBLEM_STATUSES).count(),
+            },
+        },
+    )
+
+
+@verified_required
+@require_POST
+def outbox_control(request: HttpRequest) -> HttpResponse:
+    if not for_user(request.user).outbound:
+        return _upgrade_required(request, "Outbound sending")
+    paused = request.POST.get("paused") == "true"
+    control = set_outbound_paused(request.user, paused=paused)
+    for domain in request.user.domains.exclude(status=Domain.Status.DISABLED):
+        _audit(
+            domain,
+            request,
+            "outbound.paused" if control.is_paused else "outbound.resumed",
+            domain,
+        )
+    messages.success(
+        request,
+        "External sending is paused." if control.is_paused else "External sending resumed.",
+    )
+    return redirect("outbox")
+
+
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
@@ -1001,7 +1114,9 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
                     else None
                 )
             ),
-            "outbound_messages": conversation.outbound_messages.order_by("-created_at"),
+            "outbound_messages": conversation.outbound_messages.prefetch_related(
+                "delivery_events"
+            ).order_by("-created_at"),
             "has_quarantined": conversation.messages.filter(is_quarantined=True).exists(),
         },
     )
@@ -1104,34 +1219,10 @@ def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpRe
 
 @verified_required
 @require_POST
-def draft_generate(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
-    if not for_user(request.user).ai:
-        return _upgrade_required(request, "AI reply drafts")
-    conversation = domain_get_or_404(Conversation.objects, domain=domain, id=conversation_id)
-    message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
-    if message is None:
-        messages.error(request, "No inbound message is available for drafting.")
-    else:
-        try:
-            draft = create_draft(message)
-        except Exception:
-            messages.error(
-                request,
-                "A draft could not be generated. The message remains available and unmodified.",
-            )
-        else:
-            _audit(domain, request, "draft.generated", draft)
-            messages.success(request, "Draft generated for human review.")
-    return redirect("conversation_detail", conversation_id=conversation.id)
-
-
-@verified_required
-@require_POST
 def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
-    if not for_user(request.user).ai:
-        return _upgrade_required(request, "AI reply drafts")
+    if not for_user(request.user).outbound:
+        return _upgrade_required(request, "Reply drafts")
     draft = domain_get_or_404(
         ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
     )

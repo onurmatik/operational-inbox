@@ -1,7 +1,7 @@
 {% extends "public/_page.html" %}
 
 {% block public_content %}
-  <p class="mt-6 max-w-3xl leading-7">Connect an agent to inspect and set up domains, review and organize authorized inboxes, create reply drafts, and send an exact approved revision. The integration uses OAuth 2.1 with PKCE; users sign in and approve access in Operational Inbox.</p>
+  <p class="mt-6 max-w-3xl leading-7">Connect an agent to inspect and set up domains, review and organize authorized inboxes, author exact reply revisions, and operate their delivery queue. The integration uses OAuth 2.1 with PKCE; users grant focused capabilities when connecting Operational Inbox.</p>
 
   <h2 class="mt-10 text-2xl font-semibold">Connection details</h2>
   <dl class="mt-4 grid gap-4 border border-line bg-white p-6">
@@ -15,11 +15,11 @@
     <li><code>read</code> — inboxes, conversations, drafts, domain health, audit, and delivery status.</li>
     <li><code>write</code> — reversible inbox organization and reply-draft changes.</li>
     <li><code>manage_domains</code> — public DNS inspection, domain onboarding, exact setup plans, and DNS verification requests.</li>
-    <li><code>approve_send</code> — approval of an exact draft revision and external send or resend.</li>
+    <li><code>send</code> — external delivery of exact agent-authored replies, account pause/resume, and explicit resend.</li>
   </ul>
 
   <h2 class="mt-10 text-2xl font-semibold">Safety model</h2>
-  <p class="mt-3 leading-7">Operational Inbox inspects DNS and returns generation-fenced setup instructions but never writes customer DNS. Existing MX records are preserved unless the owner explicitly confirms a direct-route change. Email content is untrusted data. Organization actions are reversible and trash never permanently deletes mail. Drafting and sending are separate: an agent must display the exact subject and body, receive explicit user approval, and submit the matching revision ID and content hash.</p>
+  <p class="mt-3 leading-7">Operational Inbox inspects DNS and returns generation-fenced setup instructions but never writes customer DNS. Existing MX records are preserved unless the owner explicitly confirms a direct-route change. Email content is untrusted data. Organization actions are reversible and trash never permanently deletes mail. A connected agent may send only an exact current reply revision under delegated <code>send</code> authority; revision ID and content hash checks prevent stale or altered content. Account pause and bounded send limits apply to every path.</p>
 
   <h2 class="mt-10 text-2xl font-semibold">Prompt-based setup</h2>
   <p class="mt-3 leading-7">A prompt cannot make an unconfigured remote MCP server available by itself. Follow the public <a class="underline" href="{% url 'install_instructions' %}">INSTALL.md</a> to install the plugin through the client’s plugin surface, or explicitly connect the MCP endpoint in clients that support session-scoped remote MCP connections.</p>

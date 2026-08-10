@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -16,34 +14,8 @@ from inbox.models import (
     ReplyDraftRevision,
     User,
 )
-from inbox.services.ai import generate_draft_output
 from inbox.services.entitlements import require_pro
-
-
-def create_draft(message: Message, *, client: Any | None = None) -> ReplyDraft:
-    require_pro(message.domain.owner, "AI reply drafts")
-    if message.is_quarantined:
-        raise ValidationError("A reply draft cannot be generated for quarantined content.")
-    output = generate_draft_output(message, client=client)
-    with transaction.atomic():
-        draft = ReplyDraft.objects.create(
-            domain=message.domain,
-            conversation=message.conversation,
-            context_message=message,
-        )
-        revision = ReplyDraftRevision(
-            domain=message.domain,
-            draft=draft,
-            number=1,
-            subject=output.subject,
-            body_text=output.body_text,
-            is_agent_generated=True,
-        )
-        revision.full_clean()
-        revision.save()
-        draft.current_revision = revision
-        draft.save(update_fields=("current_revision", "updated_at"))
-    return draft
+from inbox.services.outbound import require_outbound_capacity
 
 
 def create_authored_draft(
@@ -80,7 +52,7 @@ def create_authored_draft(
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
-    require_pro(owner, "AI reply drafts")
+    require_pro(owner, "Reply drafts")
     locked = (
         ReplyDraft.objects.select_for_update().select_related("current_revision").get(id=draft.id)
     )
@@ -107,6 +79,46 @@ def revise_draft(
     locked.current_revision = revision
     locked.save(update_fields=("current_revision", "updated_at"))
     return revision
+
+
+def _outbound_for_revision(
+    *,
+    draft: ReplyDraft,
+    revision: ReplyDraftRevision,
+    authorization_mode: str,
+) -> OutboundMessage:
+    recipient = draft.context_message.reply_to_address or draft.context_message.from_address
+    routing_recipient = draft.context_message.recipients.filter(is_routing_recipient=True).first()
+    if routing_recipient is None:
+        raise ValidationError("The original routing recipient is unavailable.")
+    local_part, recipient_domain = routing_recipient.address.rsplit("@", 1)
+    sending_domain = Domain.objects.filter(id=draft.domain_id, hostname=recipient_domain).first()
+    if sending_domain is None:
+        route = (
+            InboundRoute.objects.filter(domain=draft.domain, address=routing_recipient.address)
+            .select_related("domain")
+            .first()
+        )
+        sending_domain = route.domain if route else None
+        local_part = "reply"
+    if sending_domain is None or not sending_domain.outbound_ready:
+        raise ValidationError("Outbound sending is not ready for this domain.")
+    require_outbound_capacity(draft.domain)
+    outbound = OutboundMessage(
+        domain=draft.domain,
+        conversation=draft.conversation,
+        revision=revision,
+        authorization_mode=authorization_mode,
+        from_address=f"{local_part}@{sending_domain.hostname}",
+        to_address=recipient,
+        subject=revision.subject,
+        body_text=revision.body_text,
+        content_hash=revision.content_hash,
+        rfc_message_id=f"<{OutboundMessage._meta.pk.get_default()}@operationalinbox.com>",
+    )
+    outbound.full_clean()
+    outbound.save()
+    return outbound
 
 
 @transaction.atomic
@@ -150,37 +162,41 @@ def approve_exact_revision(
         )
         approval.full_clean()
         approval.save()
-    recipient = locked.context_message.reply_to_address or locked.context_message.from_address
-    domain = locked.context_message.recipients.filter(is_routing_recipient=True).first()
-    if domain is None:
-        raise ValidationError("The original routing recipient is unavailable.")
-    local_part, recipient_domain = domain.address.rsplit("@", 1)
-    sending_domain = Domain.objects.filter(id=locked.domain_id, hostname=recipient_domain).first()
-    if sending_domain is None:
-        route = (
-            InboundRoute.objects.filter(domain=locked.domain, address=domain.address)
-            .select_related("domain")
-            .first()
-        )
-        sending_domain = route.domain if route else None
-        local_part = "reply"
-    if sending_domain is None or not sending_domain.outbound_ready:
-        raise ValidationError("Outbound sending is not ready for this domain.")
-    from_address = f"{local_part}@{sending_domain.hostname}"
-    outbound = OutboundMessage(
-        domain=locked.domain,
-        conversation=locked.conversation,
+    return _outbound_for_revision(
+        draft=locked,
         revision=revision,
-        from_address=from_address,
-        to_address=recipient,
-        subject=revision.subject,
-        body_text=revision.body_text,
-        content_hash=revision.content_hash,
-        rfc_message_id=f"<{OutboundMessage._meta.pk.get_default()}@operationalinbox.com>",
+        authorization_mode=OutboundMessage.AuthorizationMode.OWNER_APPROVAL,
     )
-    outbound.full_clean()
-    outbound.save()
-    return outbound
+
+
+@transaction.atomic
+def send_exact_revision(
+    *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
+) -> OutboundMessage:
+    """Queue an exact agent-authored revision under an already-delegated send scope."""
+    require_pro(owner, "Outbound sending")
+    locked = (
+        ReplyDraft.objects.select_for_update()
+        .select_related("domain", "current_revision", "context_message", "conversation")
+        .get(id=draft.id)
+    )
+    revision = locked.current_revision
+    if revision is None or revision.id != revision_id:
+        raise ValidationError({"revision": "The draft changed. Read the current revision."})
+    if locked.is_stale:
+        raise ValidationError("A newer inbound message made this draft stale.")
+    if revision.content_hash != content_hash:
+        raise ValidationError({"content_hash": "The draft changed. Read the exact content again."})
+    if locked.domain.owner_id != owner.id:
+        raise ValidationError("The delegated send scope does not cover this draft.")
+    existing = revision.outbound_messages.order_by("attempt_number").first()
+    if existing is not None:
+        return existing
+    return _outbound_for_revision(
+        draft=locked,
+        revision=revision,
+        authorization_mode=OutboundMessage.AuthorizationMode.DELEGATED_SCOPE,
+    )
 
 
 @transaction.atomic
@@ -190,6 +206,7 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
         raise ValidationError("Only the domain owner can resend a message.")
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
         raise ValidationError("Only failed or unknown sends can be resent explicitly.")
+    require_outbound_capacity(original.domain)
     attempt = original.revision.outbound_messages.count() + 1
     resend = OutboundMessage(
         domain=original.domain,
@@ -197,6 +214,7 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
         revision=original.revision,
         parent=original,
         attempt_number=attempt,
+        authorization_mode=original.authorization_mode,
         from_address=original.from_address,
         to_address=original.to_address,
         subject=original.subject,

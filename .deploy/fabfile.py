@@ -44,8 +44,6 @@ DEPLOY_USER = os.environ.get("DEPLOY_USER", "root")
 APP_USER = os.environ.get("APP_USER", "ubuntu")
 MCP_SERVICE = f"{PROJECT_NAME}-mcp.service"
 MCP_SYSTEMD_PATH = f"/etc/systemd/system/{MCP_SERVICE}"
-MCP_NGINX_SNIPPET = f"/etc/nginx/snippets/{PROJECT_NAME}-mcp.conf"
-NGINX_SITE = f"/etc/nginx/sites-available/{PROJECT_NAME}.conf"
 
 PROJECT_DIR = f"/srv/apps/{PROJECT_NAME}"
 VENV_DIR = f"{PROJECT_DIR}/venv"
@@ -255,16 +253,6 @@ def install_mcp_runtime(connection: Connection) -> None:
     finally:
         connection.run(f"rm -f {quote(temporary_unit)}", warn=True, hide=True)
 
-    connection.sudo(
-        f"install -o root -g root -m 0644 "
-        f"{quote(PROJECT_DIR + '/.deploy/nginx/operationalinbox-mcp.conf')} "
-        f"{quote(MCP_NGINX_SNIPPET)}"
-    )
-    connection.sudo(
-        "python3 "
-        f"{quote(PROJECT_DIR + '/.deploy/scripts/install_mcp_proxy.py')} "
-        f"{quote(NGINX_SITE)} {quote(MCP_NGINX_SNIPPET)}"
-    )
     connection.sudo("systemctl daemon-reload")
     connection.sudo(f"systemctl enable {quote(MCP_SERVICE)}")
 
@@ -272,6 +260,8 @@ def install_mcp_runtime(connection: Connection) -> None:
 def verify_mcp_runtime(connection: Connection) -> None:
     script = """
 import json
+import time
+import urllib.error
 import urllib.request
 
 payload = json.dumps({
@@ -289,11 +279,38 @@ request = urllib.request.Request(
     data=payload,
     headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
 )
-with urllib.request.urlopen(request, timeout=10) as response:
-    result = json.load(response)["result"]
-assert result["serverInfo"]["name"] == "operational-inbox"
+deadline = time.monotonic() + 30
+while True:
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("MCP readiness deadline elapsed.")
+        with urllib.request.urlopen(request, timeout=min(2, remaining)) as response:
+            result = json.load(response)["result"]
+        assert result["protocolVersion"] == "2025-11-25"
+        assert result["serverInfo"]["name"] == "operational-inbox"
+        break
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        json.JSONDecodeError,
+        KeyError,
+        AssertionError,
+    ) as exc:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("MCP did not become ready within 30 seconds.") from exc
+        time.sleep(min(1, remaining))
 """.strip()
     app_run(connection, f"{quote(VENV_DIR + '/bin/python')} -c {quote(script)}")
+
+
+def restart_web_runtime(connection: Connection) -> None:
+    connection.sudo(
+        f"systemctl reset-failed app@{PROJECT_NAME}.service app@{PROJECT_NAME}.socket",
+        warn=True,
+    )
+    connection.sudo(f"systemctl restart app@{PROJECT_NAME}.socket")
 
 
 @task
@@ -361,18 +378,21 @@ def deploy(_context) -> None:
         f"systemctl stop app@{PROJECT_NAME}.socket app@{PROJECT_NAME}.service {quote(MCP_SERVICE)}",
         warn=True,
     )
-    deploy_under_locks(connection)
-    install_mcp_runtime(connection)
-    connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
-    connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}")
-    verify_mcp_runtime(connection)
-    connection.sudo("nginx -t")
-    connection.sudo("systemctl reload nginx")
-    connection.sudo(
-        f"systemctl reset-failed app@{PROJECT_NAME}.service app@{PROJECT_NAME}.socket",
-        warn=True,
-    )
-    connection.sudo(f"systemctl restart app@{PROJECT_NAME}.socket")
+    mcp_verified = False
+    try:
+        try:
+            deploy_under_locks(connection)
+        finally:
+            restart_web_runtime(connection)
+        install_mcp_runtime(connection)
+        connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
+        connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}")
+        verify_mcp_runtime(connection)
+        mcp_verified = True
+    finally:
+        if not mcp_verified:
+            connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
+            connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}", warn=True)
 
 
 ns = Collection(deploy)

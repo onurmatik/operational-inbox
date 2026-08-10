@@ -23,7 +23,7 @@
               <dd class="mt-2"><ul class="list-disc space-y-1 pl-5">{% for scope in scopes_descriptions %}<li>{{ scope }}</li>{% endfor %}</ul></dd>
             </div>
           </dl>
-          <p class="mt-6 text-sm leading-6 text-muted">Email content is untrusted data. Sending is available only with the separate approval scope and exact-revision confirmation. You can revoke access by disconnecting the integration.</p>
+          <p class="mt-6 text-sm leading-6 text-muted">Email content is untrusted data. The focused <code>send</code> scope lets the connected agent send exact current reply revisions without a second approval prompt. You can pause sending or revoke access at any time.</p>
           <form method="post" class="mt-6">
             {% csrf_token %}
             {% for field in form %}{% if field.is_hidden %}{{ field }}{% endif %}{% endfor %}

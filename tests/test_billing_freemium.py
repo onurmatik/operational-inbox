@@ -105,7 +105,7 @@ def test_free_api_returns_upgrade_required(client, free_owner):
 
 
 @pytest.mark.django_db
-def test_free_conversation_uses_draft_action_as_upgrade_prompt(client, free_owner):
+def test_free_conversation_has_no_server_side_draft_action(client, free_owner):
     domain = make_domain(free_owner, "draft-upgrade.example")
     conversation = Conversation.objects.create(
         domain=domain,
@@ -124,14 +124,8 @@ def test_free_conversation_uses_draft_action_as_upgrade_prompt(client, free_owne
     assert response.status_code == 200
     assert b"Free inbox mode" not in response.content
     assert b"AI drafts and outbound sending require" not in response.content
-    assert (
-        f'action="{reverse("draft_generate", args=[conversation.id])}"'.encode() in response.content
-    )
-
-    upgrade = client.post(reverse("draft_generate", args=[conversation.id]))
-
-    assert upgrade.status_code == 302
-    assert upgrade.url == reverse("billing")
+    assert b"No agent-authored reply yet" in response.content
+    assert b"Generate review draft" not in response.content
 
 
 @pytest.mark.django_db
@@ -229,7 +223,7 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"Up to 20 managed domains" in response.content
     assert b"Receive at any address" in response.content
     assert b"no per-address fee" in response.content
-    assert b"All-domain agent feed, API &amp; optional drafts" in response.content
+    assert b"All-domain agent feed, API &amp; agent-authored replies" in response.content
     assert f'method="post" action="{reverse("billing_checkout")}"'.encode() in response.content
     assert "Upgrade to Pro · USD 4.99/month".encode() in response.content
     assert b"Billed monthly through Stripe" in response.content

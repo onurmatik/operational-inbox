@@ -9,11 +9,12 @@ from ninja import Status
 
 from inbox.api import (
     APIError,
-    ApprovalInput,
     ConversationActionInput,
     ConversationTagInput,
     DomainInput,
+    OutboundControlInput,
     RevisionInput,
+    SendInput,
     audit_list,
     conversations_action,
     conversations_detail,
@@ -22,13 +23,17 @@ from inbox.api import (
     domains_check,
     domains_create,
     domains_detail,
+    domains_enable_outbound,
     domains_list,
     domains_setup_plan,
-    drafts_approve,
     drafts_create_authored,
     drafts_detail,
     drafts_revise,
+    drafts_send,
     messages_feed,
+    outbound_control_get,
+    outbound_control_set,
+    outbound_list,
     outbound_resend,
     outbound_status,
     require_scope,
@@ -408,6 +413,15 @@ OUTBOUND_REFERENCE_SCHEMA = _object_schema(
     ["outbound_id", "status"],
 )
 
+DELIVERY_EVENT_SCHEMA = _object_schema(
+    {
+        "id": UUID_SCHEMA,
+        "event_type": {"type": "string", "maxLength": 32},
+        "occurred_at": DATETIME_SCHEMA,
+    },
+    ["id", "event_type", "occurred_at"],
+)
+
 LIST_DOMAINS_OUTPUT_SCHEMA = _object_schema(
     {"items": {"type": "array", "items": DOMAIN_SCHEMA}}, ["items"]
 )
@@ -442,13 +456,80 @@ CONVERSATION_ACTION_OUTPUT_SCHEMA = _object_schema(
 OUTBOUND_STATUS_OUTPUT_SCHEMA = _object_schema(
     {
         "id": UUID_SCHEMA,
+        "domain_id": UUID_SCHEMA,
+        "conversation_id": UUID_SCHEMA,
         "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
         "attempt": {"type": "integer", "minimum": 1},
+        "authorization_mode": {
+            "type": "string",
+            "enum": ["OWNER_APPROVAL", "DELEGATED_SCOPE"],
+        },
+        "from_address": EMAIL_SCHEMA,
+        "to_address": EMAIL_SCHEMA,
+        "subject": {"type": "string", "maxLength": 998},
+        "created_at": DATETIME_SCHEMA,
         "accepted_at": _nullable(DATETIME_SCHEMA),
         "delivered_at": _nullable(DATETIME_SCHEMA),
+        "failed_at": _nullable(DATETIME_SCHEMA),
         "error": _nullable(PUBLIC_ERROR_SCHEMA),
+        "events": {"type": "array", "items": DELIVERY_EVENT_SCHEMA},
     },
-    ["id", "status", "attempt", "accepted_at", "delivered_at", "error"],
+    [
+        "id",
+        "domain_id",
+        "conversation_id",
+        "status",
+        "attempt",
+        "authorization_mode",
+        "from_address",
+        "to_address",
+        "subject",
+        "created_at",
+        "accepted_at",
+        "delivered_at",
+        "failed_at",
+        "error",
+        "events",
+    ],
+)
+OUTBOUND_LIST_OUTPUT_SCHEMA = _object_schema(
+    {
+        "items": {"type": "array", "items": OUTBOUND_STATUS_OUTPUT_SCHEMA},
+        "next_cursor": _nullable(CURSOR_SCHEMA),
+    },
+    ["items", "next_cursor"],
+)
+OUTBOUND_CONTROL_OUTPUT_SCHEMA = _object_schema(
+    {
+        "paused": {"type": "boolean"},
+        "paused_at": _nullable(DATETIME_SCHEMA),
+        "minute_count": {"type": "integer", "minimum": 0},
+        "day_count": {"type": "integer", "minimum": 0},
+        "by_domain": {
+            "type": "object",
+            "additionalProperties": {"type": "integer", "minimum": 0},
+        },
+        "limits": _object_schema(
+            {
+                "minute": {"type": "integer", "minimum": 0},
+                "day": {"type": "integer", "minimum": 0},
+                "domain_day": {"type": "integer", "minimum": 0},
+            },
+            ["minute", "day", "domain_day"],
+        ),
+    },
+    ["paused", "paused_at", "minute_count", "day_count", "by_domain", "limits"],
+)
+OUTBOUND_ENABLE_OUTPUT_SCHEMA = _object_schema(
+    {
+        "outbound_status": {
+            "type": "string",
+            "enum": ["DISABLED", "PROVISIONING", "PENDING_DNS", "READY", "ERROR", "DEGRADED"],
+        },
+        "job_id": UUID_SCHEMA,
+        "started": {"type": "boolean"},
+    },
+    ["outbound_status", "job_id", "started"],
 )
 AUDIT_EVENT_SCHEMA = _object_schema(
     {
@@ -755,6 +836,77 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_outbound",
+        "title": "List outbound replies",
+        "description": (
+            "List authorized outbound attempts with delivery events and optional domain, status, "
+            "recipient, and time filters."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "domain_id": UUID_SCHEMA,
+                "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
+                "recipient": {"type": "string", "minLength": 1, "maxLength": 320},
+                "time_range": {
+                    "type": "string",
+                    "enum": ["1h", "24h", "7d", "30d", "all"],
+                    "default": "24h",
+                },
+                "cursor": CURSOR_SCHEMA,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            }
+        ),
+        "outputSchema": OUTBOUND_LIST_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "get_outbound_control",
+        "title": "Get outbound sending control",
+        "description": "Read the account pause state, current usage, and configured send limits.",
+        "inputSchema": _object_schema({}),
+        "outputSchema": OUTBOUND_CONTROL_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "set_outbound_paused",
+        "title": "Pause or resume outbound sending",
+        "description": (
+            "Set the account-wide outbound handoff pause. Pausing holds queued replies before "
+            "provider submission; resuming releases them."
+        ),
+        "inputSchema": _object_schema({"paused": {"type": "boolean"}}, ["paused"]),
+        "outputSchema": OUTBOUND_CONTROL_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "enable_outbound_sending",
+        "title": "Enable outbound sending",
+        "description": (
+            "Start or resume the SES identity provisioning lifecycle for one authorized domain."
+        ),
+        "inputSchema": _object_schema({"domain_id": UUID_SCHEMA}, ["domain_id"]),
+        "outputSchema": OUTBOUND_ENABLE_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    },
+    {
         "name": "list_audit_events",
         "title": "List audit events",
         "description": "Read append-only audit events for an authorized domain.",
@@ -837,11 +989,11 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "approve_and_send_reply",
-        "title": "Approve and send reply",
+        "name": "send_reply",
+        "title": "Send reply",
         "description": (
-            "Approve the exact current revision and queue one external reply. Use only after the "
-            "user explicitly approves the displayed subject and body. Requires approve_send."
+            "Queue the exact current agent-authored revision under the connection's delegated "
+            "send scope. No separate per-message approval is required."
         ),
         "inputSchema": _object_schema(
             {
@@ -865,7 +1017,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "title": "Explicitly resend outbound message",
         "description": (
             "Create a new send attempt for a failed or unknown outbound message. Never call "
-            "automatically; requires a new explicit user request and approve_send."
+            "automatically; requires a new explicit user request and send scope."
         ),
         "inputSchema": _object_schema(
             {"domain_id": UUID_SCHEMA, "outbound_id": UUID_SCHEMA},
@@ -894,12 +1046,16 @@ MCP_TOOL_SCOPES = {
     "apply_conversation_action": APIToken.Scope.WRITE,
     "get_domain_health": APIToken.Scope.READ,
     "get_outbound_status": APIToken.Scope.READ,
+    "list_outbound": APIToken.Scope.READ,
+    "get_outbound_control": APIToken.Scope.READ,
+    "set_outbound_paused": APIToken.Scope.SEND,
+    "enable_outbound_sending": APIToken.Scope.MANAGE_DOMAINS,
     "list_audit_events": APIToken.Scope.READ,
     "create_reply_draft": APIToken.Scope.WRITE,
     "get_reply_draft": APIToken.Scope.READ,
     "revise_reply_draft": APIToken.Scope.WRITE,
-    "approve_and_send_reply": APIToken.Scope.APPROVE_SEND,
-    "resend_outbound": APIToken.Scope.APPROVE_SEND,
+    "send_reply": APIToken.Scope.SEND,
+    "resend_outbound": APIToken.Scope.SEND,
 }
 
 
@@ -945,6 +1101,12 @@ def _uuid(arguments: dict[str, Any], field: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as exc:
         raise APIError("validation_error", f"{field} must be a valid UUID.") from exc
+
+
+def _optional_uuid(arguments: dict[str, Any], field: str) -> uuid.UUID | None:
+    if arguments.get(field) is None:
+        return None
+    return _uuid(arguments, field)
 
 
 def _optional_string(arguments: dict[str, Any], field: str) -> str | None:
@@ -1116,6 +1278,33 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
         return outbound_status(
             request, _uuid(arguments, "domain_id"), _uuid(arguments, "outbound_id")
         )
+    if name == "list_outbound":
+        return outbound_list(
+            request,
+            domain_id=_optional_uuid(arguments, "domain_id"),
+            status=_choice(arguments, "status", set(OUTBOUND_STATUS_VALUES)),
+            recipient=_optional_string(arguments, "recipient"),
+            time_range=cast(
+                Literal["1h", "24h", "7d", "30d", "all"],
+                _choice(
+                    arguments,
+                    "time_range",
+                    {"1h", "24h", "7d", "30d", "all"},
+                )
+                or "24h",
+            ),
+            cursor=_optional_string(arguments, "cursor"),
+            limit=_limit(arguments),
+        )
+    if name == "get_outbound_control":
+        return outbound_control_get(request)
+    if name == "set_outbound_paused":
+        return outbound_control_set(
+            request,
+            OutboundControlInput(paused=_boolean(arguments, "paused")),
+        )
+    if name == "enable_outbound_sending":
+        return _unwrap(domains_enable_outbound(request, _uuid(arguments, "domain_id")))
     if name == "list_audit_events":
         return audit_list(
             request,
@@ -1151,16 +1340,16 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
                 RevisionInput(subject=subject, body_text=body_text),
             )
         )
-    if name == "approve_and_send_reply":
+    if name == "send_reply":
         content_hash = _optional_string(arguments, "content_hash")
         if content_hash is None or len(content_hash) != 64:
             raise APIError("validation_error", "content_hash must contain 64 characters.")
         return _unwrap(
-            drafts_approve(
+            drafts_send(
                 request,
                 _uuid(arguments, "domain_id"),
                 _uuid(arguments, "draft_id"),
-                ApprovalInput(
+                SendInput(
                     revision_id=_uuid(arguments, "revision_id"),
                     content_hash=content_hash,
                 ),

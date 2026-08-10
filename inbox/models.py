@@ -133,6 +133,18 @@ class BillingProfile(UUIDTimeStampedModel):
         return active_status and self.subscription_plan == "pro"
 
 
+class OutboundControl(UUIDTimeStampedModel):
+    """Account-wide outbound safety controls and serialization lock."""
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="outbound_control",
+    )
+    is_paused = models.BooleanField(default=False)
+    paused_at = models.DateTimeField(null=True, blank=True)
+
+
 class StripeWebhookEvent(UUIDTimeStampedModel):
     stripe_event_id = models.CharField(max_length=255, unique=True)
     event_type = models.CharField(max_length=120)
@@ -898,6 +910,10 @@ class DraftApproval(DomainScopedModel):
 
 
 class OutboundMessage(DomainScopedModel):
+    class AuthorizationMode(models.TextChoices):
+        OWNER_APPROVAL = "OWNER_APPROVAL", "Owner approval"
+        DELEGATED_SCOPE = "DELEGATED_SCOPE", "Delegated send scope"
+
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
         SUBMITTING = "SUBMITTING", "Submitting"
@@ -918,6 +934,11 @@ class OutboundMessage(DomainScopedModel):
         "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="resends"
     )
     attempt_number = models.PositiveSmallIntegerField(default=1)
+    authorization_mode = models.CharField(
+        max_length=24,
+        choices=AuthorizationMode.choices,
+        default=AuthorizationMode.OWNER_APPROVAL,
+    )
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED)
     from_address = models.EmailField(max_length=320)
     to_address = models.EmailField(max_length=320)
@@ -965,7 +986,7 @@ class OutboundMessage(DomainScopedModel):
             raise ValidationError(
                 {"content_hash": "Outbound subject and body must match the approved content."}
             )
-        if self.revision_id:
+        if self.revision_id and self.authorization_mode == self.AuthorizationMode.OWNER_APPROVAL:
             approval = getattr(self.revision, "approval", None)
             if (
                 approval is None
@@ -975,6 +996,12 @@ class OutboundMessage(DomainScopedModel):
             ):
                 raise ValidationError(
                     "Outbound content requires an active exact-revision approval."
+                )
+        elif self.revision_id:
+            draft = self.revision.draft
+            if draft.current_revision_id != self.revision_id or draft.is_stale:
+                raise ValidationError(
+                    "Outbound content must use the current non-stale draft revision."
                 )
 
 
@@ -1144,7 +1171,7 @@ class APIToken(UUIDTimeStampedModel):
         READ = "read", "Read"
         WRITE = "write", "Write"
         MANAGE_DOMAINS = "manage_domains", "Manage domains"
-        APPROVE_SEND = "approve_send", "Approve and send"
+        SEND = "send", "Send"
 
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="api_tokens")
     domain = models.ForeignKey(

@@ -21,8 +21,10 @@ create or paste an API token.
 6. Apply a domain setup plan through a separately authorized DNS-provider tool or
    return it for manual application; Operational Inbox never writes customer DNS.
 7. Triage and organize mail with reversible actions. Never permanently delete mail.
-8. Draft replies when asked, but call `approve_and_send_reply` only after the user
-   explicitly approves the exact displayed subject and body.
+8. For reply-only requests, persist the agent-authored exact revision and use `send_reply`
+   when the user's instruction entails sending. Do not add a second approval prompt.
+9. Use `monitor-outbound-delivery` for Outbox health, limits, pause/resume, and explicit
+   failed-or-unknown resend decisions.
 
 A prompt can tell an agent how to install a skill or command-line tool, as
 Superdesign does, but it cannot make an unconfigured remote MCP server appear in

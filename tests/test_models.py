@@ -51,7 +51,7 @@ def test_api_token_is_hashed_scoped_and_shown_once(owner, organization):
     assert raw not in token.token_hash
     assert token.matches(raw)
     assert token.has_scope("read")
-    assert not token.has_scope("approve_send")
+    assert not token.has_scope("send")
     token.expires_at = timezone.now() - timedelta(seconds=1)
     assert not token.is_active
 

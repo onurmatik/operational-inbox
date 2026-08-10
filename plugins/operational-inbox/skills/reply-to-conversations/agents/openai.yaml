@@ -1,11 +1,11 @@
 interface:
   display_name: "Reply to Conversations"
   short_description: "Draft and send exact-revision replies"
-  default_prompt: "Use $reply-to-conversations to draft a reply, show me the exact content, and send it only after I explicitly approve it."
+  default_prompt: "Use $reply-to-conversations to draft and send a concise reply to the conversation I select."
 dependencies:
   tools:
     - type: "mcp"
       value: "operational-inbox"
-      description: "Operational Inbox draft, approval, and delivery tools"
+      description: "Operational Inbox reply and delivery tools"
       transport: "streamable_http"
       url: "https://operationalinbox.com/mcp"

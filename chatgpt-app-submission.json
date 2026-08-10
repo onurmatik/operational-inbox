@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Operational Inbox",
     "subtitle": "Set up, triage, and reply",
-    "description": "Operational Inbox lets an authenticated owner inspect and connect email domains, obtain exact DNS setup plans, verify readiness, review inbound email across routing addresses, apply reversible organization actions, and draft or explicitly approve exact-revision replies.",
+    "description": "Operational Inbox lets an authenticated owner inspect and connect email domains, review inbound email across routing addresses, apply reversible organization actions, send exact agent-authored replies under delegated authority, and monitor outbound delivery.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -147,9 +147,57 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only reads the authoritative stored status and timestamps for one outbound message.",
+        "read_only_justification": "Only reads the authoritative stored status, timestamps, safe error, and delivery events for one outbound message.",
         "open_world_justification": "Does not contact a recipient or initiate a new delivery attempt.",
         "destructive_justification": "Does not resend, cancel, delete, or otherwise change the outbound message."
+      }
+    },
+    "list_outbound": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads authorized outbound attempts and their stored delivery events using optional filters.",
+        "open_world_justification": "Reads Operational Inbox state without contacting recipients or providers.",
+        "destructive_justification": "Does not resend, pause, delete, or alter an outbound attempt."
+      }
+    },
+    "get_outbound_control": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads account pause state, current outbound usage, and configured limits.",
+        "open_world_justification": "Reads private Operational Inbox control state without contacting an external system.",
+        "destructive_justification": "Does not change the sending pause or any queued message."
+      }
+    },
+    "set_outbound_paused": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Changes the account-wide outbound provider-handoff pause state.",
+        "open_world_justification": "The control change remains inside Operational Inbox and does not itself contact recipients.",
+        "destructive_justification": "Pause and resume are reversible and do not delete or recall messages."
+      }
+    },
+    "enable_outbound_sending": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Starts or resumes private sending-identity provisioning for one authorized domain.",
+        "open_world_justification": "Provisioning contacts Operational Inbox-managed SES infrastructure but never writes customer DNS.",
+        "destructive_justification": "Does not send a message, alter inbound routing, or delete provider state."
       }
     },
     "list_audit_events": {
@@ -197,19 +245,19 @@
       "justifications": {
         "read_only_justification": "Creates a new current draft revision and changes private Operational Inbox draft state.",
         "open_world_justification": "Does not send or publish the revised content outside Operational Inbox.",
-        "destructive_justification": "Supersedes the current revision and invalidates its approval, while preserving prior immutable revisions."
+        "destructive_justification": "Supersedes the current revision while preserving prior immutable revisions."
       }
     },
-    "approve_and_send_reply": {
+    "send_reply": {
       "annotations": {
         "readOnlyHint": false,
         "openWorldHint": true,
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Approves the exact current draft revision and queues a new outbound message.",
+        "read_only_justification": "Queues the exact current agent-authored draft revision as a new outbound message.",
         "open_world_justification": "Causes Operational Inbox to send email content to an external recipient.",
-        "destructive_justification": "An external email cannot be recalled reliably after submission, so explicit approval of the exact revision is required."
+        "destructive_justification": "An external email cannot be recalled reliably after submission; exact revision and content-hash checks bind the delegated send."
       }
     },
     "resend_outbound": {
@@ -267,11 +315,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Send only the exact draft revision the user explicitly approves.",
-      "user_prompt": "I have reviewed the exact current Operational Inbox draft shown above. Send that revision now and then check its delivery status.",
+      "description": "Send the exact agent-authored revision under delegated authority.",
+      "user_prompt": "Reply to the selected Operational Inbox conversation now, then check the outbound delivery status.",
       "file_attachment_urls": null,
-      "tools_triggered": "get_reply_draft, approve_and_send_reply, get_outbound_status",
-      "expected_output": "Confirms the current revision ID and content hash, queues exactly one reply after explicit approval, and reports its authoritative status without claiming Accepted means Delivered.",
+      "tools_triggered": "get_conversation, create_reply_draft, send_reply, get_outbound_status",
+      "expected_output": "Authors and persists an exact revision, queues exactly one reply under delegated send authority without adding a second approval prompt, and reports its authoritative status without claiming Accepted means Delivered.",
       "expected_output_url": null
     }
   ],

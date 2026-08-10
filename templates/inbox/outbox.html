@@ -1,0 +1,70 @@
+{% extends "app_base.html" %}
+{% block title %}Outbox · Operational Inbox{% endblock %}
+{% block content %}
+  <div class="mb-6 flex flex-col gap-3 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Agent outbound operations</p>
+      <h1 class="mt-2 font-heading text-3xl font-semibold tracking-tight">Outbox</h1>
+      <p class="mt-2 max-w-3xl text-sm text-muted">Agent-authored replies move directly into this delivery queue under delegated send authority. Inspect provider outcomes here; no server-side reply generation runs in this flow.</p>
+    </div>
+    <span class="oi-status {% if control.is_paused %}oi-status-danger{% else %}oi-status-ready{% endif %}">{% if control.is_paused %}Sending paused{% else %}Sending enabled{% endif %}</span>
+  </div>
+
+  <section class="grid gap-px border border-line bg-line sm:grid-cols-2 xl:grid-cols-4" aria-label="Last 24 hours">
+    <div class="bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Queued</p><p class="mt-2 font-heading text-3xl font-semibold">{{ metrics.queued }}</p></div>
+    <div class="bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">In flight</p><p class="mt-2 font-heading text-3xl font-semibold">{{ metrics.in_flight }}</p></div>
+    <div class="bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Delivered</p><p class="mt-2 font-heading text-3xl font-semibold">{{ metrics.delivered }}</p></div>
+    <div class="bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Needs attention</p><p class="mt-2 font-heading text-3xl font-semibold {% if metrics.problems %}text-coral-strong{% endif %}">{{ metrics.problems }}</p></div>
+  </section>
+
+  {% if control.is_paused or metrics.problems %}
+    <div class="mt-6 border {% if control.is_paused %}border-gold-strong/40 bg-gold-soft text-gold-strong{% else %}border-coral-strong/40 bg-coral-soft text-coral-strong{% endif %} p-4 text-sm">
+      {% if control.is_paused %}<strong>Provider handoff is paused.</strong> Queued replies remain held until sending resumes.{% else %}<strong>{{ metrics.problems }} outbound attempt{{ metrics.problems|pluralize }} {% if metrics.problems == 1 %}needs{% else %}need{% endif %} attention.</strong> Inspect the error and delivery events before explicitly resending.{% endif %}
+    </div>
+  {% endif %}
+
+  <div class="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+    <div class="min-w-0 space-y-4">
+      <form method="get" class="grid gap-3 border border-line bg-white p-4 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1.2fr_0.8fr_auto]">
+        <div><label class="oi-label" for="outbox-domain">Domain</label><select class="oi-input" id="outbox-domain" name="domain"><option value="">All domains</option>{% for domain in domains %}<option value="{{ domain.id }}" {% if selected_domain == domain.id|stringformat:"s" %}selected{% endif %}>{{ domain.hostname }}</option>{% endfor %}</select></div>
+        <div><label class="oi-label" for="outbox-status">Status</label><select class="oi-input" id="outbox-status" name="status"><option value="">All statuses</option>{% for value, label in statuses %}<option value="{{ value }}" {% if selected_status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+        <div><label class="oi-label" for="outbox-recipient">Recipient</label><input class="oi-input" id="outbox-recipient" name="recipient" type="search" value="{{ recipient }}" placeholder="name@example.com"></div>
+        <div><label class="oi-label" for="outbox-time">Time</label><select class="oi-input" id="outbox-time" name="time"><option value="1h" {% if selected_range == '1h' %}selected{% endif %}>Last hour</option><option value="24h" {% if selected_range == '24h' %}selected{% endif %}>Last 24 hours</option><option value="7d" {% if selected_range == '7d' %}selected{% endif %}>Last 7 days</option><option value="30d" {% if selected_range == '30d' %}selected{% endif %}>Last 30 days</option><option value="all" {% if selected_range == 'all' %}selected{% endif %}>All time</option></select></div>
+        <div class="flex items-end"><button class="oi-button-secondary w-full">Filter</button></div>
+      </form>
+
+      <section class="overflow-hidden border border-line bg-white">
+        <div class="overflow-x-auto">
+          <table class="w-full min-w-[920px] text-left text-sm">
+            <thead class="border-b border-line bg-paper font-mono text-[10px] uppercase tracking-[0.08em] text-muted"><tr><th class="px-4 py-3">Status</th><th class="px-4 py-3">Recipient / subject</th><th class="px-4 py-3">Domain</th><th class="px-4 py-3">Queued</th><th class="px-4 py-3">Latest event</th><th class="px-4 py-3 text-right">Attempt</th></tr></thead>
+            <tbody class="divide-y divide-line">
+              {% for outbound in page %}
+                <tr class="align-top hover:bg-paper/50">
+                  <td class="px-4 py-4"><span class="oi-status {% if outbound.status == 'DELIVERED' or outbound.status == 'ACCEPTED' %}oi-status-ready{% elif outbound.status == 'FAILED' or outbound.status == 'UNKNOWN' or outbound.status == 'BOUNCED' or outbound.status == 'COMPLAINED' %}oi-status-danger{% else %}oi-status-info{% endif %}">{{ outbound.get_status_display }}</span>{% if outbound.error_code %}<p class="mt-2 max-w-48 text-xs text-coral-strong">{{ outbound.public_error_message }}</p>{% endif %}</td>
+                  <td class="px-4 py-4"><a href="{% url 'conversation_detail' outbound.conversation_id %}" class="font-semibold text-ink hover:text-forest hover:underline">{{ outbound.to_address }}</a><p class="mt-1 max-w-md truncate text-xs text-muted">{{ outbound.subject }}</p></td>
+                  <td class="px-4 py-4"><span class="font-mono text-xs">{{ outbound.domain.hostname }}</span></td>
+                  <td class="px-4 py-4 text-xs text-muted">{{ outbound.created_at|date:"Y-m-d H:i" }}</td>
+                  <td class="px-4 py-4 text-xs text-muted">{% with event=outbound.delivery_events.first %}{% if event %}{{ event.event_type }}<br>{{ event.occurred_at|date:"Y-m-d H:i" }}{% elif outbound.delivered_at %}Delivered<br>{{ outbound.delivered_at|date:"Y-m-d H:i" }}{% elif outbound.accepted_at %}Accepted<br>{{ outbound.accepted_at|date:"Y-m-d H:i" }}{% else %}—{% endif %}{% endwith %}</td>
+                  <td class="px-4 py-4 text-right font-mono text-xs">{{ outbound.attempt_number }}</td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="6" class="px-6 py-14 text-center text-sm text-muted">No outbound attempts match these filters.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% if page.has_other_pages %}<nav class="flex items-center justify-between border-t border-line p-4 text-sm" aria-label="Outbox pagination"><span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span><div class="flex gap-2">{% if page.has_previous %}<a class="oi-button-secondary min-h-8" href="?{{ pagination_query }}{% if pagination_query %}&amp;{% endif %}page={{ page.previous_page_number }}">Previous</a>{% endif %}{% if page.has_next %}<a class="oi-button-secondary min-h-8" href="?{{ pagination_query }}{% if pagination_query %}&amp;{% endif %}page={{ page.next_page_number }}">Next</a>{% endif %}</div></nav>{% endif %}
+      </section>
+    </div>
+
+    <aside class="space-y-6 xl:sticky xl:top-20 xl:self-start">
+      <section class="border border-line bg-white p-5">
+        <div class="flex items-start justify-between gap-3"><div><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Sending control</p><h2 class="mt-2 font-heading text-xl font-semibold">Account authority</h2></div><span class="oi-status {% if control.is_paused %}oi-status-danger{% else %}oi-status-ready{% endif %}">{% if control.is_paused %}Paused{% else %}Enabled{% endif %}</span></div>
+        <p class="mt-3 text-sm leading-6 text-muted">The connected agent may send exact reply revisions within this focused authority. This switch controls provider handoff for every domain.</p>
+        <dl class="mt-5 space-y-3 border-y border-line py-4 text-sm"><div class="flex justify-between gap-4"><dt>Last minute</dt><dd class="font-mono">{{ usage.minute }} / {{ usage.limits.minute }}</dd></div><div class="flex justify-between gap-4"><dt>Last 24 hours</dt><dd class="font-mono">{{ usage.day }} / {{ usage.limits.day }}</dd></div></dl>
+        <form method="post" action="{% url 'outbox_control' %}" class="mt-5">{% csrf_token %}<input type="hidden" name="paused" value="{% if control.is_paused %}false{% else %}true{% endif %}"><button class="{% if control.is_paused %}oi-button-primary{% else %}oi-button-secondary{% endif %} w-full">{% if control.is_paused %}Resume external sending{% else %}Pause external sending{% endif %}</button></form>
+      </section>
+      <section class="border border-line bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domain usage · 24h</p><div class="mt-4 divide-y divide-line">{% for item in domain_usage %}<div class="flex items-center justify-between gap-3 py-3 text-sm"><span class="truncate">{{ item.domain.hostname }}</span><span class="font-mono text-xs">{{ item.count }} / {{ usage.limits.domain_day }}</span></div>{% empty %}<p class="py-3 text-sm text-muted">No connected domains.</p>{% endfor %}</div></section>
+    </aside>
+  </div>
+{% endblock %}

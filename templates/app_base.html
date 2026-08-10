@@ -14,6 +14,11 @@
           Inbox
           {% if nav_quarantine_count %}<span class="ml-auto bg-quarantine-soft px-1.5 font-mono text-[10px] text-quarantine-strong">{{ nav_quarantine_count }}</span>{% endif %}
         </a>
+        <a href="{% url 'outbox' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'outbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
+          <span aria-hidden="true">⇥</span>
+          Outbox
+          {% if nav_outbound_problem_count %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_outbound_problem_count }}</span>{% endif %}
+        </a>
         {% if nav_inbox_tree %}
           <div class="border-b border-line bg-paper/30 px-2 pb-3 pt-2">
             <p class="mb-1 px-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domains</p>

@@ -10,39 +10,152 @@ from botocore.exceptions import (
     ClientError,
 )
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 
-from inbox.models import AuditEvent, Domain, DraftApproval, Message, OutboundMessage
+from inbox.models import (
+    AuditEvent,
+    Domain,
+    DraftApproval,
+    DurableJob,
+    Message,
+    OutboundControl,
+    OutboundMessage,
+    User,
+)
+from inbox.services.notifications import create_outbound_problem_notifications
+
+
+def get_outbound_control(user: User, *, lock: bool = False) -> OutboundControl:
+    if lock:
+        control, _ = OutboundControl.objects.get_or_create(user=user)
+        return OutboundControl.objects.select_for_update().get(id=control.id)
+    return OutboundControl.objects.filter(user=user).first() or OutboundControl(user=user)
+
+
+def outbound_usage(user: User, *, now=None) -> dict[str, Any]:
+    now = now or timezone.now()
+    base = OutboundMessage.objects.filter(domain__owner=user)
+    day_start = now - timedelta(hours=24)
+    minute_start = now - timedelta(minutes=1)
+    by_domain = {
+        str(row["domain_id"]): row["count"]
+        for row in (
+            base.filter(created_at__gte=day_start).values("domain_id").annotate(count=Count("id"))
+        )
+    }
+    return {
+        "minute": base.filter(created_at__gte=minute_start).count(),
+        "day": base.filter(created_at__gte=day_start).count(),
+        "by_domain": by_domain,
+        "limits": {
+            "minute": settings.OUTBOUND_RATE_LIMIT_PER_MINUTE,
+            "day": settings.OUTBOUND_DAILY_ACCOUNT_LIMIT,
+            "domain_day": settings.OUTBOUND_DAILY_DOMAIN_LIMIT,
+        },
+    }
+
+
+def require_outbound_capacity(domain: Domain, *, now=None) -> None:
+    """Serialize account sends and reject paused or over-limit queue requests."""
+    now = now or timezone.now()
+    control = get_outbound_control(domain.owner, lock=True)
+    if control.is_paused:
+        raise ValidationError(
+            "Outbound sending is paused for this account.", code="outbound_paused"
+        )
+    base = OutboundMessage.objects.filter(domain__owner=domain.owner)
+    if (
+        settings.OUTBOUND_RATE_LIMIT_PER_MINUTE > 0
+        and base.filter(created_at__gte=now - timedelta(minutes=1)).count()
+        >= settings.OUTBOUND_RATE_LIMIT_PER_MINUTE
+    ):
+        raise ValidationError(
+            "The account send rate limit has been reached. Try again shortly.",
+            code="outbound_rate_limited",
+        )
+    if (
+        settings.OUTBOUND_DAILY_ACCOUNT_LIMIT > 0
+        and base.filter(created_at__gte=now - timedelta(hours=24)).count()
+        >= settings.OUTBOUND_DAILY_ACCOUNT_LIMIT
+    ):
+        raise ValidationError(
+            "The account daily send limit has been reached.",
+            code="outbound_account_limit",
+        )
+    if (
+        settings.OUTBOUND_DAILY_DOMAIN_LIMIT > 0
+        and base.filter(domain=domain, created_at__gte=now - timedelta(hours=24)).count()
+        >= settings.OUTBOUND_DAILY_DOMAIN_LIMIT
+    ):
+        raise ValidationError(
+            "The domain daily send limit has been reached.",
+            code="outbound_domain_limit",
+        )
+
+
+@transaction.atomic
+def set_outbound_paused(user: User, *, paused: bool) -> OutboundControl:
+    control = get_outbound_control(user, lock=True)
+    if control.is_paused == paused:
+        return control
+    control.is_paused = paused
+    control.paused_at = timezone.now() if paused else None
+    control.save(update_fields=("is_paused", "paused_at", "updated_at"))
+    if not paused:
+        queued_ids = OutboundMessage.objects.filter(
+            domain__owner=user, status=OutboundMessage.Status.QUEUED
+        ).values_list("id", flat=True)
+        DurableJob.objects.filter(
+            idempotency_key__in=[f"outbound:{value}" for value in queued_ids]
+        ).exclude(status=DurableJob.Status.LEASED).update(
+            status=DurableJob.Status.PENDING,
+            due_at=timezone.now(),
+            leased_until=None,
+            last_error_code="",
+            updated_at=timezone.now(),
+        )
+    return control
 
 
 def recover_stale_submissions(*, now=None, stale_after_minutes: int = 10) -> int:
     """Never retry a send whose SES acceptance became unknowable after a crash."""
     now = now or timezone.now()
-    return OutboundMessage.objects.filter(
-        status=OutboundMessage.Status.SUBMITTING,
-        updated_at__lte=now - timedelta(minutes=stale_after_minutes),
-    ).update(
-        status=OutboundMessage.Status.UNKNOWN,
-        failed_at=now,
-        error_code="ses_acceptance_unknown",
-        error_message=(
+    stale = list(
+        OutboundMessage.objects.filter(
+            status=OutboundMessage.Status.SUBMITTING,
+            updated_at__lte=now - timedelta(minutes=stale_after_minutes),
+        ).select_related("domain", "conversation")
+    )
+    for outbound in stale:
+        outbound.status = OutboundMessage.Status.UNKNOWN
+        outbound.failed_at = now
+        outbound.error_code = "ses_acceptance_unknown"
+        outbound.error_message = (
             "The sender stopped while submitting. Automatic retry is disabled; "
             "the owner must explicitly resend."
-        ),
-        updated_at=now,
-    )
+        )
+        outbound.save(
+            update_fields=("status", "failed_at", "error_code", "error_message", "updated_at")
+        )
+        create_outbound_problem_notifications(outbound)
+    return len(stale)
 
 
 def _authorization_error(outbound: OutboundMessage) -> str:
-    approval = DraftApproval.objects.filter(
-        revision=outbound.revision,
-        invalidated_at__isnull=True,
-        content_hash=outbound.content_hash,
-    ).first()
     draft = outbound.revision.draft
-    if approval is None or draft.current_revision_id != outbound.revision_id or draft.is_stale:
-        return "The exact-revision approval is no longer active."
+    if draft.current_revision_id != outbound.revision_id or draft.is_stale:
+        return "The exact draft revision is no longer current."
+    if outbound.authorization_mode == OutboundMessage.AuthorizationMode.OWNER_APPROVAL:
+        approval = DraftApproval.objects.filter(
+            revision=outbound.revision,
+            invalidated_at__isnull=True,
+            content_hash=outbound.content_hash,
+        ).first()
+        if approval is None:
+            return "The exact-revision approval is no longer active."
     sender_domain = outbound.from_address.rsplit("@", 1)[-1].casefold()
     domain = Domain.objects.filter(id=outbound.domain_id, hostname=sender_domain).first()
     if (
@@ -81,6 +194,9 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
         )
         if locked.status != OutboundMessage.Status.QUEUED:
             return locked
+        control = OutboundControl.objects.filter(user=locked.domain.owner).first()
+        if control is not None and control.is_paused:
+            return locked
         authorization_error = _authorization_error(locked)
         if authorization_error:
             locked.status = OutboundMessage.Status.FAILED
@@ -96,6 +212,7 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
                     "updated_at",
                 )
             )
+            create_outbound_problem_notifications(locked)
             return locked
         locked.status = OutboundMessage.Status.SUBMITTING
         locked.save(update_fields=("status", "updated_at"))
@@ -184,6 +301,9 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
             request_id=f"outbound:{current.id}",
             metadata={"status": current.status, "error_code": current.error_code},
         )
+
+    if current.status in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
+        create_outbound_problem_notifications(current)
 
     if current.provider_message_id:
         Message.objects.get_or_create(

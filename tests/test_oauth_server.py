@@ -101,7 +101,7 @@ def test_oauth_and_protected_resource_metadata_are_public(client):
     assert protected.json() == {
         "resource": settings.MCP_RESOURCE_URL,
         "authorization_servers": [settings.OAUTH_ISSUER],
-        "scopes_supported": ["read", "write", "manage_domains", "approve_send"],
+        "scopes_supported": ["read", "write", "manage_domains", "send"],
         "bearer_methods_supported": ["header"],
         "resource_documentation": settings.MCP_DOCUMENTATION_URL,
     }
@@ -170,7 +170,7 @@ def test_authorization_code_pkce_token_can_call_mcp(client, mcp_client, owner, d
         "response_type": "code",
         "client_id": application.client_id,
         "redirect_uri": "https://client.example/callback",
-        "scope": "read write manage_domains approve_send",
+        "scope": "read write manage_domains send",
         "state": "oauth-state",
         "code_challenge": challenge,
         "code_challenge_method": "S256",

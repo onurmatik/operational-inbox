@@ -35,13 +35,13 @@ English.
   signature-verified webhook synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
   sanitization, domain-local message threading, multi-domain delivery, and delivery-event processing.
-- Optional OpenAI reply drafting behind an exact human-approval boundary. New inbound mail is not
-  assigned a built-in workflow state or repeatedly classified into an application-owned work queue.
-- Immutable reply revisions, exact-revision approval, explicit resend, and conservative SES
-  timeout handling that never retries an ambiguous submission automatically.
+- Agent-authored immutable reply revisions, delegated exact-revision sending, explicit resend,
+  account pause/rate controls, an operational Outbox, and conservative SES timeout handling that
+  never retries an ambiguous submission automatically. New inbound mail is not assigned a built-in
+  workflow state or repeatedly classified into an application-owned work queue.
 - Django Ninja `/api/v1`, an all-domain inbound message feed, CSRF-protected session access, and
   once-displayed hashed bearer tokens that can be account- or domain-scoped with `read`, `write`,
-  `manage_domains`, and `approve_send` scopes.
+  `manage_domains`, and `send` scopes.
 - SQLite WAL deployment, encrypted integrity-checked backups, configurable retention, private S3
   storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps configuration, and a
   locked `origin/main` deployment flow.
@@ -202,27 +202,22 @@ writes customer records. Provider-forward domains with sending disabled are not 
   no tools, cannot browse or open links, and receives only attachment filename/type/size/scan
   metadata—not attachment bytes.
 
-Optional OpenAI draft generation uses the Responses API with Pydantic Structured Outputs and
-`store=false`; the default draft model is `gpt-5.6-terra` with medium reasoning. When
-`OPENAI_API_KEY` is empty or an API/schema/refusal error occurs, ingestion, feed polling, search,
-security verdicts, tags, and folders continue to work. Draft generation reports itself unavailable
-rather than taking external action.
-
-Agents connected through MCP may instead persist their own subject and body as an agent-authored
-draft. This path does not invoke the server-side draft model and still requires the exact current
-revision ID, content hash, and `approve_send` authority before an outbound message is queued.
+Agents connected through MCP persist their own subject and body as an exact agent-authored draft
+revision. Operational Inbox does not generate reply copy. A connection with focused `send`
+authority may queue the exact current revision without a second per-message approval prompt;
+revision ID, content hash, freshness, domain readiness, pause state, and send limits are revalidated.
 
 Operational Inbox does not schedule classification, aging, or report jobs and does not create
 in-app notifications. Security/quarantine and domain-health conditions create deduplicated email
 notifications. The user's agent decides concepts such as Requires reply, Aging, or project
 priority and may persist them as ordinary free-form tags.
 
-## Human-approved outbound mail
+## Agent-authored outbound mail
 
-Editing a reply creates a new immutable revision and invalidates any older approval. Only the
-domain owner—or a token with `approve_send` acting for that owner—can approve the exact
-current revision and content hash. The queued sender revalidates the approval, draft freshness,
-domain owner and domain ownership/outbound readiness immediately before submission.
+Editing a reply creates a new immutable revision. The native web flow can retain owner approval,
+while API and MCP integrations use the connection's delegated `send` scope. Every path queues only
+the exact current revision and revalidates its content hash, freshness, account pause, bounded send
+limits, active owner, and domain ownership/outbound readiness immediately before submission.
 
 Outbound status is tracked as:
 
@@ -318,6 +313,7 @@ python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
 
 - Django host, CSRF, HTTPS/cookie, database, email backend, and public URL settings;
 - domain/signup/verification-resend limits and `INBOUND_SERVICE_DOMAIN`;
+- account pause state plus minute, daily-account, and daily-domain outbound limits;
 - dedicated AWS `us-east-1` credentials plus bucket, queue, topic, configuration-set, and
   receipt-rule names;
 - OpenAI API key and model names;
@@ -346,7 +342,8 @@ SQLite is the only configured application database. It uses WAL, a 20-second bus
 
 The Django Ninja API is mounted at `/api/v1`; interactive OpenAPI documentation is available at
 `/api/v1/docs` when the application is running. It exposes domains/checks/tests, domain-scoped
-conversation reads, free-form tag writes, drafts/revisions/exact approval, outbound status/resend,
+conversation reads, free-form tag writes, agent-authored drafts/revisions/exact send, account-wide
+Outbox filtering and controls, outbound delivery events/resend,
 legacy-compatible report/notification reads, audits, API tokens, and attachment download
 authorization. `GET /api/v1/feed/messages` provides the owner-wide inbound feed with domain, full
 mailbox, tag, folder, new-only, and security filters.
@@ -359,7 +356,7 @@ Authorization: Bearer oi_<one-time-secret>
 ```
 
 Only the hash and a short lookup prefix are stored. The raw token is displayed once. Tokens are
-independently revocable and limited to `read`, `write`, `manage_domains`, and/or `approve_send`. A
+independently revocable and limited to `read`, `write`, `manage_domains`, and/or `send`. A
 token can cover one domain or all current and future active domains owned by the account. Creating
 a new domain through MCP still requires the owner's OAuth session rather than a legacy bearer token.
 
@@ -382,12 +379,13 @@ envelope:
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
-the `setup-domain`, `triage-inboxes`, and `reply-to-conversations` skills, and portable/Codex MCP
+the `setup-domain`, `triage-inboxes`, `reply-to-conversations`, and
+`monitor-outbound-delivery` skills, and portable/Codex MCP
 configuration.
 The official MCP Python SDK 2.x serves a stateless Streamable HTTP endpoint at `/mcp` from a
 dedicated ASGI process. Plugin clients connect with OAuth 2.1 authorization code + PKCE; existing
 Operational Inbox API bearer tokens remain supported for direct integrations. Protocol discovery
-is public, while every tool call enforces its `read`, `write`, `manage_domains`, or `approve_send`
+is public, while every tool call enforces its `read`, `write`, `manage_domains`, or `send`
 scope. Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
 provider-neutral instructions, and verify the result; they never write customer DNS.
 Prompt-capable clients can begin with the public

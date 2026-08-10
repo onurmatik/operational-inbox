@@ -1,7 +1,7 @@
 {
   "name": "operational-inbox",
   "version": "0.1.0",
-  "description": "Connect domains, then review and organize email across routing addresses.",
+  "description": "Connect domains, triage inbound mail, and operate agent-authored replies.",
   "author": {
     "name": "Operational Inbox",
     "email": "support@operationalinbox.com",
@@ -15,14 +15,15 @@
     "domain-setup",
     "multi-domain",
     "agents",
-    "tags"
+    "tags",
+    "outbox"
   ],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Operational Inbox",
-    "shortDescription": "Set up and triage domain mail",
-    "longDescription": "Inspect and connect email domains, follow exact DNS setup plans, verify readiness, triage authorized mail, apply reversible organization actions, and keep outbound approval separate.",
+    "shortDescription": "Set up, triage, and operate replies",
+    "longDescription": "Inspect and connect email domains, follow exact DNS setup plans, triage authorized mail, apply reversible organization, send exact agent-authored replies, and monitor their delivery.",
     "developerName": "Operational Inbox",
     "category": "Productivity",
     "capabilities": [
@@ -30,7 +31,8 @@
       "Cross-domain inbox triage",
       "Usage-derived tags",
       "Reversible inbox organization",
-      "Exact-revision replies"
+      "Exact-revision replies",
+      "Outbound delivery operations"
     ],
     "websiteURL": "https://operationalinbox.com/",
     "privacyPolicyURL": "https://operationalinbox.com/privacy/",
@@ -38,7 +40,7 @@
     "defaultPrompt": [
       "Connect my domain without disrupting its current mail route.",
       "Triage new mail across all my domains.",
-      "Draft a reply for the conversation I select."
+      "Draft and send a reply for the conversation I select."
     ],
     "brandColor": "#1A3C2B",
     "composerIcon": "./assets/logo.png",

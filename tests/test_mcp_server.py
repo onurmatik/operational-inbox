@@ -18,6 +18,7 @@ from inbox.models import (
     AuditEvent,
     Domain,
     DomainDNSRecord,
+    DraftApproval,
     DurableJob,
     InboundRoute,
     MessageRecipient,
@@ -211,11 +212,15 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "apply_conversation_action",
         "get_domain_health",
         "get_outbound_status",
+        "list_outbound",
+        "get_outbound_control",
+        "set_outbound_paused",
+        "enable_outbound_sending",
         "list_audit_events",
         "create_reply_draft",
         "get_reply_draft",
         "revise_reply_draft",
-        "approve_and_send_reply",
+        "send_reply",
         "resend_outbound",
     }
     for tool in tools:
@@ -487,7 +492,7 @@ def test_mcp_domain_scoped_token_cannot_inspect_another_hostname(
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mcp_agent_authored_draft_requires_exact_approval(
+def test_mcp_agent_authored_draft_sends_under_delegated_scope(
     mcp_client, owner, domain, conversation, inbound_message
 ):
     MessageRecipient.objects.create(
@@ -498,10 +503,10 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
         is_routing_recipient=True,
     )
     _, raw = APIToken.issue(
-        domain=domain,
+        domain=None,
         owner=owner,
         name="Reply agent",
-        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE, APIToken.Scope.APPROVE_SEND],
+        scopes=[APIToken.Scope.READ, APIToken.Scope.WRITE, APIToken.Scope.SEND],
     )
     created = tool_call(
         mcp_client,
@@ -521,7 +526,7 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
     rejected = tool_call(
         mcp_client,
         raw,
-        "approve_and_send_reply",
+        "send_reply",
         {
             "domain_id": str(domain.id),
             "draft_id": created["id"],
@@ -532,10 +537,10 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
     assert tool_error_payload(rejected)["code"] == "stale_revision"
     assert not OutboundMessage.objects.exists()
 
-    approved = tool_call(
+    sent = tool_call(
         mcp_client,
         raw,
-        "approve_and_send_reply",
+        "send_reply",
         {
             "domain_id": str(domain.id),
             "draft_id": created["id"],
@@ -543,6 +548,20 @@ def test_mcp_agent_authored_draft_requires_exact_approval(
             "content_hash": created["content_hash"],
         },
     )
-    assert approved["isError"] is False
-    assert approved["structuredContent"]["status"] == OutboundMessage.Status.QUEUED
+    assert sent["isError"] is False
+    assert sent["structuredContent"]["status"] == OutboundMessage.Status.QUEUED
     assert OutboundMessage.objects.count() == 1
+    assert not DraftApproval.objects.exists()
+    assert OutboundMessage.objects.get().authorization_mode == "DELEGATED_SCOPE"
+
+    listed = tool_call(
+        mcp_client,
+        raw,
+        "list_outbound",
+        {"domain_id": str(domain.id), "time_range": "24h"},
+    )
+    assert listed["structuredContent"]["items"][0]["id"] == sent["structuredContent"]["outbound_id"]
+    control = tool_call(mcp_client, raw, "get_outbound_control", {})
+    assert control["structuredContent"]["paused"] is False
+    paused = tool_call(mcp_client, raw, "set_outbound_paused", {"paused": True})
+    assert paused["structuredContent"]["paused"] is True

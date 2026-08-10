@@ -1,27 +1,6 @@
 {
   "components": {
     "schemas": {
-      "ApprovalInput": {
-        "properties": {
-          "content_hash": {
-            "maxLength": 64,
-            "minLength": 64,
-            "title": "Content Hash",
-            "type": "string"
-          },
-          "revision_id": {
-            "format": "uuid",
-            "title": "Revision Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "revision_id",
-          "content_hash"
-        ],
-        "title": "ApprovalInput",
-        "type": "object"
-      },
       "ClassificationInput": {
         "properties": {
           "category": {
@@ -110,6 +89,31 @@
         "title": "ConversationTagInput",
         "type": "object"
       },
+      "DeliveryEventOutput": {
+        "properties": {
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "occurred_at": {
+            "format": "date-time",
+            "title": "Occurred At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "event_type",
+          "occurred_at"
+        ],
+        "title": "DeliveryEventOutput",
+        "type": "object"
+      },
       "DomainInput": {
         "properties": {
           "hostname": {
@@ -132,6 +136,299 @@
           "setup_mode"
         ],
         "title": "DomainInput",
+        "type": "object"
+      },
+      "OutboundControlInput": {
+        "properties": {
+          "paused": {
+            "title": "Paused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "paused"
+        ],
+        "title": "OutboundControlInput",
+        "type": "object"
+      },
+      "OutboundControlOutput": {
+        "properties": {
+          "by_domain": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Domain",
+            "type": "object"
+          },
+          "day_count": {
+            "title": "Day Count",
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/OutboundLimitsOutput"
+          },
+          "minute_count": {
+            "title": "Minute Count",
+            "type": "integer"
+          },
+          "paused": {
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "paused_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused At"
+          }
+        },
+        "required": [
+          "paused",
+          "paused_at",
+          "minute_count",
+          "day_count",
+          "by_domain",
+          "limits"
+        ],
+        "title": "OutboundControlOutput",
+        "type": "object"
+      },
+      "OutboundLimitsOutput": {
+        "properties": {
+          "day": {
+            "title": "Day",
+            "type": "integer"
+          },
+          "domain_day": {
+            "title": "Domain Day",
+            "type": "integer"
+          },
+          "minute": {
+            "title": "Minute",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "minute",
+          "day",
+          "domain_day"
+        ],
+        "title": "OutboundLimitsOutput",
+        "type": "object"
+      },
+      "OutboundListOutput": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OutboundOutput"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "OutboundListOutput",
+        "type": "object"
+      },
+      "OutboundOutput": {
+        "properties": {
+          "accepted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "authorization_mode": {
+            "enum": [
+              "OWNER_APPROVAL",
+              "DELEGATED_SCOPE"
+            ],
+            "title": "Authorization Mode",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "domain_id": {
+            "format": "uuid",
+            "title": "Domain Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicErrorOutput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryEventOutput"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "failed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed At"
+          },
+          "from_address": {
+            "title": "From Address",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "SUBMITTING",
+              "ACCEPTED",
+              "DELIVERED",
+              "FAILED",
+              "UNKNOWN",
+              "BOUNCED",
+              "COMPLAINED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "title": "Subject",
+            "type": "string"
+          },
+          "to_address": {
+            "title": "To Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "domain_id",
+          "conversation_id",
+          "status",
+          "attempt",
+          "authorization_mode",
+          "from_address",
+          "to_address",
+          "subject",
+          "created_at",
+          "accepted_at",
+          "delivered_at",
+          "failed_at",
+          "error",
+          "events"
+        ],
+        "title": "OutboundOutput",
+        "type": "object"
+      },
+      "OutboundReferenceOutput": {
+        "properties": {
+          "outbound_id": {
+            "format": "uuid",
+            "title": "Outbound Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "SUBMITTING",
+              "ACCEPTED",
+              "DELIVERED",
+              "FAILED",
+              "UNKNOWN",
+              "BOUNCED",
+              "COMPLAINED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outbound_id",
+          "status"
+        ],
+        "title": "OutboundReferenceOutput",
+        "type": "object"
+      },
+      "PublicErrorOutput": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "PublicErrorOutput",
         "type": "object"
       },
       "RevisionInput": {
@@ -173,6 +470,27 @@
         "title": "RoutingTransitionInput",
         "type": "object"
       },
+      "SendInput": {
+        "properties": {
+          "content_hash": {
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "revision_id": {
+            "format": "uuid",
+            "title": "Revision Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision_id",
+          "content_hash"
+        ],
+        "title": "SendInput",
+        "type": "object"
+      },
       "TokenInput": {
         "properties": {
           "all_domains": {
@@ -192,7 +510,7 @@
                 "read",
                 "write",
                 "manage_domains",
-                "approve_send"
+                "send"
               ],
               "type": "string"
             },
@@ -735,59 +1053,6 @@
         ]
       }
     },
-    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/drafts": {
-      "post": {
-        "operationId": "inbox_api_drafts_generate",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "conversation_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Conversation Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Created"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Drafts Generate",
-        "tags": [
-          "Drafts"
-        ]
-      }
-    },
     "/api/v1/domains/{domain_id}/conversations/{conversation_id}/drafts/authored": {
       "post": {
         "operationId": "inbox_api_drafts_create_authored",
@@ -1067,69 +1332,6 @@
         ]
       }
     },
-    "/api/v1/domains/{domain_id}/drafts/{draft_id}/approval": {
-      "post": {
-        "operationId": "inbox_api_drafts_approve",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "draft_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Draft Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApprovalInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Accepted"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Drafts Approve",
-        "tags": [
-          "Drafts"
-        ]
-      }
-    },
     "/api/v1/domains/{domain_id}/drafts/{draft_id}/revisions": {
       "post": {
         "operationId": "inbox_api_drafts_revise",
@@ -1188,6 +1390,67 @@
           }
         ],
         "summary": "Drafts Revise",
+        "tags": [
+          "Drafts"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/drafts/{draft_id}/send": {
+      "post": {
+        "operationId": "inbox_api_drafts_send",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "draft_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Draft Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboundReferenceOutput"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Drafts Send",
         "tags": [
           "Drafts"
         ]
@@ -1430,6 +1693,13 @@
         ],
         "responses": {
           "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboundOutput"
+                }
+              }
+            },
             "description": "OK"
           }
         },
@@ -1477,9 +1747,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response",
-                  "type": "object"
+                  "$ref": "#/components/schemas/OutboundReferenceOutput"
                 }
               }
             },
@@ -2020,6 +2288,197 @@
         "summary": "Api Health",
         "tags": [
           "System"
+        ]
+      }
+    },
+    "/api/v1/outbound": {
+      "get": {
+        "operationId": "inbox_api_outbound_list",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "domain_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Domain Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "recipient",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Recipient"
+            }
+          },
+          {
+            "in": "query",
+            "name": "time_range",
+            "required": false,
+            "schema": {
+              "default": "24h",
+              "enum": [
+                "1h",
+                "24h",
+                "7d",
+                "30d",
+                "all"
+              ],
+              "title": "Time Range",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboundListOutput"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Outbound List",
+        "tags": [
+          "Outbound"
+        ]
+      }
+    },
+    "/api/v1/outbound/control": {
+      "get": {
+        "operationId": "inbox_api_outbound_control_get",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboundControlOutput"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Outbound Control Get",
+        "tags": [
+          "Outbound"
+        ]
+      },
+      "post": {
+        "operationId": "inbox_api_outbound_control_set",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutboundControlInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboundControlOutput"
+                }
+              }
+            },
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Outbound Control Set",
+        "tags": [
+          "Outbound"
         ]
       }
     }

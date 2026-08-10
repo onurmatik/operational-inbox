@@ -4,7 +4,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from inbox.models import Domain, Message, Notification
+from inbox.models import Domain, Message, Notification, OutboundMessage
 
 
 def _email_notification(
@@ -52,6 +52,30 @@ def create_domain_drift_notifications(domain: Domain) -> list[Notification]:
         kind="domain_drift",
         title="Domain DNS drift detected",
         body="A required DNS record no longer matches. Inbound readiness is degraded.",
+    )
+
+
+def create_outbound_problem_notifications(
+    outbound: OutboundMessage,
+) -> list[Notification]:
+    if outbound.status not in {
+        OutboundMessage.Status.FAILED,
+        OutboundMessage.Status.UNKNOWN,
+        OutboundMessage.Status.BOUNCED,
+        OutboundMessage.Status.COMPLAINED,
+    }:
+        return []
+    label = outbound.get_status_display().lower()
+    return _email_notification(
+        domain=outbound.domain,
+        conversation=outbound.conversation,
+        dedupe_key=f"outbound:{outbound.id}:{outbound.status}",
+        kind="outbound_problem",
+        title=f"Outbound reply {label}",
+        body=(
+            f"A reply to {outbound.to_address} is {label}. "
+            "Open Outbox to inspect the attempt before deciding whether to resend."
+        ),
     )
 
 

@@ -12,6 +12,7 @@ from inbox.models import (
     Domain,
     Message,
     MessageRecipient,
+    OutboundMessage,
 )
 from inbox.services.entitlements import can_manage_domain, for_user
 
@@ -113,6 +114,15 @@ def navigation_context(request: HttpRequest) -> dict[str, Any]:
         )
         .distinct()
         .count(),
+        "nav_outbound_problem_count": OutboundMessage.objects.filter(
+            domain_id__in=domain_ids,
+            status__in={
+                OutboundMessage.Status.FAILED,
+                OutboundMessage.Status.UNKNOWN,
+                OutboundMessage.Status.BOUNCED,
+                OutboundMessage.Status.COMPLAINED,
+            },
+        ).count(),
         "nav_folder": nav_folder,
         "nav_recipient": nav_recipient,
         "nav_current_inbox_url": selected_inbox_url,

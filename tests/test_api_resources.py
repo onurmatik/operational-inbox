@@ -11,6 +11,7 @@ from inbox.models import (
     Attachment,
     AuditEvent,
     Conversation,
+    DeliveryEvent,
     Domain,
     DomainDNSRecord,
     DomainTest,
@@ -26,6 +27,79 @@ from inbox.models import (
     User,
 )
 from inbox.services.drafts import revise_draft
+
+
+@pytest.mark.django_db
+def test_agent_outbound_api_sends_lists_events_and_controls_pause(
+    client, owner, domain, conversation, inbound_message
+):
+    MessageRecipient.objects.create(
+        domain=domain,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.com",
+        is_routing_recipient=True,
+    )
+    client.force_login(owner)
+    created = client.post(
+        f"/api/v1/domains/{domain.id}/conversations/{conversation.id}/drafts/authored",
+        data={"subject": "Re: Privacy request", "body_text": "We received your request."},
+        content_type="application/json",
+    )
+    assert created.status_code == 201
+    draft = created.json()
+    sent = client.post(
+        f"/api/v1/domains/{domain.id}/drafts/{draft['id']}/send",
+        data={
+            "revision_id": draft["revision_id"],
+            "content_hash": draft["content_hash"],
+        },
+        content_type="application/json",
+    )
+    assert sent.status_code == 202
+    outbound = OutboundMessage.objects.get(id=sent.json()["outbound_id"])
+    assert outbound.authorization_mode == OutboundMessage.AuthorizationMode.DELEGATED_SCOPE
+    DeliveryEvent.objects.create(
+        domain=domain,
+        outbound_message=outbound,
+        provider_event_id="api-delivery-event",
+        event_type="Delivery",
+        occurred_at=timezone.now(),
+    )
+
+    listed = client.get(
+        "/api/v1/outbound",
+        {"domain_id": str(domain.id), "recipient": "reply@example.net", "time_range": "24h"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["events"][0]["event_type"] == "Delivery"
+    detail = client.get(f"/api/v1/domains/{domain.id}/outbound/{outbound.id}")
+    assert detail.json()["authorization_mode"] == "DELEGATED_SCOPE"
+
+    control = client.get("/api/v1/outbound/control")
+    assert control.status_code == 200 and control.json()["paused"] is False
+    paused = client.post(
+        "/api/v1/outbound/control",
+        data={"paused": True},
+        content_type="application/json",
+    )
+    assert paused.status_code == 200 and paused.json()["paused"] is True
+
+    second = client.post(
+        f"/api/v1/domains/{domain.id}/conversations/{conversation.id}/drafts/authored",
+        data={"subject": "Re: Privacy request", "body_text": "A second reply."},
+        content_type="application/json",
+    ).json()
+    blocked = client.post(
+        f"/api/v1/domains/{domain.id}/drafts/{second['id']}/send",
+        data={
+            "revision_id": second["revision_id"],
+            "content_hash": second["content_hash"],
+        },
+        content_type="application/json",
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "outbound_paused"
 
 
 @pytest.mark.django_db
@@ -579,7 +653,7 @@ def test_session_api_resource_surface(
 
     token = client.post(
         f"{base}/tokens",
-        data={"name": "Full API", "scopes": ["read", "write", "approve_send"]},
+        data={"name": "Full API", "scopes": ["read", "write", "send"]},
         content_type="application/json",
     )
     assert token.status_code == 201

@@ -38,7 +38,10 @@ from inbox.models import (
 )
 from inbox.services.domains import apply_domain_readiness
 from inbox.services.mime import MAX_MIME_BYTES, ParsedMIME, parse_mime
-from inbox.services.notifications import create_security_notifications
+from inbox.services.notifications import (
+    create_outbound_problem_notifications,
+    create_security_notifications,
+)
 from inbox.services.routing_transitions import finalize_routing_transition_test
 from inbox.services.threading import (
     match_conversation,
@@ -766,6 +769,7 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
             outbound.failed_at = occurred_at
             fields.append("failed_at")
         outbound.save(update_fields=fields)
+        create_outbound_problem_notifications(outbound)
     if created:
         AuditEvent.objects.create(
             domain=outbound.domain,

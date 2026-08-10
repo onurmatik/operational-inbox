@@ -18,6 +18,7 @@ from inbox.models import (
     InboundRoutingTransition,
     Message,
     Notification,
+    OutboundControl,
     OutboundMessage,
     Report,
 )
@@ -316,13 +317,29 @@ def schedule_work(now=None) -> int:
     ):
         _, _, started = request_outbound_provisioning(domain)
         count += int(started)
-    for outbound in OutboundMessage.objects.filter(status=OutboundMessage.Status.QUEUED):
-        enqueue_job(
+    paused_owner_ids = set(
+        OutboundControl.objects.filter(is_paused=True).values_list("user_id", flat=True)
+    )
+    for outbound in OutboundMessage.objects.filter(
+        status=OutboundMessage.Status.QUEUED
+    ).select_related("domain"):
+        job = enqueue_job(
             kind="send_outbound",
             idempotency_key=f"outbound:{outbound.id}",
             payload={"outbound_id": str(outbound.id)},
             domain=outbound.domain,
         )
+        if outbound.domain.owner_id not in paused_owner_ids and job.status in {
+            DurableJob.Status.COMPLETE,
+            DurableJob.Status.FAILED,
+        }:
+            DurableJob.objects.filter(id=job.id).update(
+                status=DurableJob.Status.PENDING,
+                due_at=now,
+                leased_until=None,
+                last_error_code="",
+                updated_at=now,
+            )
         count += 1
     for notification in Notification.objects.filter(
         channel=Notification.Channel.EMAIL, status=Notification.Status.PENDING

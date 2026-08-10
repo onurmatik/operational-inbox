@@ -16,6 +16,8 @@ urlpatterns = [
         name="domain_switch",
     ),
     path("app/inbox/", views.inbox_list, name="inbox"),
+    path("app/outbox/", views.outbox, name="outbox"),
+    path("app/outbox/control/", views.outbox_control, name="outbox_control"),
     path(
         "app/conversations/<uuid:conversation_id>/",
         views.conversation_detail,
@@ -30,11 +32,6 @@ urlpatterns = [
         "app/conversations/<uuid:conversation_id>/tags/",
         views.conversation_tag,
         name="conversation_tag",
-    ),
-    path(
-        "app/conversations/<uuid:conversation_id>/draft/",
-        views.draft_generate,
-        name="draft_generate",
     ),
     path("app/drafts/<uuid:draft_id>/revise/", views.draft_revise, name="draft_revise"),
     path("app/drafts/<uuid:draft_id>/approve/", views.draft_approve, name="draft_approve"),

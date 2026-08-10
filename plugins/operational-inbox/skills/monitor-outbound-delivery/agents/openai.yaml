@@ -1,0 +1,11 @@
+interface:
+  display_name: "Monitor Outbound Delivery"
+  short_description: "Inspect delivery and control outbound sends"
+  default_prompt: "Use $monitor-outbound-delivery to inspect outbound problems and pause sending if needed."
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "operational-inbox"
+      description: "Operational Inbox outbound delivery tools"
+      transport: "streamable_http"
+      url: "https://operationalinbox.com/mcp"

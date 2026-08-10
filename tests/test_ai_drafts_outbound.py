@@ -12,17 +12,16 @@ from django.utils import timezone
 from openai import OpenAI
 
 from inbox.models import (
-    AgentRun,
     Classification,
     Domain,
     DraftApproval,
     MessageRecipient,
+    Notification,
     OutboundMessage,
     ReplyDraft,
 )
 from inbox.services.ai import (
     Category,
-    DraftOutput,
     TriageOutput,
     Urgency,
     build_triage_input,
@@ -30,11 +29,11 @@ from inbox.services.ai import (
 )
 from inbox.services.drafts import (
     approve_exact_revision,
-    create_draft,
     resend_outbound,
     revise_draft,
+    send_exact_revision,
 )
-from inbox.services.outbound import submit_outbound
+from inbox.services.outbound import set_outbound_paused, submit_outbound
 
 
 class MockResponses:
@@ -91,20 +90,6 @@ def test_openai_triage_uses_store_false_structured_output_and_untrusted_boundary
 def test_openai_outage_leaves_message_visibly_unclassified(inbound_message):
     assert classify_message(inbound_message) is None
     assert not inbound_message.classifications.exists()
-
-
-@pytest.mark.django_db
-def test_draft_generation_persists_agent_run_telemetry(inbound_message):
-    client = MockOpenAI(
-        DraftOutput(subject="Re: Privacy request", body_text="We received your request.")
-    )
-    draft = create_draft(inbound_message, client=client)
-    run = AgentRun.objects.get(kind=AgentRun.Kind.DRAFT)
-    assert draft.current_revision is not None
-    assert run.status == AgentRun.Status.SUCCEEDED
-    assert run.model_name
-    assert run.reasoning_effort == "medium"
-    assert run.input_tokens == 12 and run.output_tokens == 5
 
 
 def ready_sending_domain(organization, project):
@@ -220,6 +205,126 @@ def test_duplicate_exact_approval_is_idempotent(
 
 
 @pytest.mark.django_db
+def test_delegated_send_scope_queues_exact_revision_without_draft_approval(
+    owner, organization, project, conversation, inbound_message
+):
+    ready_sending_domain(organization, project)
+    MessageRecipient.objects.create(
+        domain=organization,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.org",
+        is_routing_recipient=True,
+    )
+    draft = ReplyDraft.objects.create(
+        domain=project,
+        conversation=conversation,
+        context_message=inbound_message,
+    )
+    revision = revise_draft(
+        draft=draft,
+        owner=owner,
+        subject="Re: Privacy request",
+        body_text="We received your request.",
+    )
+    outbound = send_exact_revision(
+        draft=draft,
+        revision_id=revision.id,
+        content_hash=revision.content_hash,
+        owner=owner,
+    )
+    assert outbound.authorization_mode == OutboundMessage.AuthorizationMode.DELEGATED_SCOPE
+    assert not DraftApproval.objects.filter(revision=revision).exists()
+    assert (
+        send_exact_revision(
+            draft=draft,
+            revision_id=revision.id,
+            content_hash=revision.content_hash,
+            owner=owner,
+        ).id
+        == outbound.id
+    )
+
+
+@pytest.mark.django_db
+def test_account_pause_blocks_new_and_holds_queued_provider_handoffs(
+    owner, organization, project, conversation, inbound_message
+):
+    ready_sending_domain(organization, project)
+    MessageRecipient.objects.create(
+        domain=organization,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.org",
+        is_routing_recipient=True,
+    )
+    draft = ReplyDraft.objects.create(
+        domain=project,
+        conversation=conversation,
+        context_message=inbound_message,
+    )
+    revision = revise_draft(
+        draft=draft, owner=owner, subject="Re: Privacy request", body_text="Received."
+    )
+    outbound = send_exact_revision(
+        draft=draft,
+        revision_id=revision.id,
+        content_hash=revision.content_hash,
+        owner=owner,
+    )
+    set_outbound_paused(owner, paused=True)
+    ses = Mock()
+    assert submit_outbound(outbound, ses_client=ses).status == OutboundMessage.Status.QUEUED
+    ses.send_raw_email.assert_not_called()
+
+
+@pytest.mark.django_db
+@override_settings(
+    OUTBOUND_RATE_LIMIT_PER_MINUTE=1,
+    OUTBOUND_DAILY_ACCOUNT_LIMIT=100,
+    OUTBOUND_DAILY_DOMAIN_LIMIT=100,
+)
+def test_every_send_path_obeys_account_rate_limit(
+    owner, organization, project, conversation, inbound_message
+):
+    ready_sending_domain(organization, project)
+    MessageRecipient.objects.create(
+        domain=organization,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.org",
+        is_routing_recipient=True,
+    )
+    first = ReplyDraft.objects.create(
+        domain=project, conversation=conversation, context_message=inbound_message
+    )
+    first_revision = revise_draft(
+        draft=first, owner=owner, subject="Re: Privacy request", body_text="First reply."
+    )
+    send_exact_revision(
+        draft=first,
+        revision_id=first_revision.id,
+        content_hash=first_revision.content_hash,
+        owner=owner,
+    )
+    second = ReplyDraft.objects.create(
+        domain=project, conversation=conversation, context_message=inbound_message
+    )
+    second_revision = revise_draft(
+        draft=second, owner=owner, subject="Re: Privacy request", body_text="Second reply."
+    )
+    with pytest.raises(ValidationError) as error:
+        send_exact_revision(
+            draft=second,
+            revision_id=second_revision.id,
+            content_hash=second_revision.content_hash,
+            owner=owner,
+        )
+    assert error.value.error_list[0].code == "outbound_rate_limited"
+    assert OutboundMessage.objects.count() == 1
+
+
+@pytest.mark.django_db
 def test_ambiguous_ses_timeout_is_unknown_and_requires_explicit_resend(
     owner, organization, project, conversation, inbound_message
 ):
@@ -255,6 +360,10 @@ def test_ambiguous_ses_timeout_is_unknown_and_requires_explicit_resend(
     assert "Operational Inbox could not confirm" in result.public_error_message
     assert "SES" not in result.public_error_message
     assert ses.send_raw_email.call_count == 1
+    assert Notification.objects.filter(
+        kind="outbound_problem",
+        dedupe_key=f"outbound:{result.id}:{OutboundMessage.Status.UNKNOWN}",
+    ).exists()
     resend = resend_outbound(result, owner=owner)
     assert resend.id != result.id
     assert resend.attempt_number == 2
