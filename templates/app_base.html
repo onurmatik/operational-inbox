@@ -63,19 +63,9 @@
       </div>
     </aside>
     <div class="min-w-0 lg:col-start-2">
-      <header class="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-white px-4 lg:px-6">
-        <button id="sidebar-toggle" type="button" class="oi-button-secondary min-h-9 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">Menu</button>
-        <div class="hidden min-w-0 items-center gap-2 text-sm sm:flex">
-          <span class="truncate font-semibold">{{ current_domain.hostname }}</span>
-        </div>
-        {% if plan_entitlements.is_pro or not current_domain %}
-          <a href="{% url 'domain_create' %}" class="oi-button-primary min-h-9">Connect domain</a>
-        {% else %}
-          <a href="{% url 'billing' %}" class="oi-button-primary min-h-9">Upgrade to connect domain</a>
-        {% endif %}
-      </header>
       <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
-        {% if current_domain and not current_domain_writable %}
+        <button id="sidebar-toggle" type="button" class="oi-button-secondary mb-6 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">Menu</button>
+        {% if active_nav != 'overview' and current_domain and not current_domain_writable %}
           <div class="mb-6 border border-gold-strong/40 bg-gold-soft p-4 text-sm text-gold-strong">
             <strong>This domain is read-only on Free.</strong> New mail continues to arrive, but changes require <a href="{% url 'billing' %}" class="underline">Operational Inbox Pro</a>.
           </div>

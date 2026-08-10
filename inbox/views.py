@@ -169,14 +169,10 @@ def _domain_readiness_alert(domain: Domain) -> dict[str, str] | None:
     elif domain.outbound_error_code:
         message = domain.public_outbound_error_message
     elif inbound_problem:
-        message = (
-            f"{domain.hostname} is not ready to receive mail. "
-            f"Current domain status: {domain.get_status_display()}."
-        )
+        message = f"Receiving is not ready. Current domain status: {domain.get_status_display()}."
     else:
         message = (
-            f"{domain.hostname} is not ready to send mail. "
-            f"Current sending status: {domain.get_outbound_status_display()}."
+            f"Sending is not ready. Current sending status: {domain.get_outbound_status_display()}."
         )
     return {"severity": "danger" if danger else "warning", "message": message}
 
@@ -761,25 +757,33 @@ def verify_email(request: HttpRequest, token: str) -> HttpResponse:
 
 @verified_required
 def dashboard(request: HttpRequest) -> HttpResponse:
-    if not request.user.domains.exclude(status=Domain.Status.DISABLED).exists():
+    domains = list(request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname"))
+    if not domains:
         return redirect("domain_create")
-    domain = current_domain(request)
-    messages_qs = Message.objects.filter(domain=domain)
+    domain_ids = [domain.id for domain in domains]
+    messages_qs = Message.objects.filter(domain_id__in=domain_ids)
     recent_messages = (
         messages_qs.filter(
             direction=Message.Direction.INBOUND,
             conversation__trashed_at__isnull=True,
         )
-        .select_related("conversation")
+        .select_related("conversation", "domain")
         .prefetch_related("conversation__tags", "recipients")
         .order_by("-received_at")[:8]
     )
-    recent_audit_events = list(AuditEvent.objects.filter(domain=domain)[:RECENT_AUDIT_EVENT_LIMIT])
+    recent_audit_events = list(
+        AuditEvent.objects.filter(domain_id__in=domain_ids).select_related("domain")[
+            :RECENT_AUDIT_EVENT_LIMIT
+        ]
+    )
+    domain_readiness_alerts = []
+    for domain in domains:
+        if alert := _domain_readiness_alert(domain):
+            domain_readiness_alerts.append({"domain": domain, **alert})
     context = {
         "active_nav": "overview",
-        "domain": domain,
         "recent_messages": recent_messages,
-        "domain_readiness_alert": _domain_readiness_alert(domain),
+        "domain_readiness_alerts": domain_readiness_alerts,
         "audit_alert_events": [
             event for event in recent_audit_events if _audit_event_has_problem(event)
         ],
@@ -792,7 +796,7 @@ def dashboard(request: HttpRequest) -> HttpResponse:
             ).count(),
             "quarantined": messages_qs.filter(is_quarantined=True).count(),
             "mailboxes": MessageRecipient.objects.filter(
-                domain=domain,
+                domain_id__in=domain_ids,
                 is_routing_recipient=True,
             )
             .values("address")
@@ -1075,7 +1079,13 @@ def outbox_control(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    requested_domain = request.GET.get("domain", "").strip()
+    if requested_domain:
+        domain = get_owned_domain(request.user, requested_domain)
+        if request.session.get("domain_id") != str(domain.id):
+            request.session["domain_id"] = str(domain.id)
+    else:
+        domain = current_domain(request)
     with transaction.atomic():
         conversation = domain_get_or_404(
             Conversation.objects.select_for_update().prefetch_related("tags"),
@@ -1374,7 +1384,7 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     )
     entitlements = for_user(request.user)
     active_domain_count = request.user.domains.exclude(status=Domain.Status.DISABLED).count()
-    if request.method == "POST" and active_domain_count >= entitlements.domain_limit:
+    if active_domain_count >= entitlements.domain_limit:
         return _upgrade_required(request, "Connecting another domain")
     if request.method == "POST" and form.is_valid():
         try:

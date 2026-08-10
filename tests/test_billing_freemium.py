@@ -94,6 +94,23 @@ def test_free_domain_limit_is_enforced(monkeypatch, free_owner):
 
 
 @pytest.mark.django_db
+def test_free_domain_connect_action_redirects_to_upgrade_only_after_click(client, free_owner):
+    make_domain(free_owner, "first.example")
+    client.force_login(free_owner)
+
+    domains = client.get(reverse("domains"))
+
+    assert domains.status_code == 200
+    assert b">Connect domain</a>" in domains.content
+    assert b"Upgrade to connect domain" not in domains.content
+
+    connect = client.get(reverse("domain_create"))
+
+    assert connect.status_code == 302
+    assert connect.url == reverse("billing")
+
+
+@pytest.mark.django_db
 def test_free_api_returns_upgrade_required(client, free_owner):
     domain = make_domain(free_owner, "api-free.example")
     client.force_login(free_owner)

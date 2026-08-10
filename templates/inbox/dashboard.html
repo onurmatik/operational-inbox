@@ -4,27 +4,27 @@
   <div class="border-b border-line pb-6">
     <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Mail infrastructure overview</p>
     <h1 class="mt-1 font-heading text-3xl font-semibold">Overview</h1>
-    <p class="mt-1 text-sm text-muted">New mail, routing coverage, and platform health without workflow assumptions.</p>
+    <p class="mt-1 text-sm text-muted">New mail, routing coverage, and platform health across all connected domains.</p>
   </div>
 
-  {% if domain_readiness_alert or audit_alert_events %}
+  {% if domain_readiness_alerts or audit_alert_events %}
     <section class="mt-6 space-y-3" aria-label="Operational alerts">
-      {% if domain_readiness_alert %}
-        <div role="alert" class="flex flex-col gap-3 border p-4 text-sm sm:flex-row sm:items-center sm:justify-between {% if domain_readiness_alert.severity == 'danger' %}border-coral-strong/40 bg-coral-soft text-coral-strong{% else %}border-gold-strong/40 bg-gold-soft text-gold-strong{% endif %}">
+      {% for alert in domain_readiness_alerts %}
+        <div role="alert" class="flex flex-col gap-3 border p-4 text-sm sm:flex-row sm:items-center sm:justify-between {% if alert.severity == 'danger' %}border-coral-strong/40 bg-coral-soft text-coral-strong{% else %}border-gold-strong/40 bg-gold-soft text-gold-strong{% endif %}">
           <div class="flex items-start gap-3">
             <span aria-hidden="true" class="inline-flex size-6 shrink-0 items-center justify-center border border-current font-mono text-xs font-bold">!</span>
-            <div><p class="font-semibold">Domain readiness needs attention</p><p class="mt-1">{{ domain_readiness_alert.message }}</p></div>
+            <div><p class="font-semibold">Domain readiness needs attention</p><p class="mt-1"><span class="font-mono text-[10px] uppercase tracking-[0.08em]">{{ alert.domain.hostname }}</span> · {{ alert.message }}</p></div>
           </div>
-          <a href="{% url 'domain_detail' domain.id %}" class="inline-flex min-h-10 shrink-0 items-center font-semibold underline">Manage domain →</a>
+          <a href="{% url 'domain_detail' alert.domain.id %}" class="inline-flex min-h-10 shrink-0 items-center font-semibold underline">Manage domain →</a>
         </div>
-      {% endif %}
+      {% endfor %}
       {% if audit_alert_events %}
         <div role="alert" class="flex flex-col gap-3 border border-coral-strong/40 bg-coral-soft p-4 text-sm text-coral-strong sm:flex-row sm:items-center sm:justify-between">
           <div class="flex items-start gap-3">
             <span aria-hidden="true" class="inline-flex size-6 shrink-0 items-center justify-center border border-current font-mono text-xs font-bold">!</span>
             <div>
               <p class="font-semibold">Audit activity needs attention</p>
-              <p class="mt-1">{% if audit_alert_events|length == 1 %}A recent audit failure needs attention.{% else %}{{ audit_alert_events|length }} recent audit failures need attention.{% endif %} Latest: <span class="font-mono text-xs">{{ audit_alert_events.0.public_event_type }}</span></p>
+              <p class="mt-1">{% if audit_alert_events|length == 1 %}A recent audit failure needs attention.{% else %}{{ audit_alert_events|length }} recent audit failures need attention.{% endif %} Latest: <span class="font-mono text-xs">{{ audit_alert_events.0.public_event_type }}</span> on <span class="font-mono text-xs">{{ audit_alert_events.0.domain.hostname }}</span></p>
             </div>
           </div>
           <a href="{% url 'audit' %}" class="inline-flex min-h-10 shrink-0 items-center font-semibold underline">Review audit →</a>
@@ -34,8 +34,8 @@
   {% endif %}
 
   <section class="mt-6 grid gap-3 sm:grid-cols-3" aria-label="Operational metrics">
-    <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">New messages</p><p class="mt-2 font-mono text-3xl">{{ metrics.new_messages }}</p><p class="mt-1 text-xs text-muted">Unviewed inbound mail in Inbox</p></div>
-    <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Mailboxes</p><p class="mt-2 font-mono text-3xl">{{ metrics.mailboxes }}</p><p class="mt-1 text-xs text-muted">Observed routing addresses</p></div>
+    <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">New messages</p><p class="mt-2 font-mono text-3xl">{{ metrics.new_messages }}</p><p class="mt-1 text-xs text-muted">Unviewed across all domains</p></div>
+    <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Mailboxes</p><p class="mt-2 font-mono text-3xl">{{ metrics.mailboxes }}</p><p class="mt-1 text-xs text-muted">Observed across all domains</p></div>
     <div class="oi-panel p-4"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Quarantined</p><p class="mt-2 font-mono text-3xl">{{ metrics.quarantined }}</p><p class="mt-1 text-xs text-muted">Message content remains locked</p></div>
   </section>
 
@@ -47,10 +47,10 @@
         <tbody class="divide-y divide-line">
           {% for item in recent_messages %}
             <tr class="hover:bg-paper/60">
-              <td class="px-4 py-4"><div class="flex items-center gap-2">{% if item.viewed_at is None %}<span class="oi-status oi-status-ready">New</span>{% endif %}{% if item.is_quarantined %}<span class="oi-status oi-status-danger">Quarantined</span>{% endif %}</div><p class="mt-2 font-semibold">{{ item.subject|default:"(no subject)" }}</p><p class="mt-1 max-w-xl truncate text-xs text-muted">{{ item.from_address }} · {% if item.is_quarantined %}Content locked by quarantine.{% else %}{{ item.text_body|truncatechars:120 }}{% endif %}</p></td>
+              <td class="px-4 py-4"><div class="flex items-center gap-2">{% if item.viewed_at is None %}<span class="oi-status oi-status-ready">New</span>{% endif %}{% if item.is_quarantined %}<span class="oi-status oi-status-danger">Quarantined</span>{% endif %}<span class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">{{ item.domain.hostname }}</span></div><p class="mt-2 font-semibold">{{ item.subject|default:"(no subject)" }}</p><p class="mt-1 max-w-xl truncate text-xs text-muted">{{ item.from_address }} · {% if item.is_quarantined %}Content locked by quarantine.{% else %}{{ item.text_body|truncatechars:120 }}{% endif %}</p></td>
               <td class="px-4 py-4"><div class="flex max-w-xs flex-wrap gap-1">{% for recipient in item.recipients.all %}{% if recipient.is_routing_recipient %}<span class="border border-line bg-white px-1.5 py-0.5 font-mono text-[10px] text-muted">{{ recipient.address }}</span>{% endif %}{% endfor %}{% for tag in item.conversation.tags.all %}<span class="border border-line bg-paper px-1.5 py-0.5 font-mono text-[10px] text-muted">#{{ tag.name }}</span>{% endfor %}</div></td>
               <td class="px-4 py-4 font-mono text-xs text-muted">{{ item.received_at|date:"Y-m-d H:i" }} UTC</td>
-              <td class="px-4 py-4 text-right"><a href="{% url 'conversation_detail' item.conversation_id %}" class="oi-button-secondary min-h-8">Inspect</a></td>
+              <td class="px-4 py-4 text-right"><a href="{% url 'conversation_detail' item.conversation_id %}?domain={{ item.domain_id }}" class="oi-button-secondary min-h-8">Inspect</a></td>
             </tr>
           {% empty %}<tr><td colspan="4" class="px-5 py-12 text-center"><p class="font-semibold">No inbound mail yet</p><p class="mt-1 text-sm text-muted">Messages will appear here as connected addresses receive mail.</p></td></tr>{% endfor %}
         </tbody>

@@ -21,6 +21,8 @@ from inbox.models import (
     DurableJob,
     InboundRoute,
     InboundRoutingTransition,
+    Message,
+    MessageRecipient,
     OutboundMessage,
     ReplyDraft,
 )
@@ -1142,6 +1144,84 @@ def test_dashboard_only_surfaces_readiness_and_audit_when_they_need_attention(
     assert b"Audit activity needs attention" in failed_audit.content
     assert b"agent.draft_failed" in failed_audit.content
     assert reverse("audit").encode() in failed_audit.content
+
+
+@pytest.mark.django_db
+def test_dashboard_aggregates_all_domains_and_opens_recent_mail_in_its_domain(
+    client, owner, domain, inbound_message
+):
+    second = Domain.objects.create(
+        owner=owner,
+        hostname="second.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PENDING_DNS,
+        inbound_ready=False,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    second_conversation = Conversation.objects.create(
+        domain=second,
+        subject="Second-domain message",
+        normalized_subject="second-domain message",
+        first_message_at=timezone.now(),
+        last_message_at=timezone.now(),
+        last_inbound_at=timezone.now(),
+    )
+    second_message = Message.objects.create(
+        domain=second,
+        conversation=second_conversation,
+        direction=Message.Direction.INBOUND,
+        provider_message_id="second-domain-message",
+        from_address="sender@outside.example",
+        subject="Second-domain message",
+        text_body="This belongs to the second domain.",
+        received_at=timezone.now(),
+        is_quarantined=True,
+    )
+    MessageRecipient.objects.create(
+        domain=domain,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="requests@example.com",
+        is_routing_recipient=True,
+    )
+    MessageRecipient.objects.create(
+        domain=second,
+        message=second_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="support@second.example",
+        is_routing_recipient=True,
+    )
+    client.force_login(owner)
+    session = client.session
+    session["domain_id"] = str(domain.id)
+    session.save()
+
+    response = client.get(reverse("dashboard"))
+
+    assert response.status_code == 200
+    assert response.context["metrics"] == {
+        "new_messages": 2,
+        "quarantined": 1,
+        "mailboxes": 2,
+    }
+    assert [item["domain"].id for item in response.context["domain_readiness_alerts"]] == [
+        second.id
+    ]
+    assert b"across all connected domains" in response.content
+    assert domain.hostname.encode() in response.content
+    assert second.hostname.encode() in response.content
+    assert b'<header class="sticky top-0' not in response.content
+    assert b"Upgrade to connect domain" not in response.content
+    assert b'id="sidebar-toggle"' in response.content
+    detail_url = (
+        f"{reverse('conversation_detail', args=[second_conversation.id])}?domain={second.id}"
+    )
+    assert detail_url.encode() in response.content
+
+    detail = client.get(detail_url)
+
+    assert detail.status_code == 200
+    assert client.session["domain_id"] == str(second.id)
 
 
 @pytest.mark.django_db
