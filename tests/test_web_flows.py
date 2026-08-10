@@ -1093,6 +1093,29 @@ def test_authenticated_application_pages_render(
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("route_name", "empty_state_heading"),
+    [
+        ("retention_settings", "Connect a domain to configure retention"),
+        ("api_tokens", "Connect a domain to manage API access"),
+        ("audit", "Connect a domain to view audit history"),
+    ],
+)
+def test_domain_scoped_settings_explain_when_an_active_domain_is_required(
+    client, owner, route_name, empty_state_heading
+):
+    client.force_login(owner)
+
+    response = client.get(reverse(route_name))
+
+    assert response.status_code == 200
+    assert empty_state_heading.encode() in response.content
+    assert b"Domain required" in response.content
+    assert reverse("domain_create").encode() in response.content
+    assert reverse(route_name).encode() in response.content
+
+
+@pytest.mark.django_db
 def test_dashboard_only_surfaces_readiness_and_audit_when_they_need_attention(
     client, owner, domain
 ):

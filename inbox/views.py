@@ -1859,7 +1859,14 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 
 @verified_required
 def retention_settings(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
+    try:
+        domain = current_domain(request)
+    except Http404:
+        return render(
+            request,
+            "inbox/settings_retention.html",
+            {"active_nav": "retention", "domain_required": True},
+        )
     retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
     if request.method == "POST" and not for_user(request.user).custom_settings:
@@ -1881,7 +1888,14 @@ def retention_settings(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def api_tokens(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
+    try:
+        domain = current_domain(request)
+    except Http404:
+        return render(
+            request,
+            "inbox/api_tokens.html",
+            {"active_nav": "api_tokens", "domain_required": True},
+        )
     form = APITokenForm(request.POST or None)
     if request.method == "POST" and not for_user(request.user).api:
         return _upgrade_required(request, "API access")
@@ -1938,7 +1952,14 @@ def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
 
 @verified_required
 def audit_log(request: HttpRequest) -> HttpResponse:
-    domain = current_domain(request)
+    try:
+        domain = current_domain(request)
+    except Http404:
+        return render(
+            request,
+            "inbox/audit.html",
+            {"active_nav": "audit", "domain_required": True},
+        )
     return render(
         request,
         "inbox/audit.html",

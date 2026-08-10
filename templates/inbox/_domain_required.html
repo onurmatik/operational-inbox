@@ -1,0 +1,13 @@
+<section class="mt-7 max-w-2xl oi-panel">
+  <div class="p-6">
+    <span class="oi-status oi-status-pending mb-4">Domain required</span>
+    <h2 class="font-heading text-lg font-semibold">{{ domain_required_heading }}</h2>
+    <p class="mt-2 text-sm leading-6 text-muted">{{ domain_required_body }}</p>
+    <a href="{% url 'domain_create' %}" class="oi-button-primary mt-6">Connect domain</a>
+  </div>
+  {% if domain_required_note %}
+    <div class="border-t border-line bg-paper/50 p-4">
+      <p class="font-mono text-[10px] uppercase leading-4 tracking-[0.08em] text-muted">{{ domain_required_note }}</p>
+    </div>
+  {% endif %}
+</section>
