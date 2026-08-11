@@ -328,22 +328,10 @@ def handle_http_error(request: HttpRequest, exc: HttpError):
 def require_scope(request: HttpRequest, scope: str) -> None:
     auth = request.auth
     if isinstance(auth, APIToken):
-        if not for_user(auth.owner).api:
-            raise APIError(
-                "upgrade_required",
-                "Operational Inbox Pro is required for API access.",
-                status=403,
-            )
         return
     user = request.user
     if not user.is_authenticated or not user.is_email_verified:
         raise APIError("authentication_required", "Authentication is required.", status=401)
-    if not for_user(user).api:
-        raise APIError(
-            "upgrade_required",
-            "Operational Inbox Pro is required for API access.",
-            status=403,
-        )
 
 
 def record_api_audit(
@@ -411,6 +399,15 @@ def scoped_object(model, domain: Domain, object_id: uuid.UUID):
 
 def _api_owner(request: HttpRequest):
     return request.auth.owner if isinstance(request.auth, APIToken) else request.user
+
+
+def require_outbound_access(request: HttpRequest, feature: str = "Outbound sending") -> None:
+    if not for_user(_api_owner(request)).outbound:
+        raise APIError(
+            "upgrade_required",
+            f"{feature} requires Operational Inbox Pro.",
+            status=403,
+        )
 
 
 def _validation_code(exc: DjangoValidationError, fallback: str) -> str:
@@ -1003,6 +1000,7 @@ def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID
 )
 def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.MANAGE_DOMAINS)
+    require_outbound_access(request)
     domain = api_domain(request, domain_id)
     try:
         domain, job, started = request_outbound_provisioning(domain)
@@ -1551,6 +1549,7 @@ def drafts_create_authored(
     payload: RevisionInput,
 ):
     require_scope(request, AccessScope.WRITE)
+    require_outbound_access(request, "Reply drafts")
     domain = api_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
@@ -1619,6 +1618,7 @@ def drafts_revise(
     payload: RevisionInput,
 ):
     require_scope(request, AccessScope.WRITE)
+    require_outbound_access(request, "Reply drafts")
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
@@ -1652,6 +1652,7 @@ def drafts_send(
     payload: SendInput,
 ):
     require_scope(request, AccessScope.SEND)
+    require_outbound_access(request)
     domain = api_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
@@ -1748,6 +1749,7 @@ def outbound_control_get(request: HttpRequest):
 )
 def outbound_control_set(request: HttpRequest, payload: OutboundControlInput):
     require_scope(request, AccessScope.SEND)
+    require_outbound_access(request, "Outbox controls")
     owner = _api_owner(request)
     set_outbound_paused(owner, paused=payload.paused)
     for domain in api_domains_queryset(request):
@@ -1783,6 +1785,7 @@ def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
 )
 def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
     require_scope(request, AccessScope.SEND)
+    require_outbound_access(request)
     domain = api_domain(request, domain_id)
     original = scoped_object(OutboundMessage, domain, outbound_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user

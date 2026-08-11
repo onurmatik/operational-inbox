@@ -1888,8 +1888,6 @@ def retention_settings(request: HttpRequest) -> HttpResponse:
 
 @verified_required
 def api_tokens(request: HttpRequest) -> HttpResponse:
-    if request.method == "POST" and not for_user(request.user).api:
-        return _upgrade_required(request, "API access")
     if request.method == "POST":
         had_token = APIToken.objects.filter(
             owner=request.user,

@@ -348,6 +348,12 @@ legacy-compatible report/notification reads, audits, API tokens, and attachment 
 authorization. `GET /api/v1/feed/messages` provides the owner-wide inbound feed with domain, full
 mailbox, tag, folder, new-only, and security filters.
 
+API and personal-token access are available on both Free and Pro. Domain onboarding through the
+API uses the same account limit as the web application: one active domain on Free and the configured
+Pro domain limit on Pro. Plan-gated capabilities such as reply drafts, outbound sending, Outbox
+controls, and custom retention remain Pro-only regardless of whether they are requested through the
+web application or API.
+
 Browser requests use the authenticated Django session and CSRF protection. External clients use
 a bearer token:
 
@@ -357,8 +363,9 @@ Authorization: Bearer oi_<one-time-secret>
 
 Only the hash and a short lookup prefix are stored. The raw token is displayed once. Each user has
 at most one active personal token; regenerating it revokes the previous token atomically. The token
-inherits the owner's operational access across every current and future domain, including domain
-onboarding. Token creation, regeneration, and revocation still require the owner's browser session.
+inherits the owner's plan-scoped operational access across every domain allowed by that plan,
+including domain onboarding. Token creation, regeneration, and revocation still require the owner's
+browser session.
 OAuth agent connections continue to use explicit `read`, `write`, `manage_domains`, and `send`
 consent scopes.
 

@@ -25,8 +25,9 @@ names.
 Plugin and remote-MCP clients connect through OAuth 2.1 authorization code with PKCE. The user
 signs in to Operational Inbox, reviews the requested access, and grants the `read`, `write`,
 `manage_domains`, and `send` scopes needed by the selected tools. An `oi_...` personal API token is
-also available for direct API and MCP integrations. Each user has one active token with full
-operational access across all current and future domains, including domain onboarding. Creating,
+also available for direct API and MCP integrations on both Free and Pro. Each user has one active
+token with the operational access included in their plan across every domain allowed by that plan,
+including domain onboarding. Free domain onboarding is limited to one active domain. Creating,
 regenerating, or revoking that token requires the owner's browser session.
 
 Use `GET /api/v1/feed/messages` for the account-wide inbound feed. It accepts these filters:
@@ -126,7 +127,7 @@ insufficient OAuth credentials return RFC-compatible challenges in the MCP tool 
 
 Every tool reuses the API's owner/domain lookup, entitlement checks, OAuth scope enforcement,
 stable errors, and agent audit events. OAuth grants cover the connected owner's authorized domains;
-personal API tokens carry the owner's full operational access. Email output is described as
+personal API tokens carry the owner's plan-scoped operational access. Email output is described as
 untrusted data in both the MCP server instructions and read-tool metadata.
 
 Do not expose server-side workflow classification, aging rules, reports, notifications,

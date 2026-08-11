@@ -24,7 +24,6 @@ class Entitlements:
     domain_limit: int
     ai: bool
     outbound: bool
-    api: bool
     custom_settings: bool
 
 
@@ -34,7 +33,6 @@ FREE_ENTITLEMENTS = Entitlements(
     domain_limit=FREE_DOMAIN_LIMIT,
     ai=False,
     outbound=False,
-    api=False,
     custom_settings=False,
 )
 PRO_ENTITLEMENTS = Entitlements(
@@ -43,7 +41,6 @@ PRO_ENTITLEMENTS = Entitlements(
     domain_limit=PRO_DOMAIN_LIMIT,
     ai=True,
     outbound=True,
-    api=True,
     custom_settings=True,
 )
 
@@ -63,7 +60,6 @@ def for_user(user: User | AnonymousUser) -> Entitlements:
         domain_limit=settings.MAX_DOMAINS_PER_USER,
         ai=True,
         outbound=True,
-        api=True,
         custom_settings=True,
     )
 

@@ -1291,7 +1291,7 @@ def test_conversation_tags_and_personal_api_token_web_actions(
     reveal = client.get(reverse("api_tokens"))
     assert reveal.status_code == 200
     assert b"shown again" in reveal.content
-    assert b"all operational actions" in reveal.content
+    assert b"plan-scoped operational access" in reveal.content
     assert b'id="new-token"' not in client.get(reverse("api_tokens")).content
     revoke = client.post(reverse("api_token_revoke", args=[token.id]))
     assert revoke.status_code == 302

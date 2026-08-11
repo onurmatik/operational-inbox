@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from inbox.models import (
+    APIToken,
     BillingProfile,
     Conversation,
     Domain,
@@ -111,14 +112,52 @@ def test_free_domain_connect_action_redirects_to_upgrade_only_after_click(client
 
 
 @pytest.mark.django_db
-def test_free_api_returns_upgrade_required(client, free_owner):
+def test_free_api_token_uses_existing_domain_and_obeys_one_domain_limit(
+    client, monkeypatch, free_owner
+):
     domain = make_domain(free_owner, "api-free.example")
+    _, raw = APIToken.issue(owner=free_owner)
+    headers = {"Authorization": f"Bearer {raw}"}
+
+    response = client.get(f"/api/v1/domains/{domain.id}", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(domain.id)
+
+    outbound = client.post(
+        f"/api/v1/domains/{domain.id}/outbound/enable",
+        data={},
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert outbound.status_code == 403
+    assert outbound.json()["code"] == "upgrade_required"
+
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    second = client.post(
+        "/api/v1/domains",
+        data={"hostname": "second-api-free.example", "setup_mode": "DIRECT_MX"},
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert second.status_code == 400
+    assert second.json()["code"] == "validation_error"
+    assert second.json()["fields"] == {
+        "hostname": ["This plan can provision at most 1 domains."]
+    }
+
+
+@pytest.mark.django_db
+def test_free_account_can_create_personal_api_token(client, free_owner):
     client.force_login(free_owner)
 
-    response = client.get(f"/api/v1/domains/{domain.id}")
+    response = client.post(reverse("api_tokens"), {})
 
-    assert response.status_code == 403
-    assert response.json()["code"] == "upgrade_required"
+    assert response.status_code == 302
+    assert response.url == reverse("api_tokens")
+    assert APIToken.objects.filter(owner=free_owner, revoked_at__isnull=True).count() == 1
 
 
 @pytest.mark.django_db
@@ -240,7 +279,8 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"Up to 20 managed domains" in response.content
     assert b"Receive at any address" in response.content
     assert b"no per-address fee" in response.content
-    assert b"All-domain agent feed, API &amp; agent-authored replies" in response.content
+    assert b"All-domain agent feed &amp; agent-authored replies" in response.content
+    assert b"Personal API access</span><span>Yes</span><span>Yes" in response.content
     assert f'method="post" action="{reverse("billing_checkout")}"'.encode() in response.content
     assert "Upgrade to Pro · USD 4.99/month".encode() in response.content
     assert b"Billed monthly through Stripe" in response.content
