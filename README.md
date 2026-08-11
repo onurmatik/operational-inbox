@@ -15,7 +15,8 @@ settings.
 Paste this prompt into a compatible agent:
 
 ```text
-Help me manage my operational inboxes using the Operational Inbox skill. Read https://operationalinbox.com/INSTALL.md and follow every step.
+Help me manage my operational inboxes using the Operational Inbox skill.
+Read https://operationalinbox.com/INSTALL.md and follow every step.
 ```
 
 The guide installs the `$operational-inbox` skill, configures the agent’s native MCP connection,
