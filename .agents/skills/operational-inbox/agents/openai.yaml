@@ -1,0 +1,18 @@
+interface:
+  display_name: "Operational Inbox"
+  short_description: "Connect and operate multi-domain email safely"
+  icon_small: "./assets/logo.svg"
+  icon_large: "./assets/logo.svg"
+  brand_color: "#1A3C2B"
+  default_prompt: "Use $operational-inbox to connect my account and work with my authorized email domains."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "operational-inbox"
+      description: "Operational Inbox domain, mail, reply, and delivery tools"
+      transport: "streamable_http"
+      url: "https://operationalinbox.com/mcp"
+
+policy:
+  allow_implicit_invocation: true
