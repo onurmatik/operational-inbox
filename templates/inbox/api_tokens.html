@@ -6,7 +6,7 @@
     <h1 class="mt-1 font-heading text-3xl font-semibold">Personal API token</h1>
     <p class="mt-1 text-sm text-muted">One token provides the operational access included in your plan across every domain allowed by that plan.</p>
   </div>
-  {% if new_token %}<div class="mt-6 border border-coral-strong/40 bg-coral-soft p-5"><p class="font-semibold text-coral-strong">Copy this token now. It will not be shown again.</p><div class="mt-3 flex gap-2"><code id="new-token" class="min-w-0 flex-1 break-all bg-white p-3 font-mono text-xs">{{ new_token }}</code><button type="button" class="oi-button-secondary" data-copy-token>Copy</button></div></div>{% endif %}
+  {% if new_token %}<div class="mt-6 border border-gold-strong/40 bg-gold-soft p-5"><p class="font-semibold text-gold-strong">Copy this token now. It will not be shown again.</p><div class="mt-3 flex gap-2"><code id="new-token" class="min-w-0 flex-1 break-all bg-white p-3 font-mono text-xs">{{ new_token }}</code><button type="button" class="oi-button-secondary" data-copy-token>Copy</button></div></div>{% endif %}
   <div class="mt-7 grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
     <section class="oi-panel p-5">
       <h2 class="font-heading text-lg font-semibold">Latest token</h2>
@@ -16,7 +16,6 @@
       <h2 class="font-heading text-lg font-semibold">{% if token.is_active %}Regenerate token{% else %}Create token{% endif %}</h2>
       <p class="mt-2 text-sm leading-6 text-muted">{% if token.is_active %}The current token will stop working immediately when the new token is created.{% else %}The token will carry your operational access and can connect your first domain through the API.{% endif %}</p>
       <form method="post" class="mt-5">{% csrf_token %}<button class="oi-button-primary w-full">{% if token.is_active %}Regenerate and reveal once{% else %}Create and reveal once{% endif %}</button></form>
-      <p class="mt-3 font-mono text-[10px] uppercase leading-4 tracking-[0.08em] text-muted">Hashed at rest · plan-scoped access · shown once</p>
     </section>
   </div>
   <script>document.querySelector("[data-copy-token]")?.addEventListener("click",async e=>{await navigator.clipboard.writeText(document.getElementById("new-token").textContent.trim());e.currentTarget.textContent="Copied"});</script>

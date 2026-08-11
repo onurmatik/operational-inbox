@@ -486,8 +486,39 @@
     if (inputValue()) checkMx();
   };
 
+  const initCopyControls = () => {
+    document.querySelectorAll("[data-copy-target]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = document.getElementById(button.dataset.copyTarget);
+        if (!target) return;
+        const originalLabel = button.dataset.copyLabel || button.textContent.trim();
+        const copyText = target.textContent.trim();
+        const clipboardWrite = navigator.clipboard?.writeText
+          ? navigator.clipboard.writeText(copyText).catch(() => false)
+          : Promise.resolve(false);
+        const textarea = document.createElement("textarea");
+        textarea.value = copyText;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand("copy");
+        textarea.remove();
+        button.textContent = copied ? "Copied" : "Copy failed";
+        clipboardWrite.then((clipboardCopied) => {
+          if (clipboardCopied !== false) button.textContent = "Copied";
+        });
+        window.setTimeout(() => {
+          button.textContent = originalLabel;
+        }, 1600);
+      });
+    });
+  };
+
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
+  document.addEventListener("DOMContentLoaded", initCopyControls);
 
   document.addEventListener("change", (event) => {
     const field = event.target.closest("[data-auto-submit]");

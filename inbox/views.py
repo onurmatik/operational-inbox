@@ -812,6 +812,15 @@ def dashboard(request: HttpRequest) -> HttpResponse:
 
 
 @verified_required
+def agents(request: HttpRequest) -> HttpResponse:
+    return render(
+        request,
+        "inbox/agents.html",
+        {"active_nav": "agents"},
+    )
+
+
+@verified_required
 def inbox_list(request: HttpRequest) -> HttpResponse:
     requested_domain = request.GET.get("domain", "").strip()
     if requested_domain:

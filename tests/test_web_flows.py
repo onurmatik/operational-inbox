@@ -1056,6 +1056,7 @@ def test_authenticated_application_pages_render(
     )
     routes = [
         reverse("dashboard"),
+        reverse("agents"),
         reverse("inbox"),
         reverse("conversation_detail", args=[conversation.id]),
         reverse("domains"),
@@ -1131,6 +1132,29 @@ def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(clie
     assert reverse("retention_settings").encode() not in response.content
     assert reverse("api_tokens").encode() in response.content
     assert reverse("audit").encode() not in response.content
+    assert reverse("agents").encode() in response.content
+
+    agents = client.get(reverse("agents"))
+    assert agents.status_code == 200
+    assert b'aria-current="page"' in agents.content
+    assert b"Use Operational Inbox with any agent" in agents.content
+    assert b"Connect in two steps" in agents.content
+    assert b"Copy agent prompt" in agents.content
+    assert b"https://operationalinbox.com/INSTALL.md" in agents.content
+    assert b"https://operationalinbox.com/plugins/operational-inbox/plugin.json" in agents.content
+    assert b"verify the connection by listing my authorized domains" in agents.content
+    assert reverse("install_instructions").encode() in agents.content
+    assert reverse("portable_plugin_manifest").encode() in agents.content
+    assert reverse("mcp_docs").encode() in agents.content
+    assert b"Plugin" in agents.content
+    assert b"Skill" in agents.content
+    assert b"Prompt" in agents.content
+    assert b"triage-inboxes" in agents.content
+    assert b"reply-to-conversations" in agents.content
+    assert b"setup-domain" in agents.content
+    assert b"monitor-outbound-delivery" in agents.content
+    assert agents.content.count(b"data-copy-target=") == 6
+    assert reverse("api_tokens").encode() in agents.content
 
 
 @pytest.mark.django_db

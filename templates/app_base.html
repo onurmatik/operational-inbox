@@ -73,6 +73,7 @@
         </div>
 
         <div class="flex items-center gap-2 sm:gap-3">
+          <a href="{% url 'agents' %}" class="oi-button-secondary min-h-9 px-3 {% if active_nav == 'agents' %}border-forest bg-forest text-white hover:bg-forest-strong hover:text-white{% endif %}" {% if active_nav == 'agents' %}aria-current="page"{% endif %}>Agents</a>
           <div class="relative" data-dropdown>
             <button id="settings-menu-button" type="button" class="oi-button-secondary min-h-9 px-3 {% if active_nav == 'domains' or active_nav == 'retention' or active_nav == 'api_tokens' or active_nav == 'audit' %}border-forest text-forest{% endif %}" aria-label="Settings" title="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu" data-dropdown-button>
               <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.7 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.5 4.7a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.08.37.3.72.6 1 .3.28.7.42 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"></path></svg>
@@ -122,7 +123,7 @@
       </header>
 
       <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
-        {% if active_nav != 'overview' and current_domain and not current_domain_writable %}
+        {% if active_nav != 'overview' and active_nav != 'agents' and current_domain and not current_domain_writable %}
           <div class="mb-6 border border-gold-strong/40 bg-gold-soft p-4 text-sm text-gold-strong">
             <strong>This domain is read-only on Free.</strong> New mail continues to arrive, but changes require <a href="{% url 'billing' %}" class="underline">Operational Inbox Pro</a>.
           </div>

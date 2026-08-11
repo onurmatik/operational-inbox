@@ -1,5 +1,88 @@
 # Design QA
 
+## Agent copy/paste onboarding refinement · 2026-08-11
+
+### Comparison target
+
+- Source visual truth: the user-provided `Screenshot 2026-08-11 at 13.50.17.png`, preserved as `.superdesign/qa/agents-bootstrap-reference.png`.
+- Browser-rendered implementation: `.superdesign/qa/agents-bootstrap-implementation-1440x900.jpg`.
+- Combined comparison input: `.superdesign/qa/agents-bootstrap-comparison.jpg` (reference left, implementation right).
+- Responsive evidence: `.superdesign/qa/agents-bootstrap-implementation-780x900.jpg`.
+- Comparison normalization: the 2048 × 1157 reference was proportionally resized to 1440 × 814; the implementation remains a 1:1 1440 × 900 browser capture. Both are shown without cropping in one labeled comparison image.
+- State: authenticated Pro owner with one ready domain; Agents is active; menus are closed; the page is at its top position.
+
+### Findings
+
+- No actionable P0, P1, or P2 mismatch remains for the referenced copy/paste onboarding pattern.
+- The primary experience now mirrors the reference's two-step hierarchy: open an agent, send one instruction, then use a high-contrast full-width Copy action.
+- [Intentional product adaptation] The reference's marketing hero, video, and agent-logo strip are omitted. Operational Inbox keeps its authenticated product shell and replaces decorative content with official install, plugin-manifest, and MCP documentation links.
+- [Intentional content correction] The prompt explains that copy/paste cannot create an unconfigured MCP connection by itself. It directs the agent to the canonical install contract, requests browser OAuth authorization without asking for secrets, verifies authorized domains, and limits the initial smoke test to read-only work.
+
+### Required fidelity surfaces
+
+- Hierarchy and layout: the two numbered steps stay adjacent to a bordered instruction card at 1440px. At 780px they stack, the prompt becomes an internal scroll area, and the primary Copy button remains fully visible in the initial 900px viewport.
+- Typography and color: the existing Space Grotesk, Inter, and JetBrains Mono stacks and paper, surface, ink, forest, muted, and line tokens are preserved. The prompt action uses the same high-contrast black/forest treatment as the reference without introducing a second visual system.
+- Copy and content: the visible prompt contains the canonical `INSTALL.md`, plugin manifest, MCP endpoint and documentation URLs; OAuth 2.1 with PKCE; a no-secrets boundary; a connection verification step; and read-only initial behavior.
+- Accessibility: the setup is a labeled semantic section with an ordered list, real links, a real button, `aria-live` status feedback, keyboard focus styling, and scroll-contained long prompt text.
+
+### Behavior and validation
+
+- Copy behavior: browser testing showed `Copied`, reset to `Copy agent prompt` after 1.6 seconds, and macOS clipboard verification confirmed all 1,364 prompt characters, the canonical install URL, and the no-secrets instruction were copied.
+- Responsive behavior: the 780 × 900 render measured `clientWidth: 780` and `scrollWidth: 780`; no horizontal document overflow is present.
+- Browser console: no errors after the final desktop interaction pass.
+- Automated validation: Django checks, Tailwind production CSS, JavaScript syntax, and `git diff --check` pass. The full suite passes with `290 passed` and 79.22% coverage.
+
+### Comparison history
+
+- Pass 1: translated the reference's prominent agent-instruction card into the Operational Inbox design system and kept the existing task prompts as secondary post-setup examples.
+- Pass 2: constrained the stacked prompt panel so the primary Copy action is visible at 780 × 900 while retaining the full prompt in an internal scroll area.
+- Pass 3: combined the attached reference and final browser render in one comparison image, verified the system clipboard contents, and found no remaining P0/P1/P2 issue.
+
+## Agents integration guide · 2026-08-11
+
+### Comparison target
+
+- Selected visual: `https://p.superdesign.dev/draft/2a62f557-452f-4658-9290-fe5ec789c5a2`
+- Source visual truth: `.superdesign/qa/agents-task-oriented-reference-1440x900.png`
+- Browser-rendered implementation: `.superdesign/qa/agents-implementation-1440x900.png`
+- Full-view comparison evidence: `.superdesign/qa/agents-desktop-comparison.png` (source left, implementation right)
+- Focused content comparison: `.superdesign/qa/agents-content-comparison.png` (page header, integration cards, and prompt gallery at 1:1 scale)
+- Responsive evidence: `.superdesign/qa/agents-implementation-780x900.png`
+- Viewport and density: source and implementation are both 1440 × 900 pixels at a 1440 × 900 CSS viewport and DPR 1. No density normalization or resizing was applied before comparison.
+- State: authenticated Pro owner with one ready domain; Agents is the active top-bar destination; Settings and profile menus are closed.
+
+### Findings
+
+- No actionable P0, P1, or P2 visual mismatch remains.
+- [Intentional shell difference] The implementation preserves the production active-domain label and profile menu. The selected mock replaces that live context with static “Agent Center / Integration Guide” copy and omits the profile control.
+- [Intentional active-state difference] The implementation fills the Agents tab with the existing forest active-navigation treatment instead of using the mock's weaker outlined state. `aria-current="page"` communicates the same state semantically.
+- [P3] The generated mock's decorative card and prompt icons are omitted. The production app has no shared icon-library runtime for these symbols; the implementation uses numbered mono labels and avoids fake glyphs or handcrafted SVGs.
+- [Intentional content correction] Prompt and skill text follows the checked-in plugin and skill contracts. Unsupported audit notification behavior and ambiguous conditional-send copy from the generated mock were not reproduced.
+
+### Required fidelity surfaces
+
+- Fonts and typography: the implementation uses the product's Space Grotesk heading, Inter body, and JetBrains Mono technical stacks with the same 30px title, 18px section heading, 14px body, and compact uppercase-label hierarchy. System fallbacks remain intentional because production loads no remote fonts.
+- Spacing and layout rhythm: the 224px rail, 56px top bar, 1440px content maximum, three equal integration cards, two-column prompt grid, hairline section dividers, and 4px-based spacing match the source composition. The 780px capture stacks cards and retains every top-bar control without clipping.
+- Colors and visual tokens: paper, surface, ink, muted, forest, and line tokens are used directly. Panels stay flat and square; no new gradient, glass effect, shadow, or radius language was introduced.
+- Image quality and assets: the only visible branded image is the existing canonical vector logo. The view adds no decorative raster imagery or placeholder assets.
+- Copy and content: Plugin, Skill, and Prompt are distinguished accurately; all four bundled skill names are exact; example prompts state send/resend boundaries; OAuth 2.1 with PKCE, personal API tokens, and the `read`, `write`, `manage_domains`, and `send` scopes reflect repository source-of-truth documentation.
+- Accessibility: one page-level heading, semantic section labels, real buttons, visible focus styles, `aria-current`, `aria-live` copy feedback, a scroll-safe scope table, and a keyboard-operable responsive navigation are present.
+
+### Behavior and validation
+
+- Copy controls: browser testing confirmed prompt text reaches the clipboard, the control announces `Copied`, and its label resets to `Copy` after 1.6 seconds.
+- Navigation: Agents is present and active before Settings; Settings opens and closes with Escape; the API-token settings link resolves to `/app/settings/api-tokens/`.
+- Responsive navigation: at 780 × 900 the Agents tab remains visible, the mobile menu opens the primary rail, and the backdrop closes it.
+- Browser console: no errors after the final desktop reload.
+- Automated validation: Django system checks pass; Tailwind production CSS builds; all 36 tests in `tests/test_web_flows.py` pass.
+
+### Comparison history
+
+- Pass 1: compared the selected mock and first browser render at equal 1440 × 900 dimensions. The composition, panel geometry, density, typography hierarchy, and palette matched; production shell and content-truth differences were classified as intentional.
+- Pass 1 interaction finding [P1]: Clipboard API completion was not reliable in the in-app browser, so Copy controls could fail to show deterministic success.
+- Fix: replaced the permission-dependent write with a user-gesture-scoped textarea selection and `execCommand("copy")` fallback, preserving `Copied` and reset feedback.
+- Pass 2: browser verification confirmed copied text, success/reset feedback, keyboard-operable Settings, responsive rail behavior, and zero console errors. No actionable P0/P1/P2 findings remained.
+
 ## Billing upgrade offer · 2026-08-02
 
 ### Comparison target
