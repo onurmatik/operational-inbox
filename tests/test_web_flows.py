@@ -1133,6 +1133,8 @@ def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(clie
     assert reverse("api_tokens").encode() in response.content
     assert reverse("audit").encode() not in response.content
     assert reverse("agents").encode() in response.content
+    assert b'href="https://github.com/onurmatik/operational-inbox"' in response.content
+    assert b'aria-label="View Operational Inbox on GitHub"' in response.content
 
     agents = client.get(reverse("agents"))
     assert agents.status_code == 200

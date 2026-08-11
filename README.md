@@ -11,11 +11,6 @@ This repository contains the production-ready MVP application, AWS email data-pl
 infrastructure, and the tracked deployment contract. The application and all product copy are
 English.
 
-> **Brand and DNS scope:** `operationalinbox.com` is the only product domain in scope.
-> `operational.email` and `operationalemail.com` are deliberately not used. The existing root
-> MX records for `operationalinbox.com` must be preserved; only the root A record is moved to the
-> application host. SES receiving is configured on `inbound.operationalinbox.com`.
-
 ## What is implemented
 
 - Domain-first self-service onboarding with a single email field, throttled 10-minute
