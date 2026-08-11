@@ -256,6 +256,66 @@ def test_authorization_code_pkce_token_can_call_mcp(client, mcp_client, owner, d
     assert replay.json()["error"] == "invalid_grant"
 
 
+@pytest.mark.django_db
+def test_oauth_collapses_repeated_identical_resource_parameters(client, owner):
+    application = public_application()
+    client.force_login(owner)
+    verifier = "operational-inbox-repeated-resource-verifier-0000000000000"
+    digest = hashlib.sha256(verifier.encode()).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+    parameters = {
+        "response_type": "code",
+        "client_id": application.client_id,
+        "redirect_uri": "https://client.example/callback",
+        "scope": "read write manage_domains send",
+        "state": "repeated-resource-state",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "resource": [settings.MCP_RESOURCE_URL, settings.MCP_RESOURCE_URL],
+    }
+
+    consent = client.get("/oauth/authorize/", parameters)
+    assert consent.status_code == 200
+    approved = client.post("/oauth/authorize/", {**parameters, "allow": "true"})
+    assert approved.status_code == 302
+    code = parse_qs(urlsplit(approved["Location"]).query)["code"][0]
+
+    token = client.post(
+        "/oauth/token/",
+        {
+            "grant_type": "authorization_code",
+            "client_id": application.client_id,
+            "code": code,
+            "redirect_uri": "https://client.example/callback",
+            "code_verifier": verifier,
+            "resource": [settings.MCP_RESOURCE_URL, settings.MCP_RESOURCE_URL],
+        },
+    )
+    assert token.status_code == 200, token.content
+    assert get_access_token_model().objects.get().resource == [settings.MCP_RESOURCE_URL]
+
+
+@pytest.mark.django_db
+def test_oauth_rejects_repeated_mixed_resource_parameters(client, owner):
+    application = public_application()
+    client.force_login(owner)
+    response = client.get(
+        "/oauth/authorize/",
+        {
+            "response_type": "code",
+            "client_id": application.client_id,
+            "redirect_uri": "https://client.example/callback",
+            "scope": "read",
+            "state": "mixed-resource-state",
+            "code_challenge": "a" * 43,
+            "code_challenge_method": "S256",
+            "resource": [settings.MCP_RESOURCE_URL, "https://attacker.example/mcp"],
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_target"
+
+
 @pytest.mark.django_db(transaction=True)
 def test_oauth_scope_step_up_and_agent_audit(mcp_client, owner, domain, conversation):
     application = public_application()
@@ -336,8 +396,7 @@ def test_public_review_and_install_surfaces(client, settings):
     install = client.get("/INSTALL.md")
     assert install.status_code == 302
     assert install["Location"] == (
-        "https://raw.githubusercontent.com/onurmatik/operational-inbox/"
-        "refs/heads/main/INSTALL.md"
+        "https://raw.githubusercontent.com/onurmatik/operational-inbox/refs/heads/main/INSTALL.md"
     )
     assert client.get("/plugin-assets/logo.png").status_code == 200
     assert client.get("/.well-known/agent-plugin/plugin.json").json()["name"] == (

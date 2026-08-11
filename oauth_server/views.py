@@ -28,6 +28,8 @@ from oauth2_provider.views.dynamic_client_registration import (
     _validation_error_description,
 )
 
+from .validators import canonical_mcp_resources
+
 
 class OperationalInboxOAuthServerMetadataView(OAuthServerMetadataView):
     """Publish OAuth metadata compatible with current agent clients."""
@@ -46,14 +48,16 @@ class OperationalInboxAuthorizationView(AuthorizationView):
     """Consent endpoint that accepts only the Operational Inbox MCP resource."""
 
     def get(self, request, *args, **kwargs):
-        if request.GET.getlist("resource") != [settings.MCP_RESOURCE_URL]:
+        if canonical_mcp_resources(request.GET.getlist("resource")) is None:
             return _invalid_target_response()
         return super().get(request, *args, **kwargs)
 
     def form_valid(self, form):
         resources = (form.cleaned_data.get("resource") or "").split()
-        if resources != [settings.MCP_RESOURCE_URL]:
+        canonical_resources = canonical_mcp_resources(resources)
+        if canonical_resources is None:
             return _invalid_target_response()
+        form.cleaned_data["resource"] = canonical_resources[0]
         return super().form_valid(form)
 
     def dispatch(self, request, *args, **kwargs):

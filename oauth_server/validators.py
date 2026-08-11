@@ -24,7 +24,7 @@ class OperationalInboxOAuth2Validator(OAuth2Validator):
                 for key, value in (getattr(request, "decoded_body", None) or [])
                 if key == "resource"
             ]
-            if submitted != [settings.MCP_RESOURCE_URL]:
+            if canonical_mcp_resources(submitted) is None:
                 raise errors.CustomOAuth2Error(
                     error="invalid_target",
                     description=(
@@ -70,19 +70,28 @@ class OperationalInboxOAuth2Validator(OAuth2Validator):
     @staticmethod
     def _require_exact_resource(request):
         resources = getattr(request, "resource", None)
-        resources = [resources] if isinstance(resources, str) else list(resources or [])
-        if resources != [settings.MCP_RESOURCE_URL]:
+        canonical_resources = canonical_mcp_resources(resources)
+        if canonical_resources is None:
             raise errors.CustomOAuth2Error(
                 error="invalid_target",
                 description=("The request must target exactly the Operational Inbox MCP resource."),
                 request=request,
             )
+        request.resource = canonical_resources
+
+
+def canonical_mcp_resources(resources):
+    """Collapse repeated copies of the one supported RFC 8707 resource."""
+    values = [resources] if isinstance(resources, str) else list(resources or [])
+    if not values or any(value != settings.MCP_RESOURCE_URL for value in values):
+        return None
+    return [settings.MCP_RESOURCE_URL]
 
 
 def exact_resource_validator(request_uri, audiences):
-    return request_uri == settings.MCP_RESOURCE_URL and list(audiences or []) == [
-        settings.MCP_RESOURCE_URL
-    ]
+    return (
+        request_uri == settings.MCP_RESOURCE_URL and canonical_mcp_resources(audiences) is not None
+    )
 
 
 def _refresh_family_for_token(token):
