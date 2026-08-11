@@ -379,7 +379,9 @@ The public agent skill lives at
 dependency needed for a recognizable, repeatable agent workflow. The public
 [`INSTALL.md`](INSTALL.md) is the canonical one-paste setup path: detect the current agent, install
 the standalone skill, configure its native remote MCP connection, authenticate with OAuth, then
-reload the agent when required.
+reload the agent when required. The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
+the branded prompt URL stable and redirects to the raw `INSTALL.md` on the repository's `main`
+branch so agent readers receive the same source instructions.
 
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the

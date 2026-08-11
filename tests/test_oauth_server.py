@@ -333,7 +333,12 @@ def test_public_review_and_install_surfaces(client, settings):
     assert client.get("/terms/").status_code == 200
     assert client.get("/support/").status_code == 200
     assert client.get("/mcp-docs/").status_code == 200
-    assert client.get("/INSTALL.md").status_code == 200
+    install = client.get("/INSTALL.md")
+    assert install.status_code == 302
+    assert install["Location"] == (
+        "https://raw.githubusercontent.com/onurmatik/operational-inbox/"
+        "refs/heads/main/INSTALL.md"
+    )
     assert client.get("/plugin-assets/logo.png").status_code == 200
     assert client.get("/.well-known/agent-plugin/plugin.json").json()["name"] == (
         "operational-inbox"

@@ -55,7 +55,7 @@ curl -i https://operationalinbox.com/mcp-docs/
 curl -i https://operationalinbox.com/privacy/
 curl -i https://operationalinbox.com/terms/
 curl -i https://operationalinbox.com/support/
-curl -i https://operationalinbox.com/INSTALL.md
+curl -iL https://operationalinbox.com/INSTALL.md
 ```
 
 The MCP resource must be byte-exact as `https://operationalinbox.com/mcp`. OAuth access tokens

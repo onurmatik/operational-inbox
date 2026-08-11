@@ -4,10 +4,21 @@ import json
 from pathlib import Path
 
 from django.conf import settings
-from django.http import FileResponse, Http404, HttpRequest, HttpResponse, JsonResponse
+from django.http import (
+    FileResponse,
+    Http404,
+    HttpRequest,
+    HttpResponse,
+    HttpResponseRedirect,
+    JsonResponse,
+)
 from django.shortcuts import render
 
 PLUGIN_ROOT = Path(settings.BASE_DIR) / "plugins" / "operational-inbox"
+INSTALL_INSTRUCTIONS_URL = (
+    "https://raw.githubusercontent.com/onurmatik/operational-inbox/"
+    "refs/heads/main/INSTALL.md"
+)
 
 
 def privacy(request: HttpRequest) -> HttpResponse:
@@ -57,11 +68,8 @@ def portable_mcp_manifest(request: HttpRequest) -> JsonResponse:
     return _json_file_response(PLUGIN_ROOT / "mcp.json")
 
 
-def install_instructions(request: HttpRequest) -> HttpResponse:
-    path = Path(settings.BASE_DIR) / "INSTALL.md"
-    if not path.is_file():
-        raise Http404
-    response = HttpResponse(path.read_text(encoding="utf-8"), content_type="text/markdown")
+def install_instructions(request: HttpRequest) -> HttpResponseRedirect:
+    response = HttpResponseRedirect(INSTALL_INSTRUCTIONS_URL)
     response["Cache-Control"] = "public, max-age=300"
     return response
 
