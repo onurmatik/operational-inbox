@@ -94,11 +94,11 @@ SDK handles protocol negotiation, ping, tool discovery, tool calls, MCP metadata
 origins.
 
 Agent Plugins v1 leaves remote credentials to the client. The package contains no token or literal
-authorization header. Protocol and tool discovery are public so a client can discover the OAuth
-security scheme. Tool calls require either an OAuth access token bound exactly to
-`https://operationalinbox.com/mcp` or a legacy Operational Inbox API bearer token. Missing and
-insufficient OAuth credentials return RFC-compatible challenges in the MCP tool result's
-`_meta["mcp/www_authenticate"]` field.
+authorization header. OAuth authorization-server and protected-resource metadata are public. The
+MCP transport returns `401` with a `WWW-Authenticate` protected-resource challenge until the client
+presents either an OAuth access token bound exactly to `https://operationalinbox.com/mcp` or an
+Operational Inbox personal API bearer token. Insufficient OAuth scope also returns a focused
+challenge in the MCP tool result's `_meta["mcp/www_authenticate"]` field.
 
 | Tool | Scope | Behavior |
 | --- | --- | --- |

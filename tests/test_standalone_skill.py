@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -8,6 +9,35 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPOSITORY_ROOT / ".agents" / "skills" / "operational-inbox"
 INSTALLER = SKILL_ROOT / "scripts" / "install_codex_mcp.py"
+
+
+def fake_codex_cli(tmp_path: Path, *, login_exit_code: int = 0) -> tuple[Path, Path]:
+    cli = tmp_path / "codex"
+    log = tmp_path / "codex-login.log"
+    cli.write_text(
+        f"""#!{sys.executable}
+import json
+import os
+from pathlib import Path
+import sys
+
+arguments = sys.argv[1:]
+log = Path(os.environ["FAKE_CODEX_LOGIN_LOG"])
+if arguments == ["mcp", "--help"]:
+    print("Manage external MCP servers: list get add remove login logout")
+elif arguments == ["mcp", "list", "--json"]:
+    status = "o_auth" if log.exists() else "unknown"
+    print(json.dumps([{{"name": "operational-inbox", "auth_status": status}}]))
+elif arguments[:2] == ["mcp", "login"]:
+    log.write_text(json.dumps(arguments), encoding="utf-8")
+    raise SystemExit({login_exit_code})
+else:
+    raise SystemExit(2)
+""",
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    return cli, log
 
 
 def test_standalone_skill_contract() -> None:
@@ -33,6 +63,7 @@ def test_standalone_skill_contract() -> None:
 
 def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     guide = (REPOSITORY_ROOT / "INSTALL.md").read_text(encoding="utf-8")
+    normalized_guide = " ".join(guide.split())
 
     assert "npx -y skills@latest add onurmatik/operational-inbox" in guide
     assert "-g -s operational-inbox -y --copy" in guide
@@ -40,8 +71,9 @@ def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     assert "identify the current" in guide
     assert "For any other client" in guide
     assert "install_codex_mcp.py" in guide
-    assert "codex mcp login operational-inbox" in guide
-    assert "do not improvise another OAuth flow" in guide
+    assert "codex mcp login --scopes read,write,manage_domains,send operational-inbox" in guide
+    assert "CLI bundled with the macOS Codex" in guide
+    assert "do not improvise another OAuth flow" in normalized_guide
     assert "Do not try to call Operational Inbox from the current task" in guide
 
 
@@ -49,19 +81,37 @@ def test_codex_mcp_installer_is_additive_and_idempotent(tmp_path: Path) -> None:
     config = tmp_path / ".codex" / "config.toml"
     config.parent.mkdir()
     config.write_text('model = "gpt-test"\n', encoding="utf-8")
+    cli, login_log = fake_codex_cli(tmp_path)
+    environment = {**os.environ, "FAKE_CODEX_LOGIN_LOG": str(login_log)}
 
     first = subprocess.run(  # noqa: S603 - fixed local interpreter and checked-in script
-        [sys.executable, str(INSTALLER), "--config", str(config)],
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config),
+            "--codex-cli",
+            str(cli),
+        ],
         check=True,
         capture_output=True,
         text=True,
+        env=environment,
     )
     first_text = config.read_text(encoding="utf-8")
     second = subprocess.run(  # noqa: S603 - fixed local interpreter and checked-in script
-        [sys.executable, str(INSTALLER), "--config", str(config)],
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config),
+            "--codex-cli",
+            str(cli),
+        ],
         check=True,
         capture_output=True,
         text=True,
+        env=environment,
     )
 
     document = tomllib.loads(first_text)
@@ -73,7 +123,42 @@ def test_codex_mcp_installer_is_additive_and_idempotent(tmp_path: Path) -> None:
     assert server["default_tools_approval_mode"] == "writes"
     assert config.read_text(encoding="utf-8") == first_text
     assert "Configured Operational Inbox" in first.stdout
+    assert "OAuth completed" in first.stdout
     assert "already configured" in second.stdout
+    assert "OAuth is already configured" in second.stdout
+    assert tomllib.loads(first_text)["mcp_servers"]["operational-inbox"]["auth"] == "oauth"
+    assert login_log.exists()
+    assert (
+        login_log.read_text(encoding="utf-8")
+        == '["mcp", "login", "--scopes", "read,write,manage_domains,send", "operational-inbox"]'
+    )
+
+
+def test_codex_mcp_installer_preserves_config_when_oauth_is_cancelled(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    cli, login_log = fake_codex_cli(tmp_path, login_exit_code=7)
+
+    result = subprocess.run(  # noqa: S603 - fixed local interpreter and checked-in script
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config),
+            "--codex-cli",
+            str(cli),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "FAKE_CODEX_LOGIN_LOG": str(login_log)},
+    )
+
+    assert result.returncode == 7
+    assert "OAuth did not complete" in result.stderr
+    assert (
+        tomllib.loads(config.read_text(encoding="utf-8"))["mcp_servers"]["operational-inbox"]["url"]
+        == "https://operationalinbox.com/mcp"
+    )
 
 
 def test_codex_mcp_installer_refuses_a_conflicting_server(tmp_path: Path) -> None:

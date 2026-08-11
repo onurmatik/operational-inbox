@@ -378,8 +378,9 @@ The public agent skill lives at
 `$operational-inbox`. It provides the display metadata, logo, operating rules, and native MCP
 dependency needed for a recognizable, repeatable agent workflow. The public
 [`INSTALL.md`](INSTALL.md) is the canonical one-paste setup path: detect the current agent, install
-the standalone skill, configure its native remote MCP connection, authenticate with OAuth, then
-reload the agent when required. The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
+the standalone skill, configure its native remote MCP connection, locate an MCP-capable client CLI
+(including the macOS application's bundled Codex CLI), authenticate with native OAuth, then reload
+the agent when required. The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
 the branded prompt URL stable and redirects to the raw `INSTALL.md` on the repository's `main`
 branch so agent readers receive the same source instructions.
 
@@ -392,8 +393,9 @@ configuration.
 The official MCP Python SDK 2.x serves a stateless Streamable HTTP endpoint at `/mcp` from a
 dedicated ASGI process. Plugin clients connect with OAuth 2.1 authorization code + PKCE; existing
 Operational Inbox API bearer tokens remain supported for direct integrations. Protocol discovery
-is public, while every tool call enforces its `read`, `write`, `manage_domains`, or `send`
-scope. Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
+metadata is public; the MCP transport itself returns a protected-resource bearer challenge until
+authenticated, and every tool call enforces its `read`, `write`, `manage_domains`, or `send` scope.
+Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
 provider-neutral instructions, and verify the result; they never write customer DNS.
 The plugin package remains the submission-ready distribution for the public plugin marketplace;
 until that listing is published, compatible agent clients should use the standalone skill above.

@@ -285,11 +285,17 @@ while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("MCP readiness deadline elapsed.")
-        with urllib.request.urlopen(request, timeout=min(2, remaining)) as response:
-            result = json.load(response)["result"]
-        assert result["protocolVersion"] == "2025-11-25"
-        assert result["serverInfo"]["name"] == "operational-inbox"
-        break
+        urllib.request.urlopen(request, timeout=min(2, remaining))
+        raise AssertionError("Unauthenticated MCP initialize must return 401.")
+    except urllib.error.HTTPError as exc:
+        challenge = exc.headers.get("WWW-Authenticate", "")
+        if (
+            exc.code == 401
+            and challenge.startswith("Bearer ")
+            and "resource_metadata=" in challenge
+        ):
+            break
+        last_error = exc
     except (
         urllib.error.URLError,
         TimeoutError,
@@ -297,10 +303,11 @@ while True:
         KeyError,
         AssertionError,
     ) as exc:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise RuntimeError("MCP did not become ready within 30 seconds.") from exc
-        time.sleep(min(1, remaining))
+        last_error = exc
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError("MCP did not become ready within 30 seconds.") from last_error
+    time.sleep(min(1, remaining))
 """.strip()
     app_run(connection, f"{quote(VENV_DIR + '/bin/python')} -c {quote(script)}")
 

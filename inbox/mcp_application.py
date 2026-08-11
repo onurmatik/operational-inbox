@@ -91,20 +91,33 @@ def _quote_auth_parameter(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def _oauth_challenge(*, error: str, description: str, scope: str) -> str:
+def _oauth_resource_metadata_url() -> str:
     resource = urlsplit(settings.MCP_RESOURCE_URL)
     resource_origin = (
         f"{resource.scheme}://{resource.netloc}"
         if resource.scheme and resource.netloc
         else settings.PUBLIC_BASE_URL
     )
-    metadata_url = f"{resource_origin}/.well-known/oauth-protected-resource/mcp"
-    parameters = [
-        f'error="{_quote_auth_parameter(error)}"',
-        f'error_description="{_quote_auth_parameter(description)}"',
-        f'resource_metadata="{metadata_url}"',
-        f'scope="{_quote_auth_parameter(scope)}"',
-    ]
+    return f"{resource_origin}/.well-known/oauth-protected-resource/mcp"
+
+
+def _oauth_challenge(
+    *,
+    scope: str,
+    error: str | None = None,
+    description: str | None = None,
+) -> str:
+    parameters = []
+    if error is not None:
+        parameters.append(f'error="{_quote_auth_parameter(error)}"')
+    if description is not None:
+        parameters.append(f'error_description="{_quote_auth_parameter(description)}"')
+    parameters.extend(
+        [
+            f'resource_metadata="{_oauth_resource_metadata_url()}"',
+            f'scope="{_quote_auth_parameter(scope)}"',
+        ]
+    )
     return f"Bearer {', '.join(parameters)}"
 
 
@@ -164,6 +177,55 @@ class OperationalInboxTokenVerifier(TokenVerifier):
                 "user_id": str(oauth_access.user.id),
             },
         )
+
+
+class RequireMCPAuthenticationMiddleware:
+    """Expose OAuth discovery through a transport-level bearer challenge."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if (
+            scope["type"] != "http"
+            or str(scope.get("path", "")).rstrip("/") != "/mcp"
+            or scope.get("method") == "OPTIONS"
+            or getattr(scope.get("user"), "is_authenticated", False)
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            key.decode("latin-1").lower(): value.decode("latin-1")
+            for key, value in scope.get("headers", [])
+        }
+        supplied_credential = bool(headers.get("authorization"))
+        challenge = _oauth_challenge(
+            scope=" ".join(settings.MCP_REQUIRED_SCOPES),
+            error="invalid_token" if supplied_credential else None,
+            description="The bearer token is invalid or expired." if supplied_credential else None,
+        )
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "auth-error",
+                "error": {"code": -32001, "message": "Authentication required"},
+            },
+            separators=(",", ":"),
+        ).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"cache-control", b"no-store"),
+                    (b"www-authenticate", challenge.encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 def _django_request(access_token: AccessToken, request_id: str) -> HttpRequest:
@@ -384,6 +446,7 @@ def create_mcp_application() -> ASGIApp:
     )
     application = SecuritySchemesMirrorMiddleware(application)
     application = AuthContextMiddleware(application)
+    application = RequireMCPAuthenticationMiddleware(application)
     application = AuthenticationMiddleware(
         application,
         backend=BearerAuthBackend(OperationalInboxTokenVerifier()),

@@ -127,25 +127,32 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client,
             "clientInfo": {"name": "test", "version": "1.0"},
         },
     )
-    assert unauthenticated.status_code == 200
-    assert unauthenticated.json()["result"]["serverInfo"]["name"] == "operational-inbox"
-
-    tool_response = mcp_request(
-        mcp_client,
-        None,
-        "tools/call",
-        {"name": "list_domains", "arguments": {}},
-        request_id=2,
-    )
-    assert tool_response.status_code == 200
-    challenge = tool_response.json()["result"]["_meta"]["mcp/www_authenticate"][0]
-    assert 'error="invalid_token"' in challenge
+    assert unauthenticated.status_code == 401
+    challenge = unauthenticated.headers["WWW-Authenticate"]
+    assert challenge.startswith("Bearer ")
+    assert "invalid_token" not in challenge
     assert (
         'resource_metadata="http://localhost:8000/.well-known/oauth-protected-resource/mcp"'
         in challenge
     )
-    assert tool_response.json()["result"]["isError"] is True
-    assert mcp_client.get("/mcp", headers={"Accept": "application/json"}).status_code == 406
+    assert 'scope="read write manage_domains send"' in challenge
+
+    invalid = mcp_request(
+        mcp_client,
+        "not-a-valid-token",
+        "initialize",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"},
+        },
+        request_id=2,
+    )
+    assert invalid.status_code == 401
+    challenge = invalid.headers["WWW-Authenticate"]
+    assert 'error="invalid_token"' in challenge
+    assert 'error_description="The bearer token is invalid or expired."' in challenge
+    assert mcp_client.get("/mcp", headers={"Accept": "application/json"}).status_code == 401
     preflight = mcp_client.options(
         "/mcp",
         headers={
@@ -160,6 +167,19 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client,
     assert "mcp-method" in preflight.headers["Access-Control-Allow-Headers"].lower()
 
     _, raw = APIToken.issue(owner=owner)
+    authenticated = mcp_request(
+        mcp_client,
+        raw,
+        "initialize",
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"},
+        },
+    )
+    assert authenticated.status_code == 200
+    assert authenticated.json()["result"]["serverInfo"]["name"] == "operational-inbox"
+
     blocked = mcp_request(
         mcp_client,
         raw,

@@ -31,23 +31,26 @@ python3 ~/.agents/skills/operational-inbox/scripts/install_codex_mcp.py
 ```
 
 The installer preserves the rest of `~/.codex/config.toml`, refuses to replace a conflicting server,
-and configures `https://operationalinbox.com/mcp` with OAuth and write-action approvals.
+and configures `https://operationalinbox.com/mcp` with OAuth and write-action approvals. It then
+finds an MCP-capable Codex CLI—checking both `PATH` and the CLI bundled with the macOS Codex
+application—and starts the client's native OAuth login.
 
 For any other client, do not run the Codex installer or edit `~/.codex/config.toml`. Follow
 `https://operationalinbox.com/mcp-docs/` to add `https://operationalinbox.com/mcp` through that
 client's native Streamable HTTP MCP configuration.
 
-## Step 3 — Use native OAuth
+## Step 3 — Complete native OAuth
 
-In Codex, if the installed `codex` CLI supports MCP commands, run:
+The Codex installer normally starts this command itself with the required scopes:
 
 ```bash
-codex mcp login operational-inbox
+codex mcp login --scopes read,write,manage_domains,send operational-inbox
 ```
 
 Wait for the user to finish Operational Inbox sign-in and consent in the browser. If the CLI does not
-support `codex mcp`, do not improvise another OAuth flow. Tell the user to restart Codex, open
-**Settings → MCP servers → operational-inbox**, and select **Authenticate**.
+support `codex mcp` and no application-bundled CLI is available, do not improvise another OAuth
+flow. Follow the installer's fallback: restart Codex, open **Settings → MCP servers →
+operational-inbox**, and select **Authenticate**.
 
 In another client, use that client's native MCP authentication control. Do not substitute a custom
 OAuth implementation.
