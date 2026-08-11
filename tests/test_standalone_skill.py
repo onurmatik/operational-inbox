@@ -48,6 +48,7 @@ def test_standalone_skill_contract() -> None:
     assert "TODO" not in skill
     assert "do not create an OAuth client" in skill
     assert "list_domains" in skill
+    assert "Do not request a restart before checking tool availability" in skill
     assert "Never permanently delete mail" in skill
     assert "Never equate `ACCEPTED` with `DELIVERED`" in skill
     assert "resend_outbound" in skill
@@ -74,7 +75,10 @@ def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     assert "codex mcp login --scopes read,write,manage_domains,send operational-inbox" in guide
     assert "CLI bundled with the macOS Codex" in guide
     assert "do not improvise another OAuth flow" in normalized_guide
-    assert "Do not try to call Operational Inbox from the current task" in guide
+    assert "call `list_domains` for a read-only connection check" in guide
+    assert "do not ask the user to reload or restart anything" in guide
+    assert "Do not prescribe a universal restart for other agents" in normalized_guide
+    assert "Stop at the reload boundary" not in guide
 
 
 def test_codex_mcp_installer_is_additive_and_idempotent(tmp_path: Path) -> None:
@@ -124,6 +128,8 @@ def test_codex_mcp_installer_is_additive_and_idempotent(tmp_path: Path) -> None:
     assert config.read_text(encoding="utf-8") == first_text
     assert "Configured Operational Inbox" in first.stdout
     assert "OAuth completed" in first.stdout
+    assert "Call list_domains in the current Codex task" in first.stdout
+    assert "restart only if the MCP tools are unavailable" in first.stdout
     assert "already configured" in second.stdout
     assert "OAuth is already configured" in second.stdout
     assert tomllib.loads(first_text)["mcp_servers"]["operational-inbox"]["auth"] == "oauth"
@@ -159,6 +165,28 @@ def test_codex_mcp_installer_preserves_config_when_oauth_is_cancelled(tmp_path: 
         tomllib.loads(config.read_text(encoding="utf-8"))["mcp_servers"]["operational-inbox"]["url"]
         == "https://operationalinbox.com/mcp"
     )
+
+
+def test_codex_mcp_installer_makes_restart_a_settings_fallback(tmp_path: Path) -> None:
+    config = tmp_path / "config.toml"
+    missing_cli = tmp_path / "missing-codex"
+
+    result = subprocess.run(  # noqa: S603 - fixed local interpreter and checked-in script
+        [
+            sys.executable,
+            str(INSTALLER),
+            "--config",
+            str(config),
+            "--codex-cli",
+            str(missing_cli),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Open Settings > MCP servers" in result.stdout
+    assert "Restart Codex only if" in result.stdout
 
 
 def test_codex_mcp_installer_refuses_a_conflicting_server(tmp_path: Path) -> None:

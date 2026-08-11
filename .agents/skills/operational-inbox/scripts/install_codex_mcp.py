@@ -178,7 +178,10 @@ def login_with_native_oauth(cli: Path) -> int:
             file=os.sys.stderr,
         )
         return result.returncode or 1
-    print("Operational Inbox OAuth completed. Restart Codex and start a new task.")
+    print(
+        "Operational Inbox OAuth completed. Call list_domains in the current Codex task; "
+        "restart only if the MCP tools are unavailable."
+    )
     return 0
 
 
@@ -244,8 +247,9 @@ def main() -> int:
     cli = find_codex_cli(args.codex_cli)
     if cli is None:
         print(
-            "No MCP-capable Codex CLI was found. Restart Codex, then open "
-            "Settings > MCP servers > operational-inbox and select Authenticate."
+            "No MCP-capable Codex CLI was found. Open Settings > MCP servers > "
+            "operational-inbox and select Authenticate. Restart Codex only if the server "
+            "or authentication control is not visible."
         )
         return 0
     return login_with_native_oauth(cli)

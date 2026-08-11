@@ -379,8 +379,9 @@ The public agent skill lives at
 dependency needed for a recognizable, repeatable agent workflow. The public
 [`INSTALL.md`](INSTALL.md) is the canonical one-paste setup path: detect the current agent, install
 the standalone skill, configure its native remote MCP connection, locate an MCP-capable client CLI
-(including the macOS application's bundled Codex CLI), authenticate with native OAuth, then reload
-the agent when required. The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
+(including the macOS application's bundled Codex CLI), authenticate with native OAuth, then verify
+the connection with a read-only `list_domains` call before requesting any client-specific reload.
+The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
 the branded prompt URL stable and redirects to the raw `INSTALL.md` on the repository's `main`
 branch so agent readers receive the same source instructions.
 

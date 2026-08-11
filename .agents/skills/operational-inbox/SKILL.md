@@ -12,7 +12,8 @@ Use Operational Inbox as the only email source for this workflow. Work only thro
 Before mailbox work, confirm that the Operational Inbox MCP tools are available.
 
 - If the tools are unavailable, do not create an OAuth client, PKCE script, API wrapper, or direct HTTP fallback.
-- If setup just finished, ask the user to restart Codex and start a new task so the skill and MCP tools load.
+- Do not request a restart before checking tool availability. Current Codex tasks can load a newly configured MCP connection without restarting.
+- If the tools are unavailable immediately after setup, ask for that client's native reload or restart action, then retry once in a new task if the client requires one.
 - Otherwise direct the user to `https://operationalinbox.com/INSTALL.md` and stop.
 - Never ask the user to paste an OAuth code, access token, refresh token, password, or API key into chat.
 
