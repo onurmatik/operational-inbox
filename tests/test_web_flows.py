@@ -1137,14 +1137,14 @@ def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(clie
     agents = client.get(reverse("agents"))
     assert agents.status_code == 200
     assert b'aria-current="page"' in agents.content
-    assert b"Use Operational Inbox with Codex" in agents.content
+    assert b"Use Operational Inbox with your agent" in agents.content
     assert b"Connect in two steps" in agents.content
     assert b"Copy agent prompt" in agents.content
     assert b"https://operationalinbox.com/INSTALL.md" in agents.content
     assert (
         b"onurmatik/operational-inbox/tree/main/.agents/skills/operational-inbox" in agents.content
     )
-    assert b"Help me connect Operational Inbox to Codex" in agents.content
+    assert b"Help me connect this agent to Operational Inbox" in agents.content
     assert b"$operational-inbox" in agents.content
     assert b"Native MCP" in agents.content
     assert reverse("install_instructions").encode() in agents.content

@@ -35,7 +35,10 @@ def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     guide = (REPOSITORY_ROOT / "INSTALL.md").read_text(encoding="utf-8")
 
     assert "npx -y skills@latest add onurmatik/operational-inbox" in guide
-    assert "-g -a codex -s operational-inbox -y --copy" in guide
+    assert "-g -s operational-inbox -y --copy" in guide
+    assert "one shared copy" in guide
+    assert "identify the current" in guide
+    assert "For any other client" in guide
     assert "install_codex_mcp.py" in guide
     assert "codex mcp login operational-inbox" in guide
     assert "do not improvise another OAuth flow" in guide

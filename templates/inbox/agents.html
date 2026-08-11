@@ -3,8 +3,8 @@
 {% block content %}
   <div class="border-b border-line pb-6">
     <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Operational autonomy</p>
-    <h1 class="mt-1 font-heading text-3xl font-semibold">Use Operational Inbox with Codex</h1>
-    <p class="mt-2 max-w-3xl text-sm leading-6 text-muted">Install one standalone skill, connect Codex to the native Operational Inbox MCP server, and authorize access in your browser. Other MCP-capable agents can use the same endpoint.</p>
+    <h1 class="mt-1 font-heading text-3xl font-semibold">Use Operational Inbox with your agent</h1>
+    <p class="mt-2 max-w-3xl text-sm leading-6 text-muted">Install one standalone skill, connect your compatible agent to the native Operational Inbox MCP server, and authorize access in your browser.</p>
   </div>
 
   <section class="mt-6 grid overflow-hidden border border-line bg-white xl:grid-cols-[minmax(300px,0.72fr)_minmax(0,1.28fr)]" aria-labelledby="agent-setup-heading">
@@ -15,7 +15,7 @@
         <li class="grid grid-cols-[36px_minmax(0,1fr)] gap-3">
           <span class="flex h-9 w-9 items-center justify-center border border-line bg-paper font-mono text-xs font-semibold text-forest" aria-hidden="true">1</span>
           <div>
-            <h3 class="text-sm font-semibold">Open Codex</h3>
+            <h3 class="text-sm font-semibold">Open your agent</h3>
             <p class="mt-1 text-xs leading-5 text-muted">Start a task in any trusted workspace. The skill installs globally, so you only need to do this once.</p>
           </div>
         </li>
@@ -23,7 +23,7 @@
           <span class="flex h-9 w-9 items-center justify-center bg-ink font-mono text-xs font-semibold text-white" aria-hidden="true">2</span>
           <div>
             <h3 class="text-sm font-semibold">Send the instruction</h3>
-            <p class="mt-1 text-xs leading-5 text-muted">Paste the one-line instruction, follow native OAuth, then restart Codex and begin a fresh task.</p>
+            <p class="mt-1 text-xs leading-5 text-muted">Paste the one-line instruction, follow native OAuth, then reload your agent and begin a fresh task.</p>
           </div>
         </li>
       </ol>
@@ -46,10 +46,10 @@
           </div>
           <span class="hidden border border-line bg-paper px-2 py-1 font-mono text-[9px] uppercase tracking-[0.08em] text-muted sm:inline">Agent instruction</span>
         </div>
-        <pre id="agent-bootstrap-prompt" class="max-h-32 overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink xl:max-h-[440px]">Help me connect Operational Inbox to Codex. Read https://operationalinbox.com/INSTALL.md and follow every step.</pre>
+        <pre id="agent-bootstrap-prompt" class="max-h-32 overflow-auto whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink xl:max-h-[440px]">Help me connect this agent to Operational Inbox. Read https://operationalinbox.com/INSTALL.md and follow every step.</pre>
         <button type="button" class="flex min-h-12 w-full items-center justify-center border-t border-ink bg-ink px-4 font-mono text-xs font-semibold uppercase tracking-[0.06em] text-white hover:bg-forest focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forest" data-copy-target="agent-bootstrap-prompt" data-copy-label="Copy agent prompt" aria-live="polite">Copy agent prompt</button>
       </div>
-      <p class="mt-3 text-xs leading-5 text-muted">The installer uses Codex's native MCP and OAuth support. It never asks you to paste a token or builds a temporary OAuth client.</p>
+      <p class="mt-3 text-xs leading-5 text-muted">The guide uses the current agent's native MCP and OAuth support. It never asks you to paste a token or builds a temporary OAuth client.</p>
     </div>
   </section>
 
@@ -67,7 +67,7 @@
     <article class="oi-panel flex min-h-48 flex-col p-5">
       <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">02 · Connect securely</p>
       <h3 class="mt-3 font-heading text-lg font-semibold">Native MCP</h3>
-      <p class="mt-2 text-sm leading-6 text-muted">Use Codex's built-in remote MCP configuration and OAuth flow. Restart once so the authenticated tools load cleanly.</p>
+      <p class="mt-2 text-sm leading-6 text-muted">Use the agent's built-in remote MCP configuration and OAuth flow. Reload once when required so the authenticated tools become available.</p>
       <p class="mt-auto pt-5 font-mono text-[10px] uppercase tracking-[0.08em] text-forest">Best for · Tools and authorization</p>
     </article>
     <article class="oi-panel flex min-h-48 flex-col p-5">

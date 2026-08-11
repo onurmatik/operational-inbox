@@ -385,12 +385,13 @@ envelope:
 
 ## Standalone agent skill and future plugin
 
-The public Codex skill lives at
+The public agent skill lives at
 [`.agents/skills/operational-inbox`](.agents/skills/operational-inbox) and installs as
 `$operational-inbox`. It provides the display metadata, logo, operating rules, and native MCP
-dependency needed for a recognizable, repeatable Codex workflow. The public
-[`INSTALL.md`](INSTALL.md) is the canonical one-paste setup path: install the standalone skill,
-configure Codex's native remote MCP connection, authenticate with OAuth, then restart Codex.
+dependency needed for a recognizable, repeatable agent workflow. The public
+[`INSTALL.md`](INSTALL.md) is the canonical one-paste setup path: detect the current agent, install
+the standalone skill, configure its native remote MCP connection, authenticate with OAuth, then
+reload the agent when required.
 
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
@@ -405,7 +406,7 @@ is public, while every tool call enforces its `read`, `write`, `manage_domains`,
 scope. Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
 provider-neutral instructions, and verify the result; they never write customer DNS.
 The plugin package remains the submission-ready distribution for the public plugin marketplace;
-until that listing is published, Codex users should use the standalone skill above.
+until that listing is published, compatible agent clients should use the standalone skill above.
 See
 [`docs/agentic-integration.md`](docs/agentic-integration.md) for the package
 boundary and MCP tool contract, and
