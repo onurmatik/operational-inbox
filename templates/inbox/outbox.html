@@ -1,4 +1,5 @@
 {% extends "app_base.html" %}
+{% load tz %}
 {% block title %}Outbox · Operational Inbox{% endblock %}
 {% block content %}
   <div class="mb-6 flex flex-col gap-3 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
@@ -61,7 +62,7 @@
       <section class="border border-line bg-white p-5">
         <div class="flex items-start justify-between gap-3"><div><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Sending control</p><h2 class="mt-2 font-heading text-xl font-semibold">Account authority</h2></div><span class="oi-status {% if control.is_paused %}oi-status-danger{% else %}oi-status-ready{% endif %}">{% if control.is_paused %}Paused{% else %}Enabled{% endif %}</span></div>
         <p class="mt-3 text-sm leading-6 text-muted">The connected agent may send exact reply revisions within this focused authority. This switch controls provider handoff for every domain.</p>
-        <dl class="mt-5 space-y-3 border-y border-line py-4 text-sm"><div class="flex justify-between gap-4"><dt>Last minute</dt><dd class="font-mono">{{ usage.minute }} / {{ usage.limits.minute }}</dd></div><div class="flex justify-between gap-4"><dt>Last 24 hours</dt><dd class="font-mono">{{ usage.day }} / {{ usage.limits.day }}</dd></div></dl>
+        <dl class="mt-5 space-y-3 border-y border-line py-4 text-sm"><div class="flex justify-between gap-4"><dt>Last minute</dt><dd class="font-mono">{{ usage.minute }} / {{ usage.limits.minute }}</dd></div><div class="flex justify-between gap-4"><dt>Last 24 hours</dt><dd class="font-mono">{{ usage.day }} / {{ usage.limits.day }}</dd></div><div class="flex justify-between gap-4"><dt>This UTC month</dt><dd class="font-mono">{{ usage.month }} / {{ usage.limits.month }}</dd></div><div class="flex justify-between gap-4 text-xs text-muted"><dt>Monthly reset</dt><dd>{{ usage.month_reset_at|timezone:"UTC"|date:"Y-m-d H:i T" }}</dd></div></dl>
         <form method="post" action="{% url 'outbox_control' %}" class="mt-5">{% csrf_token %}<input type="hidden" name="paused" value="{% if control.is_paused %}false{% else %}true{% endif %}"><button class="{% if control.is_paused %}oi-button-primary{% else %}oi-button-secondary{% endif %} w-full">{% if control.is_paused %}Resume external sending{% else %}Pause external sending{% endif %}</button></form>
       </section>
       <section class="border border-line bg-white p-5"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domain usage · 24h</p><div class="mt-4 divide-y divide-line">{% for item in domain_usage %}<div class="flex items-center justify-between gap-3 py-3 text-sm"><span class="truncate">{{ item.domain.hostname }}</span><span class="font-mono text-xs">{{ item.count }} / {{ usage.limits.domain_day }}</span></div>{% empty %}<p class="py-3 text-sm text-muted">No connected domains.</p>{% endfor %}</div></section>

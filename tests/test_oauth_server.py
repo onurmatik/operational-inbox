@@ -393,6 +393,16 @@ def test_public_review_and_install_surfaces(client, settings):
     assert client.get("/terms/").status_code == 200
     assert client.get("/support/").status_code == 200
     assert client.get("/mcp-docs/").status_code == 200
+    manifest = client.get("/agent-manifest.json")
+    assert manifest.status_code == 200
+    assert manifest["Access-Control-Allow-Origin"] == "*"
+    assert manifest.json() == {
+        "server_version": "0.1.0",
+        "mcp_contract_version": "1.0.0",
+        "skill_version": "1.0.0",
+        "minimum_skill_version": "1.0.0",
+        "skill_update_url": "https://operationalinbox.com/INSTALL.md",
+    }
     install = client.get("/INSTALL.md")
     assert install.status_code == 302
     assert install["Location"] == (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
@@ -12,6 +13,7 @@ from django.utils import timezone
 from openai import OpenAI
 
 from inbox.models import (
+    BillingProfile,
     Classification,
     Domain,
     DraftApproval,
@@ -26,6 +28,10 @@ from inbox.services.ai import (
     Urgency,
     build_triage_input,
     classify_message,
+)
+from inbox.services.domain_entitlements import (
+    reconcile_domain_capacity,
+    select_free_primary_domain,
 )
 from inbox.services.drafts import (
     approve_exact_revision,
@@ -275,6 +281,61 @@ def test_account_pause_blocks_new_and_holds_queued_provider_handoffs(
     set_outbound_paused(owner, paused=True)
     ses = Mock()
     assert submit_outbound(outbound, ses_client=ses).status == OutboundMessage.Status.QUEUED
+    ses.send_raw_email.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_downgrade_primary_selection_revokes_queued_send_on_read_only_domain(
+    owner, organization, project, conversation, inbound_message
+):
+    ready_sending_domain(organization, project)
+    MessageRecipient.objects.create(
+        domain=organization,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.org",
+        is_routing_recipient=True,
+    )
+    draft = ReplyDraft.objects.create(
+        domain=project,
+        conversation=conversation,
+        context_message=inbound_message,
+    )
+    revision = revise_draft(
+        draft=draft,
+        owner=owner,
+        subject="Re: Privacy request",
+        body_text="Received.",
+    )
+    outbound = send_exact_revision(
+        draft=draft,
+        revision_id=revision.id,
+        content_hash=revision.content_hash,
+        owner=owner,
+    )
+    selected = Domain.objects.create(
+        owner=owner,
+        hostname="selected-after-downgrade.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        ownership_verified=True,
+        inbound_ready=True,
+        outbound_ready=True,
+        outbound_status=Domain.OutboundStatus.READY,
+        claim_expires_at=timezone.now() + timedelta(days=3),
+    )
+    profile = BillingProfile.objects.get(user=owner)
+    profile.subscription_status = BillingProfile.SubscriptionStatus.CANCELED
+    profile.save(update_fields=("subscription_status", "updated_at"))
+    reconcile_domain_capacity(user=owner)
+    select_free_primary_domain(user=owner, domain=selected)
+
+    ses = Mock()
+    result = submit_outbound(outbound, ses_client=ses)
+
+    assert result.status == OutboundMessage.Status.FAILED
+    assert result.error_code == "send_authorization_revoked"
+    assert "read-only" in result.error_message
     ses.send_raw_email.assert_not_called()
 
 

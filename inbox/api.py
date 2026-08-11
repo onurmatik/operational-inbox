@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from django.conf import settings
 from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -42,8 +44,10 @@ from inbox.services.attachments import (
     authorized_attachment_url,
 )
 from inbox.services.conversations import apply_conversation_action
+from inbox.services.domain_entitlements import domain_capacity
 from inbox.services.domains import (
     DomainClaimConflict,
+    DomainLimitError,
     MXLayout,
     classify_stored_mx,
     create_domain,
@@ -55,7 +59,7 @@ from inbox.services.drafts import (
     revise_draft,
     send_exact_revision,
 )
-from inbox.services.entitlements import for_user
+from inbox.services.entitlements import can_manage_domain, for_user
 from inbox.services.jobs import (
     enqueue_job,
     request_outbound_provisioning,
@@ -77,6 +81,29 @@ from inbox.services.tags import add_conversation_tag, normalize_tag, remove_conv
 logger = logging.getLogger(__name__)
 
 
+SAFE_ERROR_DETAIL_KEYS = frozenset(
+    {
+        "resource",
+        "used",
+        "limit",
+        "remaining",
+        "scope",
+        "period",
+        "reset_at",
+        "retryable",
+        "retry_after_seconds",
+        "next_allowed_at",
+    }
+)
+
+
+def safe_error_details(details: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep model-visible errors limited to an explicit public-detail contract."""
+    if not details:
+        return {}
+    return {key: details[key] for key in SAFE_ERROR_DETAIL_KEYS if key in details}
+
+
 class APIError(Exception):
     def __init__(
         self,
@@ -85,11 +112,15 @@ class APIError(Exception):
         *,
         status: int = 400,
         fields: dict[str, list[str]] | None = None,
+        details: dict[str, Any] | None = None,
+        retry_after: int | None = None,
     ) -> None:
         self.code = code
         self.message = message
         self.status = status
         self.fields = fields or {}
+        self.details = safe_error_details(details)
+        self.retry_after = max(0, int(retry_after)) if retry_after is not None else None
         super().__init__(message)
 
 
@@ -195,6 +226,7 @@ class OutboundLimitsOutput(Schema):
     minute: int
     day: int
     domain_day: int
+    month: int
 
 
 class OutboundControlOutput(Schema):
@@ -202,6 +234,8 @@ class OutboundControlOutput(Schema):
     paused_at: datetime | None
     minute_count: int
     day_count: int
+    month_count: int
+    month_reset_at: datetime
     by_domain: dict[str, int]
     limits: OutboundLimitsOutput
 
@@ -239,16 +273,21 @@ def _request_id(request: HttpRequest) -> str:
 
 @api.exception_handler(APIError)
 def handle_api_error(request: HttpRequest, exc: APIError):
-    return api.create_response(
+    payload = {
+        "code": exc.code,
+        "message": exc.message,
+        "fields": exc.fields,
+        "request_id": _request_id(request),
+        **exc.details,
+    }
+    response = api.create_response(
         request,
-        {
-            "code": exc.code,
-            "message": exc.message,
-            "fields": exc.fields,
-            "request_id": _request_id(request),
-        },
+        payload,
         status=exc.status,
     )
+    if exc.retry_after is not None:
+        response["Retry-After"] = str(exc.retry_after)
+    return response
 
 
 @api.exception_handler(Http404)
@@ -382,6 +421,24 @@ def api_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
         raise Http404 from exc
 
 
+def require_domain_write(request: HttpRequest, domain: Domain) -> None:
+    owner = _api_owner(request)
+    if can_manage_domain(owner, domain):
+        return
+    raise APIError(
+        "domain_read_only",
+        "This domain is read-only while the account exceeds its active-domain capacity.",
+        status=403,
+        details=_domain_capacity_details(owner),
+    )
+
+
+def api_writable_domain(request: HttpRequest, domain_id: uuid.UUID) -> Domain:
+    domain = api_domain(request, domain_id)
+    require_domain_write(request, domain)
+    return domain
+
+
 def api_domains_queryset(request: HttpRequest):
     auth = request.auth
     owner = auth.owner if isinstance(auth, APIToken) else request.user
@@ -404,8 +461,8 @@ def _api_owner(request: HttpRequest):
 def require_outbound_access(request: HttpRequest, feature: str = "Outbound sending") -> None:
     if not for_user(_api_owner(request)).outbound:
         raise APIError(
-            "upgrade_required",
-            f"{feature} requires Operational Inbox Pro.",
+            "capability_unavailable",
+            f"{feature} is not available for this account.",
             status=403,
         )
 
@@ -414,6 +471,162 @@ def _validation_code(exc: DjangoValidationError, fallback: str) -> str:
     if hasattr(exc, "error_list") and exc.error_list:
         return exc.error_list[0].code or fallback
     return fallback
+
+
+def _validation_params(exc: DjangoValidationError) -> dict[str, Any]:
+    if not hasattr(exc, "error_list") or not exc.error_list:
+        return {}
+    params = getattr(exc.error_list[0], "params", None)
+    return dict(params) if isinstance(params, dict) else {}
+
+
+def _as_nonnegative_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _domain_capacity_details(owner) -> dict[str, Any]:
+    limit = for_user(owner).domain_limit
+    used = Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED).count()
+    return {
+        "resource": "active_domains",
+        "used": used,
+        "limit": limit,
+        "remaining": max(limit - used, 0),
+        "reset_at": None,
+        "retryable": False,
+    }
+
+
+def _domain_rate_limit_details(owner, *, now=None) -> tuple[dict[str, Any], int]:
+    now = now or timezone.now()
+    window_seconds = settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS
+    oldest_recent = (
+        Domain.objects.filter(
+            owner=owner,
+            created_at__gte=now - timedelta(seconds=window_seconds),
+        )
+        .order_by("created_at")
+        .first()
+    )
+    next_allowed_at = (
+        oldest_recent.created_at + timedelta(seconds=window_seconds)
+        if oldest_recent is not None
+        else now + timedelta(seconds=window_seconds)
+    )
+    retry_after = max(1, math.ceil((next_allowed_at - now).total_seconds()))
+    return (
+        {
+            "resource": "domain_provisioning",
+            "retry_after_seconds": retry_after,
+            "next_allowed_at": next_allowed_at,
+            "retryable": True,
+        },
+        retry_after,
+    )
+
+
+def _outbound_limit_api_error(
+    exc: DjangoValidationError,
+    *,
+    fallback: str,
+) -> APIError:
+    code = _validation_code(exc, fallback)
+    params = _validation_params(exc)
+    if code == "outbound_rate_limited":
+        retry_after = _as_nonnegative_int(params.get("retry_after"), default=1) or 1
+        details = {
+            "resource": params.get("resource", "outbound_replies"),
+            "used": _as_nonnegative_int(params.get("used")),
+            "limit": _as_nonnegative_int(params.get("limit")),
+            "remaining": 0,
+            "scope": params.get("scope", "account"),
+            "period": params.get("period", "minute"),
+            "retry_after_seconds": retry_after,
+            "next_allowed_at": timezone.now() + timedelta(seconds=retry_after),
+            "retryable": True,
+        }
+        return APIError(
+            "rate_limited",
+            "Outbound reply sending is temporarily rate limited.",
+            status=429,
+            details=details,
+            retry_after=retry_after,
+        )
+    if code in {
+        "outbound_account_limit",
+        "outbound_domain_limit",
+        "outbound_monthly_limit",
+    }:
+        used = _as_nonnegative_int(params.get("used"))
+        limit = _as_nonnegative_int(params.get("limit"))
+        reset_at = params.get("reset_at")
+        return APIError(
+            "quota_exhausted",
+            "The outbound reply quota is exhausted for the current period.",
+            status=429,
+            details={
+                "resource": params.get("resource", "outbound_replies"),
+                "used": used,
+                "limit": limit,
+                "remaining": max(limit - used, 0),
+                "scope": params.get("scope", "account"),
+                "period": params.get("period"),
+                "reset_at": reset_at,
+                "retryable": reset_at is not None,
+            },
+        )
+    return APIError(code, "; ".join(exc.messages), status=409)
+
+
+def _account_limits_dict(owner) -> dict[str, Any]:
+    entitlements = for_user(owner)
+    domain_details = _domain_capacity_details(owner)
+    capacity = domain_capacity(owner)
+    usage = outbound_usage(owner)
+    usage_limits = usage.get("limits")
+    usage_limits = usage_limits if isinstance(usage_limits, dict) else {}
+    month_used = _as_nonnegative_int(usage.get("month", usage.get("month_count", 0)))
+    month_limit = _as_nonnegative_int(usage_limits.get("month", usage.get("month_limit", 0)))
+    month_reset_at = usage.get("month_reset_at", usage.get("reset_at"))
+    month_remaining = None if month_limit == 0 else max(month_limit - month_used, 0)
+    sending_available = bool(entitlements.outbound) and (
+        month_remaining is None or month_remaining > 0
+    )
+    return {
+        "capabilities": {
+            "can_add_domain": domain_details["remaining"] > 0,
+            "can_create_reply_draft": bool(entitlements.outbound),
+            "can_send_reply": sending_available,
+            "can_pause_outbound": True,
+        },
+        "limits": {
+            "active_domains": {
+                **{
+                    key: domain_details[key]
+                    for key in ("resource", "used", "limit", "remaining", "reset_at")
+                },
+                "primary_domain_id": (
+                    str(capacity.primary_domain_id)
+                    if capacity.primary_domain_id is not None
+                    else None
+                ),
+                "grace_ends_at": capacity.grace_ends_at,
+            },
+            "outbound_replies": {
+                "resource": "outbound_replies",
+                "used": month_used,
+                "limit": month_limit,
+                "remaining": month_remaining,
+                "period": "calendar_month",
+                "reset_at": month_reset_at,
+            },
+        },
+    }
 
 
 def _outbound_dict(outbound: OutboundMessage) -> dict[str, Any]:
@@ -455,6 +668,8 @@ def _outbound_control_dict(user) -> dict[str, Any]:
         "paused_at": control.paused_at,
         "minute_count": usage["minute"],
         "day_count": usage["day"],
+        "month_count": usage.get("month", 0),
+        "month_reset_at": usage.get("month_reset_at"),
         "by_domain": usage["by_domain"],
         "limits": usage["limits"],
     }
@@ -776,6 +991,12 @@ def api_health(request: HttpRequest) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@api.get("/account/limits", auth=authenticated, tags=["Account"])
+def account_limits_get(request: HttpRequest):
+    require_scope(request, AccessScope.READ)
+    return _account_limits_dict(_api_owner(request))
+
+
 @api.get("/domains", auth=authenticated, tags=["Domains"])
 def domains_list(request: HttpRequest):
     require_scope(request, AccessScope.READ)
@@ -799,6 +1020,7 @@ def domains_create(request: HttpRequest, payload: DomainInput):
         )
     except DomainClaimConflict as exc:
         if exc.existing_domain is not None:
+            require_domain_write(request, exc.existing_domain)
             if exc.existing_domain.setup_mode != payload.setup_mode:
                 raise APIError(
                     "domain_claim_conflict",
@@ -819,6 +1041,34 @@ def domains_create(request: HttpRequest, payload: DomainInput):
         raise APIError(
             "domain_claim_conflict",
             "The domain is not available for a new ownership claim.",
+            status=409,
+        ) from exc
+    except DomainLimitError as exc:
+        code = _validation_code(exc, "domain_limit_reached")
+        owner = _api_owner(request)
+        if code in {"capacity_reached", "upgrade_required", "domain_limit_reached"}:
+            details = _domain_capacity_details(owner)
+            raise APIError(
+                "capacity_reached",
+                (
+                    f"Active domain capacity is {details['limit']}; "
+                    f"current usage is {details['used']}."
+                ),
+                status=409,
+                details=details,
+            ) from exc
+        if code in {"rate_limited", "domain_provision_rate_limited"}:
+            details, retry_after = _domain_rate_limit_details(owner)
+            raise APIError(
+                "rate_limited",
+                "Domain provisioning is temporarily rate limited.",
+                status=429,
+                details=details,
+                retry_after=retry_after,
+            ) from exc
+        raise APIError(
+            "domain_limit_error",
+            "The domain could not be created.",
             status=409,
         ) from exc
     except DjangoValidationError as exc:
@@ -869,7 +1119,7 @@ def domains_setup_plan(request: HttpRequest, domain_id: uuid.UUID):
 )
 def domains_retry_provisioning(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     try:
         domain, job, started = retry_domain_provisioning(domain)
     except DjangoValidationError as exc:
@@ -908,7 +1158,7 @@ def domains_start_routing_transition(
     payload: RoutingTransitionInput,
 ):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     try:
         transition, started = begin_routing_transition(domain, payload.target_mode)
     except DjangoValidationError as exc:
@@ -961,7 +1211,7 @@ def domains_start_routing_transition(
 )
 def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
         .order_by("-generation")
@@ -1001,7 +1251,7 @@ def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID
 def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.MANAGE_DOMAINS)
     require_outbound_access(request)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     try:
         domain, job, started = request_outbound_provisioning(domain)
     except DjangoValidationError as exc:
@@ -1036,7 +1286,7 @@ def domains_enable_outbound(request: HttpRequest, domain_id: uuid.UUID):
 )
 def domains_check(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.MANAGE_DOMAINS)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     transition_needs_check = domain.routing_transitions.filter(
         status__in=(
             InboundRoutingTransition.Status.WAITING_DNS,
@@ -1093,7 +1343,7 @@ def domains_check(request: HttpRequest, domain_id: uuid.UUID):
 )
 def domains_test(request: HttpRequest, domain_id: uuid.UUID):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     transition = (
         domain.routing_transitions.filter(status__in=ACTIVE_TRANSITION_STATUSES)
         .order_by("-generation")
@@ -1402,7 +1652,7 @@ def conversations_action(
     payload: ConversationActionInput,
 ):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     event_types = {
         "star": "conversation.starred",
         "unstar": "conversation.unstarred",
@@ -1441,7 +1691,7 @@ def conversations_tags_add(
     payload: ConversationTagInput,
 ):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     try:
         tag, created = add_conversation_tag(conversation, payload.tag)
@@ -1473,7 +1723,7 @@ def conversations_tags_remove(
     tag_id: uuid.UUID,
 ):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     tag = scoped_object(ConversationTag, domain, tag_id)
     if tag.conversation_id != conversation.id:
@@ -1503,7 +1753,7 @@ def classifications_override(
     payload: ClassificationInput,
 ):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     message = scoped_object(Message, domain, message_id)
     with transaction.atomic():
         previous = (
@@ -1550,7 +1800,7 @@ def drafts_create_authored(
 ):
     require_scope(request, AccessScope.WRITE)
     require_outbound_access(request, "Reply drafts")
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     conversation = scoped_object(Conversation, domain, conversation_id)
     message = conversation.messages.filter(direction=Message.Direction.INBOUND).last()
     if message is None:
@@ -1619,7 +1869,7 @@ def drafts_revise(
 ):
     require_scope(request, AccessScope.WRITE)
     require_outbound_access(request, "Reply drafts")
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
@@ -1653,7 +1903,7 @@ def drafts_send(
 ):
     require_scope(request, AccessScope.SEND)
     require_outbound_access(request)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
@@ -1664,9 +1914,7 @@ def drafts_send(
             owner=owner,
         )
     except DjangoValidationError as exc:
-        code = _validation_code(exc, "stale_revision")
-        status = 429 if code.startswith("outbound_") and code != "outbound_paused" else 409
-        raise APIError(code, "; ".join(exc.messages), status=status) from exc
+        raise _outbound_limit_api_error(exc, fallback="stale_revision") from exc
     enqueue_job(
         kind="send_outbound",
         idempotency_key=f"outbound:{outbound.id}",
@@ -1786,15 +2034,13 @@ def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
 def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uuid.UUID):
     require_scope(request, AccessScope.SEND)
     require_outbound_access(request)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     original = scoped_object(OutboundMessage, domain, outbound_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         resend = resend_outbound(original, owner=owner)
     except DjangoValidationError as exc:
-        code = _validation_code(exc, "resend_not_allowed")
-        status = 429 if code.startswith("outbound_") and code != "outbound_paused" else 409
-        raise APIError(code, "; ".join(exc.messages), status=status) from exc
+        raise _outbound_limit_api_error(exc, fallback="resend_not_allowed") from exc
     enqueue_job(
         kind="send_outbound",
         idempotency_key=f"outbound:{resend.id}",
@@ -1885,7 +2131,7 @@ def notifications_list(
 )
 def notifications_read(request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID):
     require_scope(request, AccessScope.WRITE)
-    domain = api_domain(request, domain_id)
+    domain = api_writable_domain(request, domain_id)
     notification = scoped_object(Notification, domain, notification_id)
     notification.status = Notification.Status.READ
     notification.read_at = timezone.now()

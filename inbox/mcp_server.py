@@ -15,6 +15,7 @@ from inbox.api import (
     OutboundControlInput,
     RevisionInput,
     SendInput,
+    account_limits_get,
     audit_list,
     conversations_action,
     conversations_detail,
@@ -38,6 +39,7 @@ from inbox.api import (
     outbound_status,
     require_scope,
 )
+from inbox.integration_versions import SEMVER_PATTERN, integration_status
 from inbox.models import AccessScope, Domain
 from inbox.services.domains import (
     DomainClaimLookupError,
@@ -425,6 +427,61 @@ DELIVERY_EVENT_SCHEMA = _object_schema(
 LIST_DOMAINS_OUTPUT_SCHEMA = _object_schema(
     {"items": {"type": "array", "items": DOMAIN_SCHEMA}}, ["items"]
 )
+ACCOUNT_LIMIT_RESOURCE_SCHEMA = _object_schema(
+    {
+        "resource": {"type": "string"},
+        "used": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 0},
+        "remaining": _nullable({"type": "integer", "minimum": 0}),
+        "reset_at": _nullable(DATETIME_SCHEMA),
+    },
+    ["resource", "used", "limit", "remaining", "reset_at"],
+)
+ACTIVE_DOMAIN_LIMIT_SCHEMA = _object_schema(
+    {
+        **ACCOUNT_LIMIT_RESOURCE_SCHEMA["properties"],
+        "primary_domain_id": _nullable(UUID_SCHEMA),
+        "grace_ends_at": _nullable(DATETIME_SCHEMA),
+    },
+    [
+        *ACCOUNT_LIMIT_RESOURCE_SCHEMA["required"],
+        "primary_domain_id",
+        "grace_ends_at",
+    ],
+)
+OUTBOUND_REPLY_LIMIT_SCHEMA = _object_schema(
+    {
+        **ACCOUNT_LIMIT_RESOURCE_SCHEMA["properties"],
+        "period": {"type": "string", "const": "calendar_month"},
+    },
+    [*ACCOUNT_LIMIT_RESOURCE_SCHEMA["required"], "period"],
+)
+ACCOUNT_LIMITS_OUTPUT_SCHEMA = _object_schema(
+    {
+        "capabilities": _object_schema(
+            {
+                "can_add_domain": {"type": "boolean"},
+                "can_create_reply_draft": {"type": "boolean"},
+                "can_send_reply": {"type": "boolean"},
+                "can_pause_outbound": {"type": "boolean"},
+            },
+            [
+                "can_add_domain",
+                "can_create_reply_draft",
+                "can_send_reply",
+                "can_pause_outbound",
+            ],
+        ),
+        "limits": _object_schema(
+            {
+                "active_domains": ACTIVE_DOMAIN_LIMIT_SCHEMA,
+                "outbound_replies": OUTBOUND_REPLY_LIMIT_SCHEMA,
+            },
+            ["active_domains", "outbound_replies"],
+        ),
+    },
+    ["capabilities", "limits"],
+)
 MESSAGE_FEED_OUTPUT_SCHEMA = _object_schema(
     {
         "items": {"type": "array", "items": MESSAGE_FEED_ITEM_SCHEMA},
@@ -505,6 +562,8 @@ OUTBOUND_CONTROL_OUTPUT_SCHEMA = _object_schema(
         "paused_at": _nullable(DATETIME_SCHEMA),
         "minute_count": {"type": "integer", "minimum": 0},
         "day_count": {"type": "integer", "minimum": 0},
+        "month_count": {"type": "integer", "minimum": 0},
+        "month_reset_at": DATETIME_SCHEMA,
         "by_domain": {
             "type": "object",
             "additionalProperties": {"type": "integer", "minimum": 0},
@@ -514,11 +573,21 @@ OUTBOUND_CONTROL_OUTPUT_SCHEMA = _object_schema(
                 "minute": {"type": "integer", "minimum": 0},
                 "day": {"type": "integer", "minimum": 0},
                 "domain_day": {"type": "integer", "minimum": 0},
+                "month": {"type": "integer", "minimum": 0},
             },
-            ["minute", "day", "domain_day"],
+            ["minute", "day", "domain_day", "month"],
         ),
     },
-    ["paused", "paused_at", "minute_count", "day_count", "by_domain", "limits"],
+    [
+        "paused",
+        "paused_at",
+        "minute_count",
+        "day_count",
+        "month_count",
+        "month_reset_at",
+        "by_domain",
+        "limits",
+    ],
 )
 OUTBOUND_ENABLE_OUTPUT_SCHEMA = _object_schema(
     {
@@ -597,8 +666,80 @@ REVISE_DRAFT_OUTPUT_SCHEMA = _object_schema(
     },
     ["id", "number", "content_hash"],
 )
+INTEGRATION_STATUS_OUTPUT_SCHEMA = _object_schema(
+    {
+        "server_version": {"type": "string", "pattern": SEMVER_PATTERN.pattern},
+        "mcp_contract_version": {"type": "string", "pattern": SEMVER_PATTERN.pattern},
+        "latest_skill_version": {"type": "string", "pattern": SEMVER_PATTERN.pattern},
+        "minimum_skill_version": {"type": "string", "pattern": SEMVER_PATTERN.pattern},
+        "reported_skill_version": _nullable({"type": "string", "pattern": SEMVER_PATTERN.pattern}),
+        "skill_status": {
+            "type": "string",
+            "enum": [
+                "unknown",
+                "upgrade_required",
+                "update_available",
+                "current",
+                "newer_than_server",
+            ],
+        },
+        "upgrade_required": {"type": "boolean"},
+        "update_available": {"type": "boolean"},
+        "skill_update_url": {"type": "string", "format": "uri"},
+    },
+    [
+        "server_version",
+        "mcp_contract_version",
+        "latest_skill_version",
+        "minimum_skill_version",
+        "reported_skill_version",
+        "skill_status",
+        "upgrade_required",
+        "update_available",
+        "skill_update_url",
+    ],
+)
 
 MCP_TOOLS: list[dict[str, Any]] = [
+    {
+        "name": "get_integration_status",
+        "title": "Get integration compatibility",
+        "description": (
+            "Read Operational Inbox server, MCP contract, and standalone-skill versions. Use "
+            "only during setup, an explicit update request, or connection diagnostics; do not "
+            "check for updates during ordinary mailbox work. This tool never installs updates."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "skill_version": {
+                    "type": "string",
+                    "pattern": SEMVER_PATTERN.pattern,
+                }
+            }
+        ),
+        "outputSchema": INTEGRATION_STATUS_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    },
+    {
+        "name": "get_account_limits",
+        "title": "Get account capabilities and limits",
+        "description": (
+            "Read current account capabilities, active-domain capacity, and outbound-reply "
+            "usage with any applicable reset time. Use this before domain or send actions when "
+            "capacity is uncertain."
+        ),
+        "inputSchema": _object_schema({}),
+        "outputSchema": ACCOUNT_LIMITS_OUTPUT_SCHEMA,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "openWorldHint": False,
+        },
+    },
     {
         "name": "list_domains",
         "title": "List authorized domains",
@@ -1034,6 +1175,8 @@ MCP_TOOLS: list[dict[str, Any]] = [
 ]
 
 MCP_TOOL_SCOPES = {
+    "get_integration_status": AccessScope.READ,
+    "get_account_limits": AccessScope.READ,
     "list_domains": AccessScope.READ,
     "inspect_domain_dns": AccessScope.MANAGE_DOMAINS,
     "start_domain_onboarding": AccessScope.MANAGE_DOMAINS,
@@ -1149,6 +1292,14 @@ def _unwrap(value: Any) -> Any:
 
 
 def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -> Any:
+    if name == "get_integration_status":
+        reported_skill_version = _optional_string(arguments, "skill_version")
+        try:
+            return integration_status(reported_skill_version)
+        except ValueError as exc:
+            raise APIError("validation_error", str(exc)) from exc
+    if name == "get_account_limits":
+        return account_limits_get(request)
     if name == "list_domains":
         return domains_list(request)
     if name == "inspect_domain_dns":

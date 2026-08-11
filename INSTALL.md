@@ -7,6 +7,12 @@ program.
 
 The setup is: **install the skill → configure native MCP → authenticate → verify the connection**.
 
+The authenticated connection exposes inbound triage, drafts, user-requested reply delivery, and
+Outbox safety for every authorized active domain. MCP tool calls themselves do not consume a
+commercial allowance. If a tool returns `capacity_reached`, `quota_exhausted`, or `rate_limited`,
+report its `used`, `limit`, `reset_at`, or retry timing exactly as returned. Do not recommend a plan
+change, show pricing, or direct the user to checkout from this setup workflow.
+
 ## Step 1 — Install or update the standalone skill
 
 Run this even when `$operational-inbox` is already available so the shared copy matches the current
@@ -20,7 +26,9 @@ npx -y skills@latest add onurmatik/operational-inbox \
 The global install intentionally places one shared copy at `~/.agents/skills/operational-inbox` for
 every compatible agent that uses the common Agent Skills directory. The installer may skip a
 detected client that does not support global skills. The shared skill includes its UI metadata,
-logo, operating rules, and native MCP dependency.
+logo, operating rules, version file, and native MCP dependency. This setup/update command is the
+only place that should replace the copied skill. Do not add a self-update check to ordinary mailbox
+operations.
 
 ## Step 2 — Configure the client's native MCP connection
 
@@ -62,11 +70,21 @@ secret into chat.
 ## Step 4 — Verify before any reload
 
 After OAuth completes, first check whether the `operational-inbox` MCP tools are available in the
-current task. If they are, call `list_domains` for a read-only connection check. If it succeeds,
-setup is complete; do not ask the user to reload or restart anything. Do not read mailbox content
-merely to prove setup succeeded.
+current task. If they are, read `~/.agents/skills/operational-inbox/VERSION` and call
+`get_integration_status` with that exact value as `skill_version`. If `upgrade_required` is true,
+return to Step 1 before mailbox operations. Never overwrite the skill implicitly. If the
+compatibility tool is unavailable on an older server, continue without treating that additive tool
+as a failure.
+
+Then call `list_domains` for a read-only connection check. If it succeeds, setup is complete; do
+not ask the user to reload or restart anything. Do not read mailbox content merely to prove setup
+succeeded.
 
 Only when the tools are unavailable should you ask the user to use that client's native reload or
 restart action, start a new task if the client requires it, and retry `list_domains` once. Do not
 prescribe a universal restart for other agents. If the tool is available but returns an
 authentication error, reconnect with the client's native OAuth control instead of restarting.
+
+Outside setup, run the version check only when the user explicitly asks to update Operational Inbox
+or requests connection diagnostics. Do not check for or install updates during ordinary mailbox
+work.

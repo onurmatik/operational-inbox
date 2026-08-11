@@ -237,16 +237,32 @@ def classify_stored_mx(records: list[dict[str, object]]) -> MXLayout:
 def _assert_limits(owner: User) -> None:
     from inbox.services.entitlements import for_user
 
-    domain_limit = for_user(owner).domain_limit
-    if (
+    entitlements = for_user(owner)
+    domain_limit = entitlements.domain_limit
+    active_domain_count = (
         Domain.objects.filter(owner=owner).exclude(status=Domain.Status.DISABLED).count()
-        >= domain_limit
-    ):
-        raise DomainLimitError(f"This plan can provision at most {domain_limit} domains.")
+    )
+    if active_domain_count >= domain_limit:
+        raise DomainLimitError(
+            f"Active domain capacity is {domain_limit}; current usage is {active_domain_count}. "
+            "Disable a domain before connecting another.",
+            code="capacity_reached",
+            params={
+                "resource": "active_domains",
+                "used": active_domain_count,
+                "limit": domain_limit,
+                "remaining": 0,
+                "reset_at": None,
+                "retryable": False,
+            },
+        )
     since = timezone.now() - timedelta(seconds=settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS)
     recent = Domain.objects.filter(owner=owner, created_at__gte=since).count()
     if recent >= settings.DOMAIN_PROVISION_RATE_LIMIT:
-        raise DomainLimitError("Domain provisioning is temporarily rate limited. Try again later.")
+        raise DomainLimitError(
+            "Domain provisioning is temporarily rate limited. Try again later.",
+            code="rate_limited",
+        )
 
 
 def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:

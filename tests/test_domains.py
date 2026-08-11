@@ -180,7 +180,7 @@ def test_domain_limit_is_enforced(monkeypatch, organization, project):
         hostname="one.example",
         setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
     )
-    with pytest.raises(ValidationError, match="at most 2"):
+    with pytest.raises(ValidationError, match="Active domain capacity is 2; current usage is 2"):
         create_domain(
             owner=project.owner,
             hostname="two.example",

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
+from math import ceil
 from typing import Any
 
 import boto3
@@ -25,7 +26,85 @@ from inbox.models import (
     OutboundMessage,
     User,
 )
+from inbox.services.entitlements import can_manage_domain, for_user
 from inbox.services.notifications import create_outbound_problem_notifications
+
+OUTBOUND_RESOURCE = "outbound_replies"
+
+
+def _as_utc(value: datetime) -> datetime:
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value, UTC)
+    return value.astimezone(UTC)
+
+
+def _month_window(now: datetime) -> tuple[datetime, datetime]:
+    utc_now = _as_utc(now)
+    start = utc_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+def _iso_utc(value: datetime) -> str:
+    return _as_utc(value).isoformat().replace("+00:00", "Z")
+
+
+def _outbound_limits(user: User) -> dict[str, int]:
+    if for_user(user).is_pro:
+        return {
+            "minute": settings.OUTBOUND_RATE_LIMIT_PER_MINUTE,
+            "day": settings.OUTBOUND_DAILY_ACCOUNT_LIMIT,
+            "domain_day": settings.OUTBOUND_DAILY_DOMAIN_LIMIT,
+            "month": settings.OUTBOUND_MONTHLY_ACCOUNT_LIMIT,
+        }
+    return {
+        "minute": settings.FREE_OUTBOUND_RATE_LIMIT_PER_MINUTE,
+        "day": settings.FREE_OUTBOUND_DAILY_ACCOUNT_LIMIT,
+        "domain_day": settings.FREE_OUTBOUND_DAILY_DOMAIN_LIMIT,
+        "month": settings.FREE_OUTBOUND_MONTHLY_ACCOUNT_LIMIT,
+    }
+
+
+def _capacity_reset_at(queryset, *, used: int, limit: int, window: timedelta) -> datetime:
+    # When usage is already above a newly lowered limit, more than the oldest
+    # attempt may need to expire before another send is allowed.
+    offset = max(0, used - limit)
+    blocking = (
+        queryset.order_by("created_at")
+        .values_list("created_at", flat=True)[offset : offset + 1]
+        .first()
+    )
+    # The queryset has already been counted as non-empty. Keep this defensive
+    # fallback deterministic if rows are concurrently removed outside the lock.
+    return (blocking or timezone.now()) + window
+
+
+def _quota_error(
+    message: str,
+    *,
+    code: str,
+    used: int,
+    limit: int,
+    scope: str,
+    period: str,
+    reset_at: datetime | None = None,
+    retry_after: int | None = None,
+) -> ValidationError:
+    params: dict[str, Any] = {
+        "resource": OUTBOUND_RESOURCE,
+        "used": used,
+        "limit": limit,
+        "scope": scope,
+        "period": period,
+    }
+    if reset_at is not None:
+        params["reset_at"] = _iso_utc(reset_at)
+    if retry_after is not None:
+        params["retry_after"] = retry_after
+    return ValidationError(message, code=code, params=params)
 
 
 def get_outbound_control(user: User, *, lock: bool = False) -> OutboundControl:
@@ -40,24 +119,23 @@ def outbound_usage(user: User, *, now=None) -> dict[str, Any]:
     base = OutboundMessage.objects.filter(domain__owner=user)
     day_start = now - timedelta(hours=24)
     minute_start = now - timedelta(minutes=1)
+    month_start, month_reset_at = _month_window(now)
+    day = base.filter(created_at__gt=day_start)
     by_domain = {
         str(row["domain_id"]): row["count"]
-        for row in (
-            base.filter(created_at__gte=day_start).values("domain_id").annotate(count=Count("id"))
-        )
+        for row in day.values("domain_id").annotate(count=Count("id"))
     }
     return {
-        "minute": base.filter(created_at__gte=minute_start).count(),
-        "day": base.filter(created_at__gte=day_start).count(),
+        "minute": base.filter(created_at__gt=minute_start).count(),
+        "day": day.count(),
+        "month": base.filter(created_at__gte=month_start, created_at__lt=month_reset_at).count(),
+        "month_reset_at": month_reset_at,
         "by_domain": by_domain,
-        "limits": {
-            "minute": settings.OUTBOUND_RATE_LIMIT_PER_MINUTE,
-            "day": settings.OUTBOUND_DAILY_ACCOUNT_LIMIT,
-            "domain_day": settings.OUTBOUND_DAILY_DOMAIN_LIMIT,
-        },
+        "limits": _outbound_limits(user),
     }
 
 
+@transaction.atomic
 def require_outbound_capacity(domain: Domain, *, now=None) -> None:
     """Serialize account sends and reject paused or over-limit queue requests."""
     now = now or timezone.now()
@@ -67,32 +145,71 @@ def require_outbound_capacity(domain: Domain, *, now=None) -> None:
             "Outbound sending is paused for this account.", code="outbound_paused"
         )
     base = OutboundMessage.objects.filter(domain__owner=domain.owner)
-    if (
-        settings.OUTBOUND_RATE_LIMIT_PER_MINUTE > 0
-        and base.filter(created_at__gte=now - timedelta(minutes=1)).count()
-        >= settings.OUTBOUND_RATE_LIMIT_PER_MINUTE
-    ):
-        raise ValidationError(
+    limits = _outbound_limits(domain.owner)
+    minute = base.filter(created_at__gt=now - timedelta(minutes=1))
+    minute_used = minute.count()
+    if limits["minute"] > 0 and minute_used >= limits["minute"]:
+        reset_at = _capacity_reset_at(
+            minute,
+            used=minute_used,
+            limit=limits["minute"],
+            window=timedelta(minutes=1),
+        )
+        retry_after = max(1, ceil((reset_at - now).total_seconds()))
+        raise _quota_error(
             "The account send rate limit has been reached. Try again shortly.",
             code="outbound_rate_limited",
+            used=minute_used,
+            limit=limits["minute"],
+            scope="account",
+            period="rolling_minute",
+            retry_after=retry_after,
         )
-    if (
-        settings.OUTBOUND_DAILY_ACCOUNT_LIMIT > 0
-        and base.filter(created_at__gte=now - timedelta(hours=24)).count()
-        >= settings.OUTBOUND_DAILY_ACCOUNT_LIMIT
-    ):
-        raise ValidationError(
+    day = base.filter(created_at__gt=now - timedelta(hours=24))
+    day_used = day.count()
+    if limits["day"] > 0 and day_used >= limits["day"]:
+        raise _quota_error(
             "The account daily send limit has been reached.",
             code="outbound_account_limit",
+            used=day_used,
+            limit=limits["day"],
+            scope="account",
+            period="rolling_24_hours",
+            reset_at=_capacity_reset_at(
+                day,
+                used=day_used,
+                limit=limits["day"],
+                window=timedelta(hours=24),
+            ),
         )
-    if (
-        settings.OUTBOUND_DAILY_DOMAIN_LIMIT > 0
-        and base.filter(domain=domain, created_at__gte=now - timedelta(hours=24)).count()
-        >= settings.OUTBOUND_DAILY_DOMAIN_LIMIT
-    ):
-        raise ValidationError(
+    domain_day = day.filter(domain=domain)
+    domain_used = domain_day.count()
+    if limits["domain_day"] > 0 and domain_used >= limits["domain_day"]:
+        raise _quota_error(
             "The domain daily send limit has been reached.",
             code="outbound_domain_limit",
+            used=domain_used,
+            limit=limits["domain_day"],
+            scope="domain",
+            period="rolling_24_hours",
+            reset_at=_capacity_reset_at(
+                domain_day,
+                used=domain_used,
+                limit=limits["domain_day"],
+                window=timedelta(hours=24),
+            ),
+        )
+    month_start, month_reset_at = _month_window(now)
+    month_used = base.filter(created_at__gte=month_start, created_at__lt=month_reset_at).count()
+    if limits["month"] > 0 and month_used >= limits["month"]:
+        raise _quota_error(
+            "The account monthly send limit has been reached.",
+            code="outbound_monthly_limit",
+            used=month_used,
+            limit=limits["month"],
+            scope="account",
+            period="calendar_month",
+            reset_at=month_reset_at,
         )
 
 
@@ -167,6 +284,8 @@ def _authorization_error(outbound: OutboundMessage) -> str:
         return "Outbound sending is no longer ready for this domain."
     if not outbound.domain.owner.is_active:
         return "The domain owner is not active."
+    if not can_manage_domain(outbound.domain.owner, outbound.domain):
+        return "Outbound authorization was revoked because this domain is read-only."
     return ""
 
 

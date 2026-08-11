@@ -15,6 +15,8 @@ reports, and permanent deletion are not exposed through MCP.
 - OAuth 2.1 discovery, public-client registration, PKCE authorization, rotating refresh tokens,
   exact MCP resource binding, and protected tool calls.
 - Public install instructions, MCP documentation, privacy policy, terms, and support pages.
+- Public fallback-integration compatibility metadata at
+  `https://operationalinbox.com/agent-manifest.json`.
 - Public Agent Plugins 1.0 manifests and four bundled skills under
   `plugins/operational-inbox`.
 - Production manifest URLs:
@@ -51,6 +53,7 @@ Run these checks after deployment:
 ```console
 curl -i https://operationalinbox.com/.well-known/oauth-protected-resource/mcp
 curl -i https://operationalinbox.com/.well-known/oauth-authorization-server
+curl -i https://operationalinbox.com/agent-manifest.json
 curl -i https://operationalinbox.com/mcp-docs/
 curl -i https://operationalinbox.com/privacy/
 curl -i https://operationalinbox.com/terms/

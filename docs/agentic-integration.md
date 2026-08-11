@@ -25,10 +25,45 @@ names.
 Plugin and remote-MCP clients connect through OAuth 2.1 authorization code with PKCE. The user
 signs in to Operational Inbox, reviews the requested access, and grants the `read`, `write`,
 `manage_domains`, and `send` scopes needed by the selected tools. An `oi_...` personal API token is
-also available for direct API and MCP integrations on both Free and Pro. Each user has one active
-token with the operational access included in their plan across every domain allowed by that plan,
-including domain onboarding. Free domain onboarding is limited to one active domain. Creating,
-regenerating, or revoking that token requires the owner's browser session.
+also available for direct API and MCP integrations on both Free Core and Pro Scale. Each user has
+one active token with operational access across every active domain allowed by the account,
+including domain onboarding. Creating, regenerating, or revoking that token requires the owner's
+browser session.
+
+### Capacity, quota, and neutral tool behavior
+
+Both plans expose the full agent workflow: the feed for every authorized active domain, search,
+reversible organization, drafts, user-requested reply submission, delivery events, and Outbox
+pause/resume. The all-active-domain feed is not a Pro-only API. Free Core has one active-domain
+slot, 30 user-requested replies per UTC calendar month, and fixed retention. Pro Scale has 20
+active-domain slots, 5,000 user-requested replies per UTC calendar month, custom retention, and
+server-side AI classification.
+
+MCP and API call counts are not commercially metered, and inbound receiving has no hard commercial
+plan-volume quota. Independent technical, provider, and abuse-prevention limits still apply.
+Drafting, triage, and Outbox safety remain available after the monthly reply allowance is
+exhausted.
+
+An account that returns to Free Core above one active domain receives a 30-day capacity grace
+period and selects the domain that will remain active. Other domains remain readable during grace,
+then are disabled by the server. Agents must report the authoritative grace timestamp and must not
+start another domain claim while the account is at capacity. Read `get_account_limits` for the
+selected `primary_domain_id`, `grace_ends_at`, active-domain usage, and monthly reply reset.
+
+Machine-facing capacity responses stay factual and do not promote a plan, show pricing, recommend
+an upgrade, or direct the user to checkout:
+
+- `capacity_reached` is for non-renewing capacity such as active domains. Return the resource,
+  `used`, `limit`, `retryable: false`, and `reset_at: null`; do not begin onboarding or change DNS.
+- `quota_exhausted` is for a renewable reply allowance. Return the resource, `used`, `limit`,
+  `period`, `retryable: true`, and an RFC 3339 `reset_at`. For `calendar_month`, that reset is
+  00:00 UTC on the first day of the next month; rolling safety quotas use their authoritative
+  rolling reset. Preserve any draft and do not try another sending route.
+- `rate_limited` is for short-window safety protection. Return `retry_after_seconds` and/or
+  `next_allowed_at`, and do not retry before that time.
+
+Plugins and skills should relay these fields and the next permitted time directly. Internal request
+identifiers belong in server logs and direct API diagnostics, not in MCP tool content.
 
 Use `GET /api/v1/feed/messages` for the account-wide inbound feed. It accepts these filters:
 
@@ -82,7 +117,8 @@ v1 manifest and `mcp.json`, an OpenAI/Codex compatibility manifest, and four ski
   provider applies the exact plan.
 
 All skills must report the Operational Inbox connection as unavailable when its tools are absent.
-They must not substitute Gmail, browser automation, local files, or another inbox source.
+They must not substitute Gmail, browser automation, local files, or another inbox source. They also
+must not turn a capacity or quota result into plan promotion, pricing, or checkout guidance.
 
 ## MCP transport and authentication
 
@@ -102,6 +138,7 @@ challenge in the MCP tool result's `_meta["mcp/www_authenticate"]` field.
 
 | Tool | Scope | Behavior |
 | --- | --- | --- |
+| `get_integration_status` | `read` | Compare a reported standalone-skill version with the current and minimum supported integration versions. |
 | `list_domains` | `read` | List authorized active domains. |
 | `inspect_domain_dns` | `manage_domains` | Inspect live public MX and ownership DNS without changing it. |
 | `start_domain_onboarding` | `manage_domains` | Create or reuse an owner-authorized domain claim and queue provisioning. |
@@ -129,6 +166,32 @@ Every tool reuses the API's owner/domain lookup, entitlement checks, OAuth scope
 stable errors, and agent audit events. OAuth grants cover the connected owner's authorized domains;
 personal API tokens carry the owner's plan-scoped operational access. Email output is described as
 untrusted data in both the MCP server instructions and read-tool metadata.
+
+## Integration versioning and compatibility
+
+`agent-manifest.json` is the machine-readable compatibility source for the fallback standalone
+skill and remote MCP connection. It publishes four independent SemVer values:
+
+- `server_version` identifies the deployed application build and matches the project/plugin release.
+- `mcp_contract_version` identifies tool names, schemas, authorization scopes, and model-visible semantics.
+- `skill_version` identifies the latest copied standalone skill instructions and bundled installer.
+- `minimum_skill_version` identifies the oldest standalone skill that can safely use the current MCP contract.
+
+The copied skill stores its own version in `VERSION`. Call `get_integration_status` only during
+setup, an explicit update request, or connection diagnostics. An older but supported skill returns
+`update_available` without blocking mailbox work. A version below the minimum returns
+`upgrade_required`; stop before mailbox operations and direct the user to the canonical install
+guide. Never download or overwrite a copied skill implicitly, and never add this check to ordinary
+mailbox calls.
+
+Keep MCP changes backward compatible within a contract major version: add optional fields or new
+tools, preserve existing names and meanings, and tolerate older clients. Renaming/removing a tool,
+making an input required, changing output meaning, or changing required auth scopes is a major
+contract change and requires a compatibility window plus a coordinated skill release. Internal
+server-only changes do not require a skill release. Bump the skill version whenever `SKILL.md`, its
+installer, or its operating contract changes. When the plugin becomes the primary distribution,
+its own release version governs plugin updates; this standalone manifest remains the compatibility
+contract for the fallback skill + remote MCP path.
 
 Do not expose server-side workflow classification, aging rules, reports, notifications,
 allowed-tag catalogs, routing transitions, domain disablement, token creation, attachment URLs, or

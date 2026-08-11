@@ -18,20 +18,22 @@ overview and agent setup prompt, see the [README](README.md).
 - A complete inbox with automatic viewed tracking, domain/mailbox navigation, new-message counts,
   search, tag/security/folder filters, inline Star/Archive/Trash/Restore actions, conversation
   timelines, quarantined attachments, API-token management, and an append-only audit view.
-- Account-level freemium access with one Free domain, a 20-domain Pro plan, Stripe Checkout,
-  dynamically configured monthly pricing, Customer Portal subscription management, and
-  signature-verified webhook synchronization.
+- Account-level Free Core and Pro Scale access with one or 20 active domains, monthly reply
+  allowances of 30 or 5,000 user-requested replies, Stripe Checkout, dynamically configured
+  monthly pricing, Customer Portal subscription management, and signature-verified webhook
+  synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
   sanitization, domain-local message threading, multi-domain delivery, and delivery-event processing.
 - Agent-authored immutable reply revisions, delegated exact-revision sending, explicit resend,
   account pause/rate controls, an operational Outbox, and conservative SES timeout handling that
   never retries an ambiguous submission automatically. New inbound mail is not assigned a built-in
   workflow state or repeatedly classified into an application-owned work queue.
-- Django Ninja `/api/v1`, an all-domain inbound message feed, CSRF-protected session access, and
-  one once-displayed, hashed personal bearer token with full operational access across all current
-  and future domains.
-- SQLite WAL deployment, encrypted integrity-checked backups, configurable retention, private S3
-  storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps configuration, and a
+- Django Ninja `/api/v1`, an active-domain inbound message feed, CSRF-protected session access, and
+  one once-displayed, hashed personal bearer token with plan-scoped operational access across all
+  authorized current and future domains.
+- SQLite WAL deployment, encrypted integrity-checked backups, fixed Free retention and custom Pro
+  retention, private S3 storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps
+  configuration, and a
   locked `origin/main` deployment flow.
 
 ## Architecture
@@ -112,10 +114,24 @@ message security verdicts. Threading is domain-local: RFC `References` is consid
 silently merges conversations. New inbound mail restores an archived or trashed conversation to
 Inbox, preserves its Star and tags, and invalidates any existing draft approval.
 
-The default plan limits are one active domain on Free and 20 active domains on Pro. Abuse controls
-allow 5 domain provisioning attempts per hour, 5 magic-link requests per hour, 3 legacy
-verification-link resend attempts per hour, and a 72-hour unverified domain claim. All limits are
-configurable through environment variables.
+Free Core allows one active domain, 30 user-requested one-to-one replies per UTC calendar month,
+fixed default retention, and no server-side AI classification. Pro Scale allows 20 active domains,
+5,000 user-requested one-to-one replies per UTC calendar month, custom retention, and server-side
+AI classification. Both plans expose the same API and MCP workflow for inbound feed/search,
+reversible organization, drafts, reply submission, delivery events, and account-wide Outbox safety.
+Inbound receiving and MCP tool calls have no commercial usage meter. Monthly reply allowances reset
+at 00:00 UTC on the first day of the next month; short-window outbound and abuse-prevention limits
+continue to apply independently.
+
+When a Pro Scale subscription becomes inactive while more than one domain is active, the account
+enters a 30-day over-capacity grace period. The owner can select the domain that keeps the Free Core
+slot. Other domains remain readable and keep receiving during grace; at expiry their receiving
+routes and outbound state are disabled, pending tests/transitions are closed safely, and the SES
+receipt-rule allowlist is reconciled. No new domain can be added while the account is at capacity.
+
+Abuse controls allow 5 domain provisioning attempts per hour, 5 magic-link requests per hour, 3
+legacy verification-link resend attempts per hour, and a 72-hour unverified domain claim. All
+limits are configurable through environment variables.
 
 ## Domain onboarding without breaking mail
 
@@ -184,8 +200,9 @@ writes customer records. Provider-forward domains with sending disabled are not 
   authentication verdicts remain visible as suspicious mail instead of being deleted.
 - Only a clean, unexpired attachment can receive an authorized S3 URL. The URL expires after five
   minutes. Quarantined/unscanned objects stay locked and retention-expired objects return `410`.
-- Logs and API errors carry request IDs but do not include message bodies, secrets, tenant S3
-  keys, or raw AWS details.
+- Logs and direct API error envelopes may carry request IDs, but MCP tool content does not expose
+  internal request identifiers. Neither surface includes message bodies, secrets, tenant S3 keys,
+  or raw AWS details.
 - Raw email and every metadata value are marked as untrusted data in model prompts. The model has
   no tools, cannot browse or open links, and receives only attachment filename/type/size/scan
   metadata—not attachment bytes.
@@ -195,10 +212,11 @@ revision. Operational Inbox does not generate reply copy. A connection with focu
 authority may queue the exact current revision without a second per-message approval prompt;
 revision ID, content hash, freshness, domain readiness, pause state, and send limits are revalidated.
 
-Operational Inbox does not schedule classification, aging, or report jobs and does not create
-in-app notifications. Security/quarantine and domain-health conditions create deduplicated email
-notifications. The user's agent decides concepts such as Requires reply, Aging, or project
-priority and may persist them as ordinary free-form tags.
+Operational Inbox does not autonomously schedule workflow classification, aging, or report jobs
+and does not create in-app notifications. Pro accounts may explicitly use server-side AI
+classification, but the user's agent still decides concepts such as Requires reply, Aging, or
+project priority and may persist them as ordinary free-form tags. Security/quarantine and
+domain-health conditions create deduplicated email notifications.
 
 ## Agent-authored outbound mail
 
@@ -301,7 +319,8 @@ python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
 
 - Django host, CSRF, HTTPS/cookie, database, email backend, and public URL settings;
 - domain/signup/verification-resend limits and `INBOUND_SERVICE_DOMAIN`;
-- account pause state plus minute, daily-account, and daily-domain outbound limits;
+- account pause state plus plan-specific minute, rolling-day, domain-day, and UTC-month outbound
+  limits;
 - dedicated AWS `us-east-1` credentials plus bucket, queue, topic, configuration-set, and
   receipt-rule names;
 - OpenAI API key and model names;
@@ -336,11 +355,14 @@ legacy-compatible report/notification reads, audits, API tokens, and attachment 
 authorization. `GET /api/v1/feed/messages` provides the owner-wide inbound feed with domain, full
 mailbox, tag, folder, new-only, and security filters.
 
-API and personal-token access are available on both Free and Pro. Domain onboarding through the
-API uses the same account limit as the web application: one active domain on Free and the configured
-Pro domain limit on Pro. Plan-gated capabilities such as reply drafts, outbound sending, Outbox
-controls, and custom retention remain Pro-only regardless of whether they are requested through the
-web application or API.
+API and personal-token access are available on both Free Core and Pro Scale. Domain onboarding
+through the API uses the same account capacity as the web application: one active domain on Free
+Core and up to 20 active domains on Pro Scale. Both plans can read the active-domain feed, search,
+organize, draft, submit replies, inspect delivery, and use account-wide Outbox pause/resume.
+Free Core permits 30 user-requested replies per UTC calendar month with fixed retention; Pro Scale
+permits 5,000 with custom retention and server-side AI classification. Monthly limits are enforced
+on reply results rather than raw API or MCP call counts, and inbound receiving has no hard
+commercial plan quota. Independent safety and abuse limits apply to every outbound path.
 
 Browser requests use the authenticated Django session and CSRF protection. External clients use
 a bearer token:
@@ -385,6 +407,14 @@ The public `https://operationalinbox.com/INSTALL.md` endpoint keeps
 the branded prompt URL stable and redirects to the raw `INSTALL.md` on the repository's `main`
 branch so agent readers receive the same source instructions.
 
+The fallback integration publishes `server_version`, `mcp_contract_version`, `skill_version`, and
+`minimum_skill_version` at `https://operationalinbox.com/agent-manifest.json`. The copied skill's
+`VERSION` file is compared through the read-only `get_integration_status` tool only during setup,
+explicit updates, or diagnostics. Ordinary mailbox work never performs a version check or implicit
+upgrade. MCP changes remain additive within a contract major version; breaking tool, schema,
+semantic, or scope changes require a major contract bump, a compatibility window, and a coordinated
+skill release.
+
 The agent-first plugin package lives at
 [`plugins/operational-inbox`](plugins/operational-inbox). It includes the
 portable Agent Plugins v1 manifest, the OpenAI/Codex compatibility manifest,
@@ -398,6 +428,11 @@ metadata is public; the MCP transport itself returns a protected-resource bearer
 authenticated, and every tool call enforces its `read`, `write`, `manage_domains`, or `send` scope.
 Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
 provider-neutral instructions, and verify the result; they never write customer DNS.
+Plugin and skill output describes account capacity and quotas neutrally. A non-renewing resource
+limit returns `capacity_reached` with `used`, `limit`, and no reset time; a renewable reply quota
+returns `quota_exhausted` with its period and next UTC `reset_at`; short-window protection returns
+`rate_limited` with retry timing. Plugin-facing output does not include plan promotion, pricing, or
+checkout direction.
 The plugin package remains the submission-ready distribution for the public plugin marketplace;
 until that listing is published, compatible agent clients should use the standalone skill above.
 See
@@ -408,7 +443,8 @@ checklist.
 
 ## Retention and recovery
 
-Each domain receives these default retention periods:
+Each domain receives these default retention periods. Free Core uses them as fixed policy; Pro
+Scale can customize domain retention within server-enforced bounds.
 
 | Data | Default |
 | --- | ---: |

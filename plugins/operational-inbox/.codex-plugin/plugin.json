@@ -1,7 +1,7 @@
 {
   "name": "operational-inbox",
   "version": "0.1.0",
-  "description": "Connect domains, triage inbound mail, and operate agent-authored replies.",
+  "description": "Connect authorized domains, triage inbound mail, and operate user-requested replies within returned account limits.",
   "author": {
     "name": "Operational Inbox",
     "email": "support@operationalinbox.com",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Operational Inbox",
     "shortDescription": "Set up, triage, and operate replies",
-    "longDescription": "Inspect and connect email domains, follow exact DNS setup plans, triage authorized mail, apply reversible organization, send exact agent-authored replies, and monitor their delivery.",
+    "longDescription": "Inspect and connect authorized email domains, follow exact DNS setup plans, triage mail, apply reversible organization, submit user-requested exact agent-authored replies within returned account limits, and monitor delivery.",
     "developerName": "Operational Inbox",
     "category": "Productivity",
     "capabilities": [

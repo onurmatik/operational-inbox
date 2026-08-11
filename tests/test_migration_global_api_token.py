@@ -9,10 +9,12 @@ from django.utils import timezone
 
 
 @pytest.mark.django_db(transaction=True)
-def test_api_tokens_become_global_and_only_newest_active_token_survives():
+def test_api_tokens_become_global_and_only_newest_active_token_survives(request):
     before = [("inbox", "0010_agent_delegated_outbound")]
     after = [("inbox", "0011_global_api_token")]
     executor = MigrationExecutor(connection)
+    latest = executor.loader.graph.leaf_nodes("inbox")
+    request.addfinalizer(lambda: MigrationExecutor(connection).migrate(latest))
     executor.migrate(before)
     old_apps = executor.loader.project_state(before).apps
     User = old_apps.get_model("inbox", "User")

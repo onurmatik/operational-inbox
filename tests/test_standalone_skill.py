@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +44,9 @@ else:
 def test_standalone_skill_contract() -> None:
     skill = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
     metadata = (SKILL_ROOT / "agents" / "openai.yaml").read_text(encoding="utf-8")
+    manifest = json.loads((REPOSITORY_ROOT / "agent-manifest.json").read_text(encoding="utf-8"))
+    skill_version = (SKILL_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    normalized_skill = " ".join(skill.split())
 
     assert skill.startswith("---\nname: operational-inbox\ndescription:")
     assert "TODO" not in skill
@@ -52,6 +56,10 @@ def test_standalone_skill_contract() -> None:
     assert "Never permanently delete mail" in skill
     assert "Never equate `ACCEPTED` with `DELIVERED`" in skill
     assert "resend_outbound" in skill
+    assert "Do not check for or install skill updates during ordinary mailbox work" in skill
+    assert "get_integration_status" in skill
+    assert "Never overwrite the installed skill implicitly" in normalized_skill
+    assert skill_version == manifest["skill_version"]
 
     assert 'display_name: "Operational Inbox"' in metadata
     assert 'icon_small: "./assets/logo.svg"' in metadata
@@ -76,7 +84,10 @@ def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     assert "CLI bundled with the macOS Codex" in guide
     assert "do not improvise another OAuth flow" in normalized_guide
     assert "call `list_domains` for a read-only connection check" in guide
-    assert "do not ask the user to reload or restart anything" in guide
+    assert "call `get_integration_status`" in normalized_guide
+    assert "Do not check for or install updates during ordinary mailbox work" in normalized_guide
+    assert "Never overwrite the skill implicitly" in guide
+    assert "do not ask the user to reload or restart anything" in normalized_guide
     assert "Do not prescribe a universal restart for other agents" in normalized_guide
     assert "Stop at the reload boundary" not in guide
 

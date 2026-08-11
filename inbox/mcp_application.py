@@ -21,7 +21,8 @@ from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from inbox.api import APIError, bearer_auth
+from inbox.api import APIError, bearer_auth, safe_error_details
+from inbox.integration_versions import SERVER_VERSION
 from inbox.mcp_server import MCP_TOOL_SCOPES, MCP_TOOLS, _dispatch_tool, _unwrap
 from inbox.models import APIToken, User
 from oauth_server.auth import verify_oauth_access_token
@@ -73,13 +74,14 @@ def _tool_result(value: Any) -> CallToolResult:
 
 
 def _tool_error(
-    request_id: str,
+    _request_id: str,
     code: str,
     message: str,
     *,
+    details: dict[str, Any] | None = None,
     meta: dict[str, Any] | None = None,
 ) -> CallToolResult:
-    payload = {"code": code, "message": message, "request_id": request_id}
+    payload = {"code": code, "message": message, **safe_error_details(details)}
     return CallToolResult(
         content=[TextContent(text=json.dumps(payload, separators=(",", ":")))],
         is_error=True,
@@ -301,7 +303,12 @@ class OperationalInboxMCPServer(MCPServer[None]):
             )
             return _tool_result(value)
         except APIError as exc:
-            return _tool_error(request_id, exc.code, exc.message)
+            return _tool_error(
+                request_id,
+                exc.code,
+                exc.message,
+                details=exc.details,
+            )
         except (APIToken.DoesNotExist, User.DoesNotExist):
             return _authentication_error(
                 request_id,
@@ -432,7 +439,7 @@ def create_mcp_application() -> ASGIApp:
         description="Tenant-safe operational email for people and agents.",
         instructions=SERVER_INSTRUCTIONS,
         website_url=settings.PUBLIC_BASE_URL,
-        version="0.1.0",
+        version=SERVER_VERSION,
     )
     application: ASGIApp = server.streamable_http_app(
         streamable_http_path="/mcp",

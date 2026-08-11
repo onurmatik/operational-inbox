@@ -14,16 +14,20 @@ from inbox.models import (
     ReplyDraftRevision,
     User,
 )
-from inbox.services.entitlements import require_pro
+from inbox.services.entitlements import can_manage_domain
 from inbox.services.outbound import require_outbound_capacity
 
 
 def create_authored_draft(
     *, message: Message, owner: User, subject: str, body_text: str
 ) -> ReplyDraft:
-    require_pro(owner, "Reply drafts")
     if message.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can create a reply draft.")
+    if not can_manage_domain(owner, message.domain):
+        raise ValidationError(
+            "This domain is read-only while the account exceeds its active-domain capacity.",
+            code="domain_read_only",
+        )
     if message.is_quarantined:
         raise ValidationError("A reply draft cannot be created for quarantined content.")
     with transaction.atomic():
@@ -52,12 +56,16 @@ def create_authored_draft(
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
-    require_pro(owner, "Reply drafts")
     locked = (
         ReplyDraft.objects.select_for_update().select_related("current_revision").get(id=draft.id)
     )
     if locked.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can edit a draft.")
+    if not can_manage_domain(owner, locked.domain):
+        raise ValidationError(
+            "This domain is read-only while the account exceeds its active-domain capacity.",
+            code="domain_read_only",
+        )
     current_revision = locked.current_revision
     if current_revision is None:
         next_number = 1
@@ -125,7 +133,6 @@ def _outbound_for_revision(
 def approve_exact_revision(
     *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
 ) -> OutboundMessage:
-    require_pro(owner, "Outbound sending")
     locked = (
         ReplyDraft.objects.select_for_update()
         .select_related("domain", "current_revision", "context_message", "conversation")
@@ -142,6 +149,11 @@ def approve_exact_revision(
         )
     if locked.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can approve a reply.")
+    if not can_manage_domain(owner, locked.domain):
+        raise ValidationError(
+            "This domain is read-only while the account exceeds its active-domain capacity.",
+            code="domain_read_only",
+        )
     approval = DraftApproval.objects.filter(revision=revision).first()
     if approval is not None:
         if (
@@ -174,7 +186,6 @@ def send_exact_revision(
     *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
 ) -> OutboundMessage:
     """Queue an exact agent-authored revision under an already-delegated send scope."""
-    require_pro(owner, "Outbound sending")
     locked = (
         ReplyDraft.objects.select_for_update()
         .select_related("domain", "current_revision", "context_message", "conversation")
@@ -189,6 +200,11 @@ def send_exact_revision(
         raise ValidationError({"content_hash": "The draft changed. Read the exact content again."})
     if locked.domain.owner_id != owner.id:
         raise ValidationError("The delegated send scope does not cover this draft.")
+    if not can_manage_domain(owner, locked.domain):
+        raise ValidationError(
+            "This domain is read-only while the account exceeds its active-domain capacity.",
+            code="domain_read_only",
+        )
     existing = revision.outbound_messages.order_by("attempt_number").first()
     if existing is not None:
         return existing
@@ -201,9 +217,13 @@ def send_exact_revision(
 
 @transaction.atomic
 def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessage:
-    require_pro(owner, "Outbound sending")
     if original.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can resend a message.")
+    if not can_manage_domain(owner, original.domain):
+        raise ValidationError(
+            "This domain is read-only while the account exceeds its active-domain capacity.",
+            code="domain_read_only",
+        )
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
         raise ValidationError("Only failed or unknown sends can be resent explicitly.")
     require_outbound_capacity(original.domain)

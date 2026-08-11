@@ -23,6 +23,7 @@ from inbox.models import (
     Report,
 )
 from inbox.services.ai import classify_message
+from inbox.services.domain_entitlements import reconcile_all_domain_capacities
 from inbox.services.domains import (
     expire_unverified_claims,
     provision_inbound,
@@ -298,6 +299,7 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
 def schedule_work(now=None) -> int:
     now = now or timezone.now()
     count = 0
+    count += reconcile_all_domain_capacities(now=now)
     expire_unverified_claims()
     recover_stale_submissions(now=now)
     # Repair the small commit/enqueue crash window in domain creation. Existing

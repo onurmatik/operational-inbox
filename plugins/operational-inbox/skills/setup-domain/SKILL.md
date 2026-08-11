@@ -34,9 +34,19 @@ changes when one is available and the user authorized those changes.
 
 ## Start onboarding and read the plan
 
+Call `get_account_limits` before starting a new claim. If active-domain usage exceeds its limit,
+report the selected `primary_domain_id` and authoritative `grace_ends_at` when present. Domain
+selection is completed in Operational Inbox domain settings; do not work around a read-only domain
+by retrying its mutations.
+
 Call `start_domain_onboarding` with the normalized hostname and selected mode. Repeated identical
 calls are safe, but do not change modes by retrying. Then call `get_domain_setup_plan` with the
 returned domain ID.
+
+If onboarding returns `capacity_reached`, report the `resource`, `used`, and `limit` exactly as
+returned. This capacity does not renew, so treat `reset_at: null` and `retryable: false` as
+authoritative. Do not retry, start a second claim, make DNS changes, name another plan, recommend
+an upgrade, show pricing, or direct the user to checkout.
 
 If `plan_ready` is false, report that Operational Inbox is still preparing the domain and retry the
 read only when the user asks to continue or the calling workflow supports bounded waiting. Do not

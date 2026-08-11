@@ -86,7 +86,7 @@ def test_free_domain_limit_is_enforced(monkeypatch, free_owner):
     make_domain(free_owner, "first.example")
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
 
-    with pytest.raises(ValidationError, match="at most 1"):
+    with pytest.raises(ValidationError, match="Active domain capacity is 1"):
         create_domain(
             owner=free_owner,
             hostname="second.example",
@@ -131,8 +131,9 @@ def test_free_api_token_uses_existing_domain_and_obeys_one_domain_limit(
         headers=headers,
     )
 
-    assert outbound.status_code == 403
-    assert outbound.json()["code"] == "upgrade_required"
+    assert outbound.status_code == 202
+    assert outbound.json()["outbound_status"] == Domain.OutboundStatus.PROVISIONING
+    assert outbound.json()["started"] is True
 
     monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
     second = client.post(
@@ -142,11 +143,99 @@ def test_free_api_token_uses_existing_domain_and_obeys_one_domain_limit(
         headers=headers,
     )
 
-    assert second.status_code == 400
-    assert second.json()["code"] == "validation_error"
-    assert second.json()["fields"] == {
-        "hostname": ["This plan can provision at most 1 domains."]
+    assert second.status_code == 409
+    assert second.json() == {
+        "code": "capacity_reached",
+        "message": "Active domain capacity is 1; current usage is 1.",
+        "fields": {},
+        "request_id": second.json()["request_id"],
+        "resource": "active_domains",
+        "used": 1,
+        "limit": 1,
+        "remaining": 0,
+        "reset_at": None,
+        "retryable": False,
     }
+
+
+@pytest.mark.django_db
+def test_domain_provision_rate_limit_returns_retry_timing(
+    client, monkeypatch, settings, owner, domain
+):
+    settings.DOMAIN_PROVISION_RATE_LIMIT = 1
+    settings.DOMAIN_PROVISION_RATE_WINDOW_SECONDS = 600
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    _, raw = APIToken.issue(owner=owner)
+
+    response = client.post(
+        "/api/v1/domains",
+        data={"hostname": "rate-limited.example", "setup_mode": "DIRECT_MX"},
+        content_type="application/json",
+        headers={"Authorization": f"Bearer {raw}"},
+    )
+
+    assert response.status_code == 429
+    payload = response.json()
+    assert payload["code"] == "rate_limited"
+    assert payload["resource"] == "domain_provisioning"
+    assert payload["retryable"] is True
+    assert payload["retry_after_seconds"] > 0
+    assert payload["next_allowed_at"]
+    assert response.headers["Retry-After"] == str(payload["retry_after_seconds"])
+    assert payload["request_id"]
+    assert "upgrade" not in response.content.decode().casefold()
+
+
+@pytest.mark.django_db
+def test_over_capacity_domain_is_readable_but_mutations_are_guarded_and_disable_is_allowed(
+    client, free_owner
+):
+    primary = make_domain(free_owner, "primary-grace.example")
+    read_only = make_domain(free_owner, "read-only-grace.example")
+    _, raw = APIToken.issue(owner=free_owner)
+    headers = {"Authorization": f"Bearer {raw}"}
+
+    detail = client.get(f"/api/v1/domains/{read_only.id}", headers=headers)
+    blocked = client.post(
+        f"/api/v1/domains/{read_only.id}/check",
+        data={},
+        content_type="application/json",
+        headers=headers,
+    )
+    primary_check = client.post(
+        f"/api/v1/domains/{primary.id}/check",
+        data={},
+        content_type="application/json",
+        headers=headers,
+    )
+    disabled = client.post(
+        f"/api/v1/domains/{read_only.id}/disable",
+        data={},
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert detail.status_code == 200
+    assert blocked.status_code == 403
+    assert blocked.json() == {
+        "code": "domain_read_only",
+        "message": (
+            "This domain is read-only while the account exceeds its active-domain capacity."
+        ),
+        "fields": {},
+        "request_id": blocked.json()["request_id"],
+        "resource": "active_domains",
+        "used": 2,
+        "limit": 1,
+        "remaining": 0,
+        "reset_at": None,
+        "retryable": False,
+    }
+    assert primary_check.status_code == 409
+    assert primary_check.json()["code"] == "dns_instructions_not_ready"
+    assert disabled.status_code == 202
+    read_only.refresh_from_db()
+    assert read_only.status == Domain.Status.DISABLED
 
 
 @pytest.mark.django_db
@@ -186,14 +275,15 @@ def test_free_conversation_has_no_server_side_draft_action(client, free_owner):
 
 @pytest.mark.django_db
 @pytest.mark.parametrize(
-    ("domain_status", "inbound_ready", "outbound_status"),
+    ("domain_status", "inbound_ready", "outbound_status", "expected_action"),
     [
-        (Domain.Status.PENDING_TEST, False, Domain.OutboundStatus.DISABLED),
-        (Domain.Status.READY, True, Domain.OutboundStatus.ERROR),
+        (Domain.Status.PENDING_TEST, False, Domain.OutboundStatus.DISABLED, None),
+        (Domain.Status.READY, True, Domain.OutboundStatus.DISABLED, b"Enable sending"),
+        (Domain.Status.READY, True, Domain.OutboundStatus.ERROR, b"Retry sending setup"),
     ],
 )
-def test_free_domain_detail_links_outbound_setup_to_upgrade(
-    client, free_owner, domain_status, inbound_ready, outbound_status
+def test_free_domain_detail_exposes_outbound_setup_without_upgrade_gate(
+    client, free_owner, domain_status, inbound_ready, outbound_status, expected_action
 ):
     domain = make_domain(free_owner, "outbound-upgrade.example")
     domain.status = domain_status
@@ -205,15 +295,14 @@ def test_free_domain_detail_links_outbound_setup_to_upgrade(
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
-    assert b"Inbound receiving remains available on Free" not in response.content
-    assert b"Outbound sending requires" not in response.content
-    assert b"Upgrade to set up outbound sending for this domain." in response.content
-    assert (
-        f'<a href="{reverse("billing")}" class="oi-button-secondary mt-3">Set up outbound</a>'
-    ).encode() in response.content
-    assert b"Enable sending" not in response.content
-    assert b"Retry sending setup" not in response.content
-    assert reverse("domain_enable_outbound", args=[domain.id]).encode() not in response.content
+    assert b"Upgrade to set up outbound sending" not in response.content
+    if expected_action is None:
+        assert b"Enable sending" not in response.content
+        assert b"Retry sending setup" not in response.content
+        assert reverse("domain_enable_outbound", args=[domain.id]).encode() not in response.content
+    else:
+        assert expected_action in response.content
+        assert reverse("domain_enable_outbound", args=[domain.id]).encode() in response.content
 
 
 @pytest.mark.django_db
@@ -277,12 +366,12 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"<del>USD 9.99</del>" in response.content
     assert b"USD 4.99" in response.content
     assert b"Up to 20 managed domains" in response.content
-    assert b"Receive at any address" in response.content
-    assert b"no per-address fee" in response.content
-    assert b"All-domain agent feed &amp; agent-authored replies" in response.content
-    assert b"Personal API access</span><span>Yes</span><span>Yes" in response.content
+    assert b"5,000 user-requested replies" in response.content
+    assert b"Custom retention &amp; server-side AI classification" in response.content
+    assert b"API &amp; MCP access</span><span>Yes</span><span>Yes" in response.content
+    assert b"Agent-authored drafts</span><span>Yes</span><span>Yes" in response.content
     assert f'method="post" action="{reverse("billing_checkout")}"'.encode() in response.content
-    assert "Upgrade to Pro · USD 4.99/month".encode() in response.content
+    assert "Upgrade to Pro Scale · USD 4.99/month".encode() in response.content
     assert b"Billed monthly through Stripe" in response.content
 
 
@@ -317,7 +406,7 @@ def test_billing_page_does_not_claim_promotion_for_other_prices(
     assert b"Limited-time price" not in response.content
     assert b"Regular price" not in response.content
     assert b"<del>" not in response.content
-    assert b"Pro price" in response.content
+    assert b"Pro Scale price" in response.content
     assert display_amount in response.content
     assert b"Upgrade to Pro" in response.content
     assert display_amount + b"/month" in response.content
@@ -371,14 +460,17 @@ def test_extra_free_domain_is_read_only_but_preserved(client, free_owner):
     session["domain_id"] = str(extra.id)
     session.save()
 
+    detail = client.get(reverse("conversation_detail", args=[conversation.id]))
     response = client.post(
         reverse("conversation_tag", args=[conversation.id]),
         {"operation": "add", "tag": "agent-reviewed"},
     )
 
     conversation.refresh_from_db()
+    assert detail.status_code == 200
+    assert b"This domain is read-only during the account's capacity grace period." in detail.content
     assert response.status_code == 302
-    assert response.url == reverse("billing")
+    assert response.url == reverse("domains")
     assert not conversation.tags.exists()
     assert Domain.objects.filter(id=extra.id, inbound_ready=True).exists()
 
@@ -464,3 +556,44 @@ def test_subscription_webhooks_are_idempotent_and_do_not_regress(monkeypatch, fr
     profile.refresh_from_db()
     assert profile.subscription_status == BillingProfile.SubscriptionStatus.ACTIVE
     assert StripeWebhookEvent.objects.count() == 2
+
+
+@pytest.mark.django_db
+@override_settings(STRIPE_SECRET_KEY="sk_test_example", DOMAIN_DOWNGRADE_GRACE_DAYS=30)
+def test_subscription_downgrade_starts_domain_capacity_grace(free_owner):
+    first = make_domain(free_owner, "downgrade-primary.example")
+    make_domain(free_owner, "downgrade-extra.example")
+    profile = BillingProfile.objects.create(
+        user=free_owner,
+        stripe_customer_id="cus_downgrade",
+        stripe_subscription_id="sub_downgrade",
+        subscription_status=BillingProfile.SubscriptionStatus.ACTIVE,
+        subscription_plan="pro",
+    )
+    event = stripe.Event.construct_from(
+        {
+            "id": "evt_downgrade",
+            "type": "customer.subscription.deleted",
+            "created": 300,
+            "data": {
+                "object": {
+                    "id": "sub_downgrade",
+                    "customer": "cus_downgrade",
+                    "status": "canceled",
+                    "metadata": {"operational_inbox_plan": "pro"},
+                    "cancel_at_period_end": False,
+                    "items": {"data": []},
+                }
+            },
+        },
+        "sk_test_example",
+    )
+    before = timezone.now()
+
+    assert process_event(event)
+
+    profile.refresh_from_db()
+    assert profile.subscription_status == BillingProfile.SubscriptionStatus.CANCELED
+    assert profile.free_primary_domain_id == first.id
+    assert before + timedelta(days=30) <= profile.domain_grace_ends_at
+    assert profile.domain_grace_ends_at <= timezone.now() + timedelta(days=30)

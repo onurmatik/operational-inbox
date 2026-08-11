@@ -33,6 +33,10 @@ not invent a built-in CRM or task workflow.
    `after` checkpoint.
 5. State the effective scope and any pagination or access limit in the result.
 
+Feed reads and triage actions are not outbound replies. Do not infer a monthly reply allowance from
+tool-call or inbound-message counts, and do not present ordinary feed pagination as an account
+quota.
+
 ## Decide workflow at the agent layer
 
 Operational Inbox does not define Requires reply, Aging, Open, Waiting, Resolved, or Start work.

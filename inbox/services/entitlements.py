@@ -32,7 +32,9 @@ FREE_ENTITLEMENTS = Entitlements(
     is_pro=False,
     domain_limit=FREE_DOMAIN_LIMIT,
     ai=False,
-    outbound=False,
+    # Free is a complete inbox workflow. Paid plans increase capacity instead of
+    # unlocking the ability to draft, send, or use the Outbox safety controls.
+    outbound=True,
     custom_settings=False,
 )
 PRO_ENTITLEMENTS = Entitlements(
@@ -69,7 +71,16 @@ def active_domains(user: User) -> QuerySet[Domain]:
 
 
 def free_primary_domain(user: User) -> Domain | None:
-    return active_domains(user).order_by("created_at", "id").first()
+    domains = active_domains(user)
+    try:
+        selected_id = user.billing_profile.free_primary_domain_id
+    except BillingProfile.DoesNotExist:
+        selected_id = None
+    if selected_id is not None:
+        selected = domains.filter(id=selected_id).first()
+        if selected is not None:
+            return selected
+    return domains.order_by("created_at", "id").first()
 
 
 def can_manage_domain(user: User, domain: Domain) -> bool:

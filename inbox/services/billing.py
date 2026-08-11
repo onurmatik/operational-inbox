@@ -177,6 +177,7 @@ def _profile_for_object(obj: Any) -> BillingProfile | None:
 def _apply_subscription(profile: BillingProfile, subscription: Any, *, event_created: int) -> None:
     if event_created < profile.last_stripe_event_created:
         return
+    was_pro = profile.is_pro
     status = str(subscription.get("status", BillingProfile.SubscriptionStatus.NONE))
     allowed = set(BillingProfile.SubscriptionStatus.values)
     profile.stripe_subscription_id = str(subscription.get("id"))
@@ -202,6 +203,10 @@ def _apply_subscription(profile: BillingProfile, subscription: Any, *, event_cre
             "updated_at",
         )
     )
+    if was_pro != profile.is_pro or not profile.is_pro:
+        from inbox.services.domain_entitlements import reconcile_domain_capacity
+
+        reconcile_domain_capacity(user=profile.user)
 
 
 def process_event(event: stripe.Event) -> bool:

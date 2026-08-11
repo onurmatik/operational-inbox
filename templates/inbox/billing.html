@@ -8,7 +8,7 @@
   </div>
 
   {% if request.GET.checkout == "success" %}
-    <div class="mt-6 border border-forest/30 bg-forest/5 p-4 text-sm">Checkout completed. Pro access will appear as soon as Stripe confirms the subscription.</div>
+    <div class="mt-6 border border-forest/30 bg-forest/5 p-4 text-sm">Checkout completed. Pro Scale access will appear as soon as Stripe confirms the subscription.</div>
   {% elif request.GET.checkout == "cancelled" %}
     <div class="mt-6 border border-line bg-white p-4 text-sm">Checkout was cancelled. Your current plan is unchanged.</div>
   {% endif %}
@@ -16,7 +16,7 @@
   <div class="mt-7 grid gap-6 lg:grid-cols-2">
     <section class="oi-panel p-6">
       <div class="flex items-start justify-between gap-4">
-        <div><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Current plan</p><h2 class="mt-1 font-heading text-2xl font-semibold">{% if plan_entitlements.is_pro %}Pro{% else %}Free{% endif %}</h2></div>
+        <div><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Current plan</p><h2 class="mt-1 font-heading text-2xl font-semibold">{% if plan_entitlements.is_pro %}Pro Scale{% else %}Free Core{% endif %}</h2></div>
         <span class="oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span>
       </div>
       {% if billing_profile %}
@@ -26,7 +26,7 @@
       {% if plan_entitlements.is_pro %}
         <form method="post" action="{% url 'billing_portal' %}" class="mt-6">{% csrf_token %}<button class="oi-button-secondary">Manage subscription</button></form>
       {% else %}
-        <p class="mt-4 text-sm text-ink">Run every operational address from one secure inbox.</p>
+        <p class="mt-4 text-sm text-ink">Keep the complete workflow and add capacity as your operations grow.</p>
         {% if price %}
           {% if price.is_promotional %}
             <div class="mt-4"><span class="oi-status oi-status-pending">Limited-time price</span></div>
@@ -38,20 +38,20 @@
             </div>
           {% else %}
             <div class="mt-4">
-              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Pro price</p>
+              <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Pro Scale price</p>
               <p class="mt-1 font-heading text-2xl font-semibold text-forest">{{ price.currency }} {{ price.amount }} <span class="font-sans text-sm font-normal text-muted">/ {{ price.interval }}</span></p>
             </div>
           {% endif %}
         {% endif %}
 
-        <ul class="mt-4 divide-y divide-line border-y border-line text-sm" aria-label="Pro plan highlights">
+        <ul class="mt-4 divide-y divide-line border-y border-line text-sm" aria-label="Pro Scale plan highlights">
           <li class="py-2.5"><span class="font-semibold">Up to {{ pro_domain_limit }} managed domains</span></li>
-          <li class="py-2.5"><span class="font-semibold">Receive at any address</span><span class="text-muted"> · no per-address fee</span></li>
-          <li class="py-2.5"><span class="font-semibold">All-domain agent feed &amp; agent-authored replies</span></li>
+          <li class="py-2.5"><span class="font-semibold">5,000 user-requested replies</span><span class="text-muted"> · per UTC calendar month</span></li>
+          <li class="py-2.5"><span class="font-semibold">Custom retention &amp; server-side AI classification</span></li>
         </ul>
 
         {% if billing_configured %}
-          <form method="post" action="{% url 'billing_checkout' %}" class="mt-6">{% csrf_token %}<button class="oi-button-primary w-full">Upgrade to Pro{% if price and price.amount %} · {{ price.currency }} {{ price.amount }}/{{ price.interval }}{% endif %}</button></form>
+          <form method="post" action="{% url 'billing_checkout' %}" class="mt-6">{% csrf_token %}<button class="oi-button-primary w-full">Upgrade to Pro Scale{% if price and price.amount %} · {{ price.currency }} {{ price.amount }}/{{ price.interval }}{% endif %}</button></form>
           <p class="mt-3 text-center font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Billed monthly through Stripe.</p>
         {% else %}
           <p class="mt-6 border border-line bg-paper p-3 text-sm text-muted">Online upgrades are temporarily unavailable.</p>
@@ -60,17 +60,19 @@
     </section>
 
     <section class="oi-panel overflow-hidden">
-      <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] border-b border-line bg-paper/60 px-5 py-3 font-mono text-[10px] uppercase tracking-[0.08em] text-muted"><span>Capability</span><span>Free</span><span>Pro</span></div>
+      <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] border-b border-line bg-paper/60 px-5 py-3 font-mono text-[10px] uppercase tracking-[0.08em] text-muted"><span>Capability</span><span>Free Core</span><span>Pro Scale</span></div>
       <div class="divide-y divide-line text-sm">
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Managed domains</span><span>1</span><span>20</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Secure inbox, search, attachments</span><span>Yes</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Tags, folders, and unlimited addresses</span><span>Yes</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Personal API access</span><span>Yes</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>All-domain agent feed</span><span>—</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Agent-authored reply delivery</span><span>—</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Outbox controls and delivery events</span><span>—</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_72px_72px] px-5 py-3"><span>Custom retention</span><span>—</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Managed domains</span><span>1</span><span>20</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Inbound receiving at routed addresses</span><span>Included</span><span>Included</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Active-domain feed, search, tags, folders</span><span>Yes</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>API &amp; MCP access</span><span>Yes</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Agent-authored drafts</span><span>Yes</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>User-requested reply delivery / month</span><span>30</span><span>5,000</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Outbox safety and delivery events</span><span>Yes</span><span>Yes</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Retention controls</span><span>Fixed</span><span>Custom</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Server-side AI classification</span><span>—</span><span>Yes</span></div>
       </div>
+      <p class="border-t border-line bg-paper/60 px-5 py-3 text-xs leading-5 text-muted">Reply allowances follow the UTC calendar month and reset at 00:00 UTC on day one. Inbound receiving and MCP tool calls do not consume that allowance. Technical and abuse-prevention safety limits apply to both plans.</p>
     </section>
   </div>
 {% endblock %}

@@ -14,10 +14,11 @@ from django.http import (
 )
 from django.shortcuts import render
 
+from inbox.integration_versions import AGENT_MANIFEST
+
 PLUGIN_ROOT = Path(settings.BASE_DIR) / "plugins" / "operational-inbox"
 INSTALL_INSTRUCTIONS_URL = (
-    "https://raw.githubusercontent.com/onurmatik/operational-inbox/"
-    "refs/heads/main/INSTALL.md"
+    "https://raw.githubusercontent.com/onurmatik/operational-inbox/refs/heads/main/INSTALL.md"
 )
 
 
@@ -57,6 +58,13 @@ def protected_resource_metadata(request: HttpRequest) -> JsonResponse:
     )
     response["Access-Control-Allow-Origin"] = "*"
     response["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
+def agent_manifest(request: HttpRequest) -> JsonResponse:
+    response = JsonResponse(AGENT_MANIFEST)
+    response["Access-Control-Allow-Origin"] = "*"
+    response["Cache-Control"] = "public, max-age=300"
     return response
 
 

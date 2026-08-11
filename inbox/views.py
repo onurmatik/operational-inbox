@@ -77,6 +77,7 @@ from inbox.services.billing import (
     process_event,
 )
 from inbox.services.conversations import apply_conversation_action, mark_conversation_viewed
+from inbox.services.domain_entitlements import domain_capacity, select_free_primary_domain
 from inbox.services.domains import (
     DomainClaimConflict,
     DomainClaimLookupError,
@@ -431,6 +432,14 @@ def _upgrade_required(request: HttpRequest, feature: str) -> HttpResponse:
 def _domain_write_required(request: HttpRequest, domain: Domain) -> HttpResponse | None:
     if can_manage_domain(request.user, domain):
         return None
+    capacity = domain_capacity(request.user)
+    if capacity.over_capacity:
+        messages.warning(
+            request,
+            "This domain is read-only while the account exceeds its active-domain capacity. "
+            "Choose the domain that should remain active.",
+        )
+        return redirect("domains")
     return _upgrade_required(request, "Managing additional domains")
 
 
@@ -1141,6 +1150,7 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
                 "delivery_events"
             ).order_by("-created_at"),
             "has_quarantined": conversation.messages.filter(is_quarantined=True).exists(),
+            "domain_writable": can_manage_domain(request.user, domain),
         },
     )
 
@@ -1244,6 +1254,8 @@ def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpRe
 @require_POST
 def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if denied := _domain_write_required(request, domain):
+        return denied
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Reply drafts")
     draft = domain_get_or_404(
@@ -1267,6 +1279,8 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @require_POST
 def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if denied := _domain_write_required(request, domain):
+        return denied
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Outbound sending")
     draft = domain_get_or_404(
@@ -1297,6 +1311,8 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @require_POST
 def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpResponse:
     domain = current_domain(request)
+    if denied := _domain_write_required(request, domain):
+        return denied
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Outbound sending")
     original = domain_get_or_404(
@@ -1322,6 +1338,7 @@ def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpRespons
 
 @verified_required
 def domains_list(request: HttpRequest) -> HttpResponse:
+    capacity = domain_capacity(request.user)
     return render(
         request,
         "inbox/domains_list.html",
@@ -1329,8 +1346,31 @@ def domains_list(request: HttpRequest) -> HttpResponse:
             "active_nav": "domains",
             "domains": Domain.objects.filter(owner=request.user),
             "limit": for_user(request.user).domain_limit,
+            "capacity": capacity,
+            "capacity_grace_days": settings.DOMAIN_DOWNGRADE_GRACE_DAYS,
         },
     )
+
+
+@verified_required
+@require_POST
+def domain_keep_on_free(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    domain = get_owned_domain(request.user, domain_id)
+    try:
+        capacity = select_free_primary_domain(user=request.user, domain=domain)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+    else:
+        grace_suffix = (
+            f" Other domains remain readable until {capacity.grace_ends_at:%Y-%m-%d %H:%M %Z}."
+            if capacity.grace_ends_at is not None
+            else ""
+        )
+        messages.success(
+            request,
+            f"{domain.hostname} will remain active on Free Core.{grace_suffix}",
+        )
+    return redirect("domains")
 
 
 @never_cache

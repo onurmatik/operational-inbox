@@ -8,6 +8,7 @@
     <div><dt class="text-sm font-semibold">MCP server</dt><dd class="mt-1 break-all font-mono text-sm">{{ mcp_resource_url }}</dd></div>
     <div><dt class="text-sm font-semibold">Authorization server</dt><dd class="mt-1 break-all font-mono text-sm">{{ oauth_issuer }}</dd></div>
     <div><dt class="text-sm font-semibold">Transport</dt><dd class="mt-1 text-sm">Streamable HTTP</dd></div>
+    <div><dt class="text-sm font-semibold">Integration versions</dt><dd class="mt-1 break-all font-mono text-sm"><a class="underline" href="{% url 'agent_manifest' %}">{% url 'agent_manifest' %}</a></dd></div>
   </dl>
 
   <h2 class="mt-10 text-2xl font-semibold">Scopes</h2>
@@ -23,4 +24,5 @@
 
   <h2 class="mt-10 text-2xl font-semibold">Prompt-based setup</h2>
   <p class="mt-3 leading-7">A prompt cannot make an unconfigured remote MCP server available by itself. Follow the public <a class="underline" href="{% url 'install_instructions' %}">INSTALL.md</a> to install the standalone <code>$operational-inbox</code> skill and configure the current agent's native MCP connection.</p>
+  <p class="mt-3 leading-7">Setup and explicit diagnostics can compare the copied skill's <code>VERSION</code> with <code>get_integration_status</code>. Ordinary mailbox work never checks for or installs updates, and an update is never applied implicitly.</p>
 {% endblock %}

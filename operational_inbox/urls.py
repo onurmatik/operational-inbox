@@ -7,6 +7,7 @@ from inbox import public_views, views
 from inbox.api import api
 
 urlpatterns = [
+    path("agent-manifest.json", public_views.agent_manifest, name="agent_manifest"),
     path(".well-known/openai-apps-challenge", public_views.openai_apps_challenge),
     path(
         ".well-known/oauth-protected-resource",

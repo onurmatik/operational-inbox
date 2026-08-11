@@ -119,6 +119,14 @@ class BillingProfile(UUIDTimeStampedModel):
     current_period_end = models.DateTimeField(null=True, blank=True)
     cancel_at_period_end = models.BooleanField(default=False)
     last_stripe_event_created = models.PositiveBigIntegerField(default=0)
+    free_primary_domain = models.ForeignKey(
+        "Domain",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    domain_grace_ends_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ("user__email",)

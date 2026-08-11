@@ -33,6 +33,22 @@ scope; do not add a second per-message approval prompt.
 Use `revise_reply_draft` for requested edits. Each edit creates an immutable new revision. A mere
 triage or review request never implies sending authority, even when the connection has `send`.
 
+## Capacity and safety results
+
+When reply capacity is uncertain, call `get_account_limits` before sending. Its outbound result is
+the authoritative UTC calendar-month usage and reset; short-window protections can still apply at
+send time.
+
+If `send_reply` returns `quota_exhausted`, preserve the draft and report the returned `used`,
+`limit`, `period`, and RFC 3339 `reset_at`. State the next permitted time in UTC; only describe it as
+a monthly reset when `period` is `calendar_month`. Do not retry through another tool or provider,
+name another plan, recommend an upgrade, show pricing, or direct the user to checkout. Drafting and
+review remain available.
+
+If it returns `rate_limited`, report `retry_after_seconds` and/or `next_allowed_at` exactly as
+returned and do not retry before that time. Keep monthly quota exhaustion distinct from a
+rolling safety quota or short-window rate limit.
+
 ## Resend
 
 Never retry a failed or unknown attempt automatically. A resend may duplicate a delivery whose

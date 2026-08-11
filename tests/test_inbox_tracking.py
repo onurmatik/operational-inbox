@@ -377,7 +377,7 @@ def test_quick_actions_require_csrf(client, owner, domain, conversation):
 
 
 @pytest.mark.django_db
-def test_viewed_transition_works_on_read_only_domain_but_manual_actions_require_upgrade(
+def test_viewed_transition_works_on_read_only_domain_but_manual_actions_require_selection(
     client,
     owner,
     domain,
@@ -415,5 +415,5 @@ def test_viewed_transition_works_on_read_only_domain_but_manual_actions_require_
     )
     read_only_conversation.refresh_from_db()
     assert action.status_code == 302
-    assert action.url == reverse("billing")
+    assert action.url == reverse("domains")
     assert read_only_conversation.starred_at is None

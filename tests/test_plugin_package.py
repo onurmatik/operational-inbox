@@ -99,6 +99,15 @@ def test_repo_marketplace_and_mcp_registry_point_to_the_release() -> None:
     ]
     assert registry["icons"][0]["sizes"] == ["512x512"]
 
+    integration = load_json(REPOSITORY_ROOT / "agent-manifest.json")
+    assert integration["server_version"] == project_version()
+    assert (
+        integration["skill_version"]
+        == (REPOSITORY_ROOT / ".agents" / "skills" / "operational-inbox" / "VERSION")
+        .read_text(encoding="utf-8")
+        .strip()
+    )
+
 
 def test_public_submission_covers_the_current_tool_surface() -> None:
     submission = load_json(REPOSITORY_ROOT / "chatgpt-app-submission.json")

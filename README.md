@@ -23,6 +23,11 @@ The guide installs the `$operational-inbox` skill, configures the agent’s nati
 and completes OAuth authorization without asking you to paste secrets into chat. See the
 [installation guide](INSTALL.md) for the full setup flow.
 
+Standalone-skill and MCP compatibility versions are published at
+[`/agent-manifest.json`](https://operationalinbox.com/agent-manifest.json). Version checks run only
+during setup, explicit updates, or connection diagnostics; ordinary inbox work never self-updates
+the copied skill.
+
 ## What agents can do
 
 - Inspect and set up domains with exact, provider-neutral DNS instructions.
@@ -42,10 +47,29 @@ workflows. Agents connect to the native MCP server with explicit `read`, `write`
 - Searchable conversation history, attachment quarantine, and audit trail.
 - Safe outbound sending with immutable revisions and conservative retry behavior.
 - Web application, Django Ninja API, standalone agent skill, and Streamable HTTP MCP server.
-- Tenant-scoped storage, configurable retention, and encrypted backups.
+- Tenant-scoped storage, plan-appropriate retention, and encrypted backups.
 
 Customer DNS is inspected but never modified. Organization actions are reversible, and ambiguous
 outbound submissions are never retried automatically.
+
+## Free Core and Pro Scale
+
+Both plans include the complete agent workflow: inbound receiving, the feed for every authorized
+active domain, search, tags and folders, immutable drafts, Outbox pause/resume and delivery events,
+and API + MCP access. MCP tool calls are not commercially metered, and incoming mail has no hard
+plan-volume quota. Technical and abuse-prevention safety limits still apply.
+
+- **Free Core:** one active domain, 30 user-requested one-to-one replies per UTC calendar month,
+  and fixed retention.
+- **Pro Scale:** up to 20 active domains, 5,000 user-requested one-to-one replies per UTC calendar
+  month, custom retention, and server-side AI classification.
+
+Reply allowances reset at 00:00 UTC on the first day of each month. Drafting and Outbox safety
+remain available when the reply allowance is exhausted.
+
+If an account returns to Free Core while more than one domain is active, it receives a 30-day
+capacity grace period. The owner chooses the domain that will keep the Free slot; the others remain
+readable during the grace period and are disabled when it ends.
 
 ## Documentation
 

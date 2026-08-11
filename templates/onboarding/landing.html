@@ -22,7 +22,7 @@
           <span class="text-forest">without another workspace.</span>
         </h1>
         <p class="mx-auto mt-6 max-w-xl text-base leading-7 text-muted md:text-lg">
-          Route unlimited addresses across your domains into one secure inbox and let your own agents organize them through a focused API.
+          Receive at any routed address across your domains in one secure inbox, then let your own agents organize and reply through focused API and MCP access.
         </p>
 
         <form action="{% url 'start_onboarding' %}" method="post" class="mx-auto mt-12 max-w-xl text-left">
@@ -123,9 +123,22 @@
       <section class="mx-auto max-w-[960px] px-4 pb-24 md:px-8" aria-labelledby="pricing-title">
         <div class="text-center"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Simple account plans</p><h2 id="pricing-title" class="mt-2 font-heading text-3xl font-semibold">Start free. Upgrade when operations grow.</h2></div>
         <div class="mt-8 grid gap-5 md:grid-cols-2">
-          <article class="oi-panel p-6"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Free</p><h3 class="mt-1 font-heading text-2xl font-semibold">One domain, every address</h3><p class="mt-3 text-sm leading-6 text-muted">Secure inbound mail, search, tags, attachments, personal API access, and audit history.</p><a href="#domain-input" class="oi-button-secondary mt-6">Start free</a></article>
-          <article class="border border-forest bg-forest p-6 text-white"><p class="font-mono text-[10px] uppercase tracking-[0.1em] text-white/70">Pro · monthly</p><h3 class="mt-1 font-heading text-2xl font-semibold">20 domains, every address</h3><p class="mt-3 text-sm leading-6 text-white/75">All-domain agent feed, agent-authored reply delivery, Outbox controls, and custom retention.</p><a href="#domain-input" class="mt-6 inline-flex min-h-11 items-center bg-white px-4 text-sm font-semibold text-forest">Create account</a></article>
+          <article class="oi-panel p-6">
+            <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Free Core</p>
+            <h3 class="mt-1 font-heading text-2xl font-semibold">One domain, complete workflow</h3>
+            <p class="mt-3 text-sm leading-6 text-muted">Secure inbound mail, the active-domain feed, search, tags, drafts, Outbox safety, and API + MCP access.</p>
+            <p class="mt-3 font-mono text-[10px] uppercase leading-5 tracking-[0.08em] text-muted">30 user-requested replies / UTC calendar month · fixed retention</p>
+            <a href="#domain-input" class="oi-button-secondary mt-6">Start free</a>
+          </article>
+          <article class="border border-forest bg-forest p-6 text-white">
+            <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-white/70">Pro Scale · monthly</p>
+            <h3 class="mt-1 font-heading text-2xl font-semibold">20 domains, higher capacity</h3>
+            <p class="mt-3 text-sm leading-6 text-white/75">The same complete agent workflow across every active domain, plus custom retention and server-side AI classification.</p>
+            <p class="mt-3 font-mono text-[10px] uppercase leading-5 tracking-[0.08em] text-white/70">5,000 user-requested replies / UTC calendar month · safety limits apply</p>
+            <a href="#domain-input" class="mt-6 inline-flex min-h-11 items-center bg-white px-4 text-sm font-semibold text-forest">Create account</a>
+          </article>
         </div>
+        <p class="mx-auto mt-5 max-w-2xl text-center text-xs leading-5 text-muted">Inbound receiving and MCP tool calls are not commercially metered. Reply allowances reset at 00:00 UTC on the first day of each month; technical and abuse-prevention limits apply to both plans.</p>
       </section>
     </main>
   </div>

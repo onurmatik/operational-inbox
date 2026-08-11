@@ -8,6 +8,30 @@
     "category": "PRODUCTIVITY"
   },
   "tools": {
+    "get_integration_status": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads published Operational Inbox server, MCP contract, and standalone-skill compatibility versions.",
+        "open_world_justification": "Returns version metadata stored by Operational Inbox without contacting or modifying third-party systems.",
+        "destructive_justification": "Does not install an update, overwrite a skill, change authentication, or modify mailbox state."
+      }
+    },
+    "get_account_limits": {
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Only reads current account capabilities, active-domain capacity, outbound-reply usage, and applicable reset times.",
+        "open_world_justification": "Retrieves stored Operational Inbox account state without contacting or modifying third-party systems.",
+        "destructive_justification": "Does not create a domain, change a limit, send a reply, or modify outbound controls."
+      }
+    },
     "list_domains": {
       "annotations": {
         "readOnlyHint": true,

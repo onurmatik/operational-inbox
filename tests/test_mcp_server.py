@@ -6,16 +6,25 @@ from datetime import timedelta
 
 import pytest
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.utils import timezone
 from jsonschema import Draft202012Validator, FormatChecker
 from oauth2_provider.models import get_access_token_model
 from starlette.testclient import TestClient
 
+from inbox import integration_versions
+from inbox.integration_versions import (
+    LATEST_SKILL_VERSION,
+    MCP_CONTRACT_VERSION,
+    MINIMUM_SKILL_VERSION,
+    SERVER_VERSION,
+)
 from inbox.mcp_application import create_mcp_application
 from inbox.mcp_server import MCP_TOOLS
 from inbox.models import (
     APIToken,
     AuditEvent,
+    BillingProfile,
     Domain,
     DomainDNSRecord,
     DraftApproval,
@@ -23,9 +32,21 @@ from inbox.models import (
     InboundRoute,
     MessageRecipient,
     OutboundMessage,
+    User,
 )
 from inbox.services.domains import classify_domain_routing
 from oauth_server.models import OAuthApplication
+
+
+def test_skill_version_status_uses_semver_compatibility(monkeypatch):
+    monkeypatch.setattr(integration_versions, "MINIMUM_SKILL_VERSION", "1.0.0")
+    monkeypatch.setattr(integration_versions, "LATEST_SKILL_VERSION", "1.2.0")
+
+    assert integration_versions.skill_status(None) == "unknown"
+    assert integration_versions.skill_status("0.9.9") == "upgrade_required"
+    assert integration_versions.skill_status("1.0.0") == "update_available"
+    assert integration_versions.skill_status("1.2.0") == "current"
+    assert integration_versions.skill_status("1.3.0") == "newer_than_server"
 
 
 @pytest.fixture
@@ -90,7 +111,9 @@ def tool_call(client, raw_token: str, name: str, arguments: dict, *, request_id=
 def tool_error_payload(result: dict) -> dict:
     assert result["isError"] is True
     assert "structuredContent" not in result
-    return json.loads(result["content"][0]["text"])
+    payload = json.loads(result["content"][0]["text"])
+    assert "request_id" not in payload
+    return payload
 
 
 def oauth_access_token(owner, *, scope: str) -> str:
@@ -179,6 +202,7 @@ def test_mcp_transport_requires_bearer_and_rejects_untrusted_origins(mcp_client,
     )
     assert authenticated.status_code == 200
     assert authenticated.json()["result"]["serverInfo"]["name"] == "operational-inbox"
+    assert authenticated.json()["result"]["serverInfo"]["version"] == SERVER_VERSION
 
     blocked = mcp_request(
         mcp_client,
@@ -210,6 +234,8 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
     tools = listed.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
     assert names == {
+        "get_integration_status",
+        "get_account_limits",
         "list_domains",
         "inspect_domain_dns",
         "start_domain_onboarding",
@@ -250,6 +276,144 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "destructiveHint": False,
         "openWorldHint": True,
     }
+    limits_tool = next(tool for tool in tools if tool["name"] == "get_account_limits")
+    assert limits_tool["securitySchemes"] == [{"type": "oauth2", "scopes": ["read"]}]
+    assert limits_tool["annotations"] == {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "openWorldHint": False,
+    }
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_integration_status_is_read_only_and_never_installs_updates(mcp_client, owner):
+    _, raw = APIToken.issue(owner=owner)
+
+    current = tool_call(
+        mcp_client,
+        raw,
+        "get_integration_status",
+        {"skill_version": LATEST_SKILL_VERSION},
+    )["structuredContent"]
+    assert current == {
+        "server_version": SERVER_VERSION,
+        "mcp_contract_version": MCP_CONTRACT_VERSION,
+        "latest_skill_version": LATEST_SKILL_VERSION,
+        "minimum_skill_version": MINIMUM_SKILL_VERSION,
+        "reported_skill_version": LATEST_SKILL_VERSION,
+        "skill_status": "current",
+        "upgrade_required": False,
+        "update_available": False,
+        "skill_update_url": "https://operationalinbox.com/INSTALL.md",
+    }
+
+    outdated = tool_call(
+        mcp_client,
+        raw,
+        "get_integration_status",
+        {"skill_version": "0.9.0"},
+    )["structuredContent"]
+    assert outdated["skill_status"] == "upgrade_required"
+    assert outdated["upgrade_required"] is True
+    assert outdated["update_available"] is False
+
+    unknown = tool_call(mcp_client, raw, "get_integration_status", {})["structuredContent"]
+    assert unknown["reported_skill_version"] is None
+    assert unknown["skill_status"] == "unknown"
+
+    invalid = tool_call(
+        mcp_client,
+        raw,
+        "get_integration_status",
+        {"skill_version": "latest"},
+    )
+    assert tool_error_payload(invalid)["code"] == "validation_error"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_account_limits_are_neutral_and_actionable(mcp_client):
+    free_owner = User.objects.create_user(
+        email="free-limits@example.com",
+        password="Correct-Horse-Battery-456",
+        email_verified_at=timezone.now(),
+        is_active=True,
+    )
+    _, raw = APIToken.issue(owner=free_owner)
+
+    payload = tool_call(mcp_client, raw, "get_account_limits", {})["structuredContent"]
+
+    assert payload["capabilities"] == {
+        "can_add_domain": True,
+        "can_create_reply_draft": True,
+        "can_send_reply": True,
+        "can_pause_outbound": True,
+    }
+    assert payload["limits"]["active_domains"] == {
+        "resource": "active_domains",
+        "used": 0,
+        "limit": 1,
+        "remaining": 1,
+        "reset_at": None,
+        "primary_domain_id": None,
+        "grace_ends_at": None,
+    }
+    outbound = payload["limits"]["outbound_replies"]
+    assert outbound["resource"] == "outbound_replies"
+    assert outbound["used"] == 0
+    assert outbound["limit"] > 0
+    assert outbound["remaining"] == outbound["limit"]
+    assert outbound["period"] == "calendar_month"
+    assert outbound["reset_at"] is not None
+    serialized = json.dumps(payload).casefold()
+    assert "upgrade" not in serialized
+    assert "price" not in serialized
+    assert "checkout" not in serialized
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_account_limits_reports_primary_domain_and_grace_deadline(mcp_client):
+    free_owner = User.objects.create_user(
+        email="free-grace-limits@example.com",
+        password="Correct-Horse-Battery-456",
+        email_verified_at=timezone.now(),
+        is_active=True,
+    )
+    first = Domain.objects.create(
+        owner=free_owner,
+        hostname="first-grace-limit.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    selected = Domain.objects.create(
+        owner=free_owner,
+        hostname="selected-grace-limit.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    grace_ends_at = (timezone.now() + timedelta(days=30)).replace(microsecond=0)
+    BillingProfile.objects.create(
+        user=free_owner,
+        free_primary_domain=selected,
+        domain_grace_ends_at=grace_ends_at,
+    )
+    _, raw = APIToken.issue(owner=free_owner)
+
+    active_domains = tool_call(mcp_client, raw, "get_account_limits", {})["structuredContent"][
+        "limits"
+    ]["active_domains"]
+
+    assert active_domains == {
+        "resource": "active_domains",
+        "used": 2,
+        "limit": 1,
+        "remaining": 0,
+        "reset_at": None,
+        "primary_domain_id": str(selected.id),
+        "grace_ends_at": grace_ends_at.isoformat().replace("+00:00", "Z"),
+    }
+    assert active_domains["primary_domain_id"] != str(first.id)
 
 
 @pytest.mark.django_db(transaction=True)
@@ -369,6 +533,100 @@ def test_mcp_domain_setup_inspects_starts_plans_and_queues_check(mcp_client, mon
 
 
 @pytest.mark.django_db(transaction=True)
+def test_mcp_domain_setup_explains_free_plan_limit(mcp_client, monkeypatch):
+    free_owner = User.objects.create_user(
+        email="free-mcp@example.com",
+        password="Correct-Horse-Battery-456",
+        email_verified_at=timezone.now(),
+        is_active=True,
+    )
+    Domain.objects.create(
+        owner=free_owner,
+        hostname="existing-free.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.READY,
+        inbound_ready=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    _, raw = APIToken.issue(owner=free_owner)
+
+    result = tool_call(
+        mcp_client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "second-free.example",
+            "setup_mode": Domain.SetupMode.DIRECT_MX,
+        },
+    )
+
+    error = tool_error_payload(result)
+    assert error == {
+        "code": "capacity_reached",
+        "message": "Active domain capacity is 1; current usage is 1.",
+        "resource": "active_domains",
+        "used": 1,
+        "limit": 1,
+        "remaining": 0,
+        "reset_at": None,
+        "retryable": False,
+    }
+    assert "free" not in json.dumps(error).casefold()
+    assert "pro" not in json.dumps(error).casefold()
+    assert "upgrade" not in json.dumps(error).casefold()
+    assert not Domain.objects.filter(hostname="second-free.example").exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_non_primary_domain_is_read_only_during_over_capacity_grace(mcp_client, monkeypatch):
+    free_owner = User.objects.create_user(
+        email="free-read-only-mcp@example.com",
+        password="Correct-Horse-Battery-456",
+        email_verified_at=timezone.now(),
+        is_active=True,
+    )
+    for hostname in ("primary-grace.example", "read-only-grace.example"):
+        Domain.objects.create(
+            owner=free_owner,
+            hostname=hostname,
+            setup_mode=Domain.SetupMode.DIRECT_MX,
+            status=Domain.Status.READY,
+            inbound_ready=True,
+            claim_expires_at=timezone.now() + timedelta(days=1),
+        )
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    _, raw = APIToken.issue(owner=free_owner)
+
+    result = tool_call(
+        mcp_client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "read-only-grace.example",
+            "setup_mode": Domain.SetupMode.DIRECT_MX,
+        },
+    )
+
+    assert tool_error_payload(result) == {
+        "code": "domain_read_only",
+        "message": (
+            "This domain is read-only while the account exceeds its active-domain capacity."
+        ),
+        "resource": "active_domains",
+        "used": 2,
+        "limit": 1,
+        "remaining": 0,
+        "reset_at": None,
+        "retryable": False,
+    }
+
+
+@pytest.mark.django_db(transaction=True)
 def test_mcp_domain_setup_requires_confirmation_for_non_recommended_route(
     mcp_client, monkeypatch, owner
 ):
@@ -465,9 +723,14 @@ def test_mcp_personal_token_can_inspect_any_hostname(mcp_client, monkeypatch, ow
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mcp_agent_authored_draft_sends_under_delegated_scope(
+def test_free_mcp_agent_authored_draft_sends_and_controls_outbox(
     mcp_client, owner, domain, conversation, inbound_message
 ):
+    profile = BillingProfile.objects.get(user=owner)
+    profile.subscription_status = BillingProfile.SubscriptionStatus.NONE
+    profile.subscription_plan = ""
+    profile.save(update_fields=("subscription_status", "subscription_plan", "updated_at"))
+    assert profile.is_pro is False
     MessageRecipient.objects.create(
         domain=domain,
         message=inbound_message,
@@ -533,3 +796,69 @@ def test_mcp_agent_authored_draft_sends_under_delegated_scope(
     assert control["structuredContent"]["paused"] is False
     paused = tool_call(mcp_client, raw, "set_outbound_paused", {"paused": True})
     assert paused["structuredContent"]["paused"] is True
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_send_quota_error_exposes_only_neutral_reset_contract(
+    mcp_client, monkeypatch, owner, domain, conversation, inbound_message
+):
+    MessageRecipient.objects.create(
+        domain=domain,
+        message=inbound_message,
+        kind=MessageRecipient.Kind.ENVELOPE,
+        address="privacy@example.com",
+        is_routing_recipient=True,
+    )
+    _, raw = APIToken.issue(owner=owner)
+    created = tool_call(
+        mcp_client,
+        raw,
+        "create_reply_draft",
+        {
+            "domain_id": str(domain.id),
+            "conversation_id": str(conversation.id),
+            "subject": "Re: Privacy request",
+            "body_text": "We received your request.",
+        },
+    )["structuredContent"]
+
+    def reject_send(**kwargs):
+        raise ValidationError(
+            "Internal plan-specific quota copy.",
+            code="outbound_monthly_limit",
+            params={
+                "resource": "outbound_replies",
+                "used": 30,
+                "limit": 30,
+                "scope": "account",
+                "period": "calendar_month",
+                "reset_at": "2026-09-01T00:00:00Z",
+                "request_id": "must-not-leak",
+            },
+        )
+
+    monkeypatch.setattr("inbox.api.send_exact_revision", reject_send)
+    result = tool_call(
+        mcp_client,
+        raw,
+        "send_reply",
+        {
+            "domain_id": str(domain.id),
+            "draft_id": created["id"],
+            "revision_id": created["revision_id"],
+            "content_hash": created["content_hash"],
+        },
+    )
+
+    assert tool_error_payload(result) == {
+        "code": "quota_exhausted",
+        "message": "The outbound reply quota is exhausted for the current period.",
+        "resource": "outbound_replies",
+        "used": 30,
+        "limit": 30,
+        "remaining": 0,
+        "scope": "account",
+        "period": "calendar_month",
+        "reset_at": "2026-09-01T00:00:00Z",
+        "retryable": True,
+    }

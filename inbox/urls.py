@@ -42,6 +42,11 @@ urlpatterns = [
         name="outbound_resend",
     ),
     path("app/domains/", views.domains_list, name="domains"),
+    path(
+        "app/domains/<uuid:domain_id>/keep-on-free/",
+        views.domain_keep_on_free,
+        name="domain_keep_on_free",
+    ),
     path("app/domains/new/", views.domain_create_view, name="domain_create"),
     path(
         "app/domains/inspect-mx/",
