@@ -1144,7 +1144,9 @@ def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(clie
     assert (
         b"onurmatik/operational-inbox/tree/main/.agents/skills/operational-inbox" in agents.content
     )
-    assert b"Help me connect this agent to Operational Inbox" in agents.content
+    assert (
+        b"Help me manage my operational inboxes using the Operational Inbox skill" in agents.content
+    )
     assert b"$operational-inbox" in agents.content
     assert b"Native MCP" in agents.content
     assert reverse("install_instructions").encode() in agents.content
