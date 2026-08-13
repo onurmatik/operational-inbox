@@ -35,6 +35,9 @@ def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
         'for suffix in ("deploy", "ingest", "scheduler", "dns", "retention", "backup")'
         in migration
     )
+    assert "descriptor = os.open(path, os.O_RDWR)" in migration
+    assert "lock_handles = []" in migration
+    assert "lock_handles = acquire_locks(args.project_name, args.app_user)" in migration
     assert '"--natural-foreign"' in migration
     assert '"--natural-primary"' not in migration
     assert '"contenttypes"' in migration

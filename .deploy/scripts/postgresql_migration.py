@@ -247,11 +247,27 @@ def reset_sequences(args, *, database_url: str | None = None) -> None:
     )
 
 
-def acquire_locks(project_name: str):
+def open_lock_file(path: Path, app_user: str):
+    """Open a shared lock without O_CREAT on an existing sticky-directory file."""
+
+    try:
+        descriptor = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o664)
+        except FileExistsError:
+            descriptor = os.open(path, os.O_RDWR)
+        else:
+            account = pwd.getpwnam(app_user)
+            os.fchown(descriptor, account.pw_uid, account.pw_gid)
+    return os.fdopen(descriptor, "r+")
+
+
+def acquire_locks(project_name: str, app_user: str):
     handles = []
     for suffix in ("deploy", "ingest", "scheduler", "dns", "retention", "backup"):
         path = Path(f"/run/lock/{project_name}-{suffix}.lock")
-        handle = path.open("a+")
+        handle = open_lock_file(path, app_user)
         deadline = time.monotonic() + 120
         while True:
             try:
@@ -306,10 +322,11 @@ def verify_sqlite(path: Path) -> dict[str, object]:
 
 
 def cutover(args, database: dict[str, str]) -> None:
-    lock_handles = acquire_locks(args.project_name)
+    lock_handles = []
     env_backup: Path | None = None
     services_opened = False
     try:
+        lock_handles = acquire_locks(args.project_name, args.app_user)
         service(args, "stop")
         fuser = shutil.which("fuser")
         if fuser:
@@ -407,7 +424,6 @@ def cutover(args, database: dict[str, str]) -> None:
         run(["systemctl", "restart", f"app@{args.project_name}.socket", args.mcp_service])
         services_opened = True
         print(f"cutover_backup={cutover_dir}")
-        del lock_handles
     except Exception as exc:
         if services_opened:
             service(args, "stop")
@@ -419,6 +435,9 @@ def cutover(args, database: dict[str, str]) -> None:
             print(f"SQLite rollback also failed: {rollback_exc}", file=sys.stderr)
         print(f"Cutover rolled back to SQLite: {exc}", file=sys.stderr)
         raise SystemExit(20) from exc
+    finally:
+        for handle in reversed(lock_handles):
+            handle.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
