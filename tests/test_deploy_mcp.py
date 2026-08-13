@@ -17,3 +17,27 @@ def test_mcp_runtime_contract_uses_a_dedicated_port_and_entrypoint():
     assert "finally:\n            restart_web_runtime(connection)" in fabfile
     assert "if not mcp_verified:" in fabfile
     assert 'systemctl restart {quote(MCP_SERVICE)}", warn=True' in fabfile
+
+
+def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
+    fabfile = (PROJECT_ROOT / ".deploy" / "fabfile.py").read_text()
+    migration = (
+        PROJECT_ROOT / ".deploy" / "scripts" / "postgresql_migration.py"
+    ).read_text()
+
+    runtime_keys = fabfile.split("RUNTIME_ENV_KEYS = (", 1)[1].split(")", 1)[0]
+    assert "DJANGO_DATABASE_URL" not in runtime_keys
+    assert "def prepare_postgresql" in fabfile
+    assert "def cutover_postgresql" in fabfile
+    assert "result.exited == 20" in fabfile
+    assert "roll-forward" in fabfile
+    assert (
+        'for suffix in ("deploy", "ingest", "scheduler", "dns", "retention", "backup")'
+        in migration
+    )
+    assert '"--natural-foreign"' in migration
+    assert '"--natural-primary"' not in migration
+    assert '"contenttypes"' in migration
+    assert '"auth.permission"' in migration
+    assert "validate_database_manifest" in migration
+    assert "validate_postgresql_sequences" in migration

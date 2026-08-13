@@ -31,7 +31,7 @@ overview and agent setup prompt, see the [README](README.md).
 - Django Ninja `/api/v1`, an active-domain inbound message feed, CSRF-protected session access, and
   one once-displayed, hashed personal bearer token with plan-scoped operational access across all
   authorized current and future domains.
-- SQLite WAL deployment, encrypted integrity-checked backups, fixed Free retention and custom Pro
+- PostgreSQL 17 production, SQLite local fallback, encrypted verified backups, fixed Free retention and custom Pro
   retention, private S3 storage, WhiteNoise static delivery, AWS CDK infrastructure, StageOps
   configuration, and a
   locked `origin/main` deployment flow.
@@ -64,7 +64,7 @@ Customer domain or provider catch-all
                          tenant S3 copies + short DB commit
                                               |
                                               v
-                          SQLite/WAL --> Django UI + /api/v1
+                         PostgreSQL 17 --> Django UI + /api/v1
 
 Exact approved revision --> durable job --> SES outbound --> delivery SNS
 Scheduled jobs ----------> security/domain email, DNS, retention, and outbound delivery
@@ -302,12 +302,12 @@ uv run python manage.py reconcile_ses_receipt_rule
 # Apply S3/database retention
 uv run python manage.py purge_retention
 
-# Create an online encrypted SQLite backup
-uv run python manage.py backup_sqlite
+# Create an encrypted, verified backup of the active database
+uv run python manage.py backup_database
 ```
 
-`backup_sqlite` requires `BACKUP_ENCRYPTION_KEY`, a URL-safe base64 encoding of exactly 32 random
-bytes:
+`backup_database` requires `BACKUP_ENCRYPTION_KEY`, a URL-safe base64 encoding of exactly 32
+random bytes. `backup_sqlite` remains a backend-aware compatibility alias for the StageOps cron:
 
 ```console
 python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
@@ -342,8 +342,9 @@ credential-compromise boundary, deploy the email data plane in a dedicated AWS a
 account, use an out-of-band policy reconciler that replaces the wildcard with the current managed
 identity ARNs.
 
-SQLite is the only configured application database. It uses WAL, a 20-second busy timeout,
-`IMMEDIATE` short transactions, one Gunicorn worker, and two threads.
+Production uses PostgreSQL 17 over SCRAM-protected loopback connections with health-checked,
+60-second persistent Django connections. Local development and tests retain the SQLite fallback
+with WAL, a 20-second busy timeout, and `IMMEDIATE` short transactions.
 
 ## API
 
@@ -451,7 +452,7 @@ Scale can customize domain retention within server-enforced bounds.
 | Raw MIME and attachment objects | 90 days |
 | Normalized message, classification, draft, and report content | 365 days |
 | Audit, delivery, ingress, and terminal-job metadata | 730 days |
-| Encrypted SQLite backups | 30 days |
+| Encrypted database backups | 30 days |
 
 The S3 bucket enforces the raw/attachment and backup lifecycles. The retention command removes S3
 objects and redacts normalized database content, recipients, classifications, draft/outbound
@@ -463,11 +464,12 @@ expire after the configured rate-limit window, and used or expired verification 
 deleted. Active/retry jobs are never removed by age. Audit events are append-only during normal
 operation; the retention path is the explicit expiration mechanism.
 
-Backups use SQLite's online backup API, verify both source and copy with `PRAGMA integrity_check`,
-then encrypt with AES-256-GCM before writing a mode-`0600` file. When the production bucket is
-configured, the command uploads the encrypted artifact under `backups/sqlite/` and verifies its
-size and SHA-256 metadata; S3 and the host both retain backups for 30 days. Deployment obtains
-every cron lock and creates this backup before migrations.
+SQLite backups use the online backup API and verify both source and copy with
+`PRAGMA integrity_check`. PostgreSQL backups use custom-format `pg_dump` and are inspected with
+`pg_restore --list`. Both paths encrypt with AES-256-GCM, write mode-`0600` artifacts, upload to
+backend-specific S3 prefixes, and verify size and SHA-256 metadata; S3 and the host retain backups
+for 30 days. Deployment obtains every cron lock and creates an active-backend backup before
+migrations. StageOps also protects the complete PostgreSQL 17 cluster with pgBackRest.
 
 ## AWS email data plane (CDK)
 
@@ -516,8 +518,11 @@ clones/fetches the configured private repository over HTTPS without persisting c
 host, checks out `main`, creates or reuses the Python 3.12 virtual environment, installs the frozen
 production [`requirements.txt`](requirements.txt), and safely merges only an explicit environment
 allowlist.
-It then stops the cold service, acquires every cron/deploy lock, backs up and verifies SQLite,
-runs migrations, collects static files, executes `check --deploy`, and restarts the socket.
+It then stops the cold service, acquires every cron/deploy lock, backs up and verifies the active
+database, runs migrations, collects static files, executes `check --deploy`, and restarts the
+socket. Normal deploys do not sync `DJANGO_DATABASE_URL`; PostgreSQL preparation and the SQLite
+cutover use the explicit `prepare-postgresql` and `cutover-postgresql` Fabric tasks documented in
+[`.deploy/README.md`](.deploy/README.md).
 
 Prepare the ignored local GitHub App credentials and production runtime configuration:
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -75,17 +76,28 @@ TEMPLATES = [
 WSGI_APPLICATION = "operational_inbox.wsgi.application"
 ASGI_APPLICATION = "operational_inbox.asgi.application"
 
-database_url = os.getenv("DJANGO_DATABASE_URL", "sqlite:///db.sqlite3")
-if not database_url.startswith("sqlite:///"):
-    raise ImproperlyConfigured("DJANGO_DATABASE_URL must use the sqlite:/// scheme.")
-sqlite_path = database_url.removeprefix("sqlite:///")
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / sqlite_path,
-        "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
+database_url = os.getenv("DJANGO_DATABASE_URL", "").strip() or "sqlite:///db.sqlite3"
+if database_url.startswith("sqlite:///"):
+    sqlite_path = database_url.removeprefix("sqlite:///")
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / sqlite_path,
+            "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
+        }
     }
-}
+elif database_url.startswith(("postgresql://", "postgres://")):
+    DATABASES = {
+        "default": dj_database_url.parse(
+            database_url,
+            conn_max_age=60,
+            conn_health_checks=True,
+        )
+    }
+else:
+    raise ImproperlyConfigured(
+        "DJANGO_DATABASE_URL must use the sqlite:/// or postgresql:// scheme."
+    )
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

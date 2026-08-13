@@ -50,8 +50,11 @@ cryptography==46.0.7
     #   pyjwt
 distro==1.9.0
     # via openai
+dj-database-url==3.1.2
+    # via operational-inbox
 django==5.2.16
     # via
+    #   dj-database-url
     #   django-ninja
     #   django-oauth-toolkit
     #   django-sesame
@@ -113,6 +116,10 @@ opentelemetry-api==1.44.0
     # via mcp
 packaging==26.2
     # via gunicorn
+psycopg==3.3.4
+    # via operational-inbox
+psycopg-binary==3.3.4 ; implementation_name != 'pypy'
+    # via psycopg
 pycparser==3.0 ; implementation_name != 'PyPy'
     # via cffi
 pydantic==2.13.4
@@ -177,6 +184,7 @@ typing-extensions==4.16.0
     #   mcp-types
     #   openai
     #   opentelemetry-api
+    #   psycopg
     #   pydantic
     #   pydantic-core
     #   referencing
@@ -188,7 +196,9 @@ typing-inspection==0.4.2
     #   mcp
     #   pydantic
 tzdata==2026.3 ; sys_platform == 'win32'
-    # via django
+    # via
+    #   django
+    #   psycopg
 urllib3==2.7.0
     # via
     #   botocore

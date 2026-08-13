@@ -49,6 +49,9 @@ PROJECT_DIR = f"/srv/apps/{PROJECT_NAME}"
 VENV_DIR = f"{PROJECT_DIR}/venv"
 BACKUP_DIR = f"/var/backups/{PROJECT_NAME}"
 REPO_URL = f"https://github.com/{GITHUB_APP_REPO}.git"
+POSTGRESQL_ROLE = "operationalinbox_app"
+POSTGRESQL_DATABASE = "operationalinbox"
+POSTGRESQL_STAGED_ENV = f"{PROJECT_DIR}/.env.postgresql"
 RUNTIME_ENV_KEYS = (
     "MAX_PROJECTS_PER_ORGANIZATION",
     "MAX_DOMAINS_PER_ORGANIZATION",
@@ -157,6 +160,14 @@ def app_run(connection: Connection, command: str, *, warn: bool = False):
     )
 
 
+def production_connection() -> Connection:
+    return Connection(
+        host=DEPLOY_HOST,
+        user=DEPLOY_USER,
+        connect_kwargs={"key_filename": str(Path(f"~/.ssh/{KEY_FILENAME}").expanduser())},
+    )
+
+
 def ensure_runtime_env(connection: Connection) -> None:
     env_path = f"{PROJECT_DIR}/.env"
     connection.sudo(
@@ -227,9 +238,7 @@ exec 5>/run/lock/{PROJECT_NAME}-retention.lock
 flock -w 120 5
 exec 4>/run/lock/{PROJECT_NAME}-backup.lock
 flock -w 120 4
-if [ -f db.sqlite3 ]; then
-  {python} manage.py backup_sqlite
-fi
+{python} manage.py backup_database
 {python} manage.py migrate --noinput
 {python} manage.py collectstatic --noinput
 {python} manage.py check --deploy
@@ -320,15 +329,165 @@ def restart_web_runtime(connection: Connection) -> None:
     connection.sudo(f"systemctl restart app@{PROJECT_NAME}.socket")
 
 
+def local_database_url() -> str:
+    path = DEPLOY_DIR.parent / ".env-prod"
+    if not path.is_file():
+        raise RuntimeError("The ignored .env-prod file is missing.")
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        if key.strip() != "DJANGO_DATABASE_URL":
+            continue
+        parsed = shlex.split(raw_value, comments=True, posix=True)
+        value = parsed[0] if parsed else ""
+        if "\n" in value or "\r" in value:
+            break
+        if value.startswith(("postgresql://", "postgres://")):
+            return value
+        break
+    raise RuntimeError(".env-prod does not contain a valid PostgreSQL DJANGO_DATABASE_URL.")
+
+
+def stage_database_env(connection: Connection) -> None:
+    payload = f"DJANGO_DATABASE_URL={quote(local_database_url())}\n"
+    temporary_path = connection.run("mktemp", hide=True).stdout.strip()
+    try:
+        connection.put(BytesIO(payload.encode()), remote=temporary_path)
+        connection.sudo(
+            f"install -o {quote(APP_USER)} -g {quote(APP_USER)} -m 600 "
+            f"{quote(temporary_path)} {quote(POSTGRESQL_STAGED_ENV)}"
+        )
+    finally:
+        connection.run(f"rm -f {quote(temporary_path)}", warn=True, hide=True)
+
+
+def remove_staged_database_env(connection: Connection) -> None:
+    connection.sudo(f"rm -f {quote(POSTGRESQL_STAGED_ENV)}", warn=True, hide=True)
+
+
+def remove_local_database_url() -> None:
+    path = DEPLOY_DIR.parent / ".env-prod"
+    lines = path.read_text().splitlines()
+    retained = [
+        line
+        for line in lines
+        if not (
+            line.strip()
+            and not line.lstrip().startswith("#")
+            and line.split("=", 1)[0].strip() == "DJANGO_DATABASE_URL"
+        )
+    ]
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text("\n".join(retained).rstrip("\n") + "\n")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def postgresql_migration_command(action: str) -> str:
+    script = f"{PROJECT_DIR}/.deploy/scripts/postgresql_migration.py"
+    arguments = [
+        "python3",
+        script,
+        action,
+        "--project-dir",
+        PROJECT_DIR,
+        "--backup-dir",
+        BACKUP_DIR,
+        "--staged-env",
+        POSTGRESQL_STAGED_ENV,
+        "--runtime-env",
+        f"{PROJECT_DIR}/.env",
+        "--sqlite-path",
+        f"{PROJECT_DIR}/db.sqlite3",
+        "--venv-python",
+        f"{VENV_DIR}/bin/python",
+        "--project-name",
+        PROJECT_NAME,
+        "--app-user",
+        APP_USER,
+        "--mcp-service",
+        MCP_SERVICE,
+        "--database-role",
+        POSTGRESQL_ROLE,
+        "--database-name",
+        POSTGRESQL_DATABASE,
+    ]
+    return " ".join(quote(value) for value in arguments)
+
+
+def verify_web_runtime(connection: Connection) -> None:
+    script = f"""
+import json
+import urllib.request
+
+for path, expected in (
+    ("/health/live", {{"status": "live"}}),
+    ("/health/ready", {{"status": "ready"}}),
+):
+    with urllib.request.urlopen("https://{DOMAIN}" + path, timeout=10) as response:
+        assert response.status == 200
+        assert json.load(response) == expected
+""".strip()
+    app_run(connection, f"{quote(VENV_DIR + '/bin/python')} -c {quote(script)}")
+
+
+@task
+def prepare_postgresql(_context) -> None:
+    """Prepare and verify the isolated PostgreSQL target without changing runtime .env."""
+    connection = production_connection()
+    stage_database_env(connection)
+    try:
+        connection.sudo(postgresql_migration_command("prepare"))
+    finally:
+        remove_staged_database_env(connection)
+
+
+@task
+def cutover_postgresql(_context) -> None:
+    """Move the stopped production runtime from SQLite to the prepared PostgreSQL database."""
+    connection = production_connection()
+    stage_database_env(connection)
+    try:
+        result = connection.sudo(postgresql_migration_command("cutover"), warn=True)
+        if result.exited == 20:
+            remove_local_database_url()
+            raise RuntimeError("PostgreSQL cutover failed and production was restored to SQLite.")
+        if result.failed:
+            raise RuntimeError(
+                "PostgreSQL cutover requires roll-forward; production services remain stopped."
+            )
+        try:
+            verify_web_runtime(connection)
+            verify_mcp_runtime(connection)
+            vendor_check = (
+                "from django.db import connection; "
+                "assert connection.vendor == 'postgresql'; print(connection.vendor)"
+            )
+            app_run(
+                connection,
+                f"{quote(VENV_DIR + '/bin/python')} manage.py shell --no-imports -c "
+                f"{quote(vendor_check)}",
+            )
+        except Exception as exc:
+            connection.sudo(
+                f"systemctl stop app@{PROJECT_NAME}.socket app@{PROJECT_NAME}.service "
+                f"{quote(MCP_SERVICE)}",
+                warn=True,
+            )
+            raise RuntimeError(
+                "PostgreSQL opened but live verification failed; roll-forward is required."
+            ) from exc
+    finally:
+        remove_staged_database_env(connection)
+
+
 @task
 def deploy(_context) -> None:
     """Deploy the origin/main release to the StageOps Hetzner host."""
     github_token = get_github_token()
-    connection = Connection(
-        host=DEPLOY_HOST,
-        user=DEPLOY_USER,
-        connect_kwargs={"key_filename": str(Path(f"~/.ssh/{KEY_FILENAME}").expanduser())},
-    )
+    connection = production_connection()
 
     connection.run(f"mkdir -p {quote(PROJECT_DIR)}")
     connection.run(f"chown {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
@@ -402,4 +561,4 @@ def deploy(_context) -> None:
             connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}", warn=True)
 
 
-ns = Collection(deploy)
+ns = Collection(deploy, prepare_postgresql, cutover_postgresql)
