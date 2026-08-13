@@ -56,9 +56,7 @@ def create_authored_draft(
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
-    locked = (
-        ReplyDraft.objects.select_for_update().select_related("current_revision").get(id=draft.id)
-    )
+    locked = ReplyDraft.objects.select_for_update().select_related("domain").get(id=draft.id)
     if locked.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can edit a draft.")
     if not can_manage_domain(owner, locked.domain):
@@ -135,7 +133,7 @@ def approve_exact_revision(
 ) -> OutboundMessage:
     locked = (
         ReplyDraft.objects.select_for_update()
-        .select_related("domain", "current_revision", "context_message", "conversation")
+        .select_related("domain", "context_message", "conversation")
         .get(id=draft.id)
     )
     revision = locked.current_revision
@@ -188,7 +186,7 @@ def send_exact_revision(
     """Queue an exact agent-authored revision under an already-delegated send scope."""
     locked = (
         ReplyDraft.objects.select_for_update()
-        .select_related("domain", "current_revision", "context_message", "conversation")
+        .select_related("domain", "context_message", "conversation")
         .get(id=draft.id)
     )
     revision = locked.current_revision
