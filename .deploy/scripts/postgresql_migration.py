@@ -163,10 +163,40 @@ def prepare_postgresql(args, database: dict[str, str]) -> None:
         f"GRANT CONNECT, TEMPORARY ON DATABASE {database_name} TO {role};",
     )
     psql(
-        "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+        "REVOKE ALL ON SCHEMA public FROM PUBLIC;\n"
         f"GRANT USAGE, CREATE ON SCHEMA public TO {role};",
         database=database["database"],
     )
+    database_public_privileges = psql(
+        "SELECT COALESCE(string_agg(a.privilege_type, ',' ORDER BY a.privilege_type), "
+        "'none') FROM pg_database d CROSS JOIN LATERAL "
+        "aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a "
+        "WHERE d.datname = current_database() AND a.grantee = 0;",
+        database=database["database"],
+        capture=True,
+    )
+    schema_public_privileges = psql(
+        "SELECT COALESCE(string_agg(a.privilege_type, ',' ORDER BY a.privilege_type), "
+        "'none') FROM pg_namespace n CROSS JOIN LATERAL "
+        "aclexplode(COALESCE(n.nspacl, acldefault('n', n.nspowner))) a "
+        "WHERE n.nspname = 'public' AND a.grantee = 0;",
+        database=database["database"],
+        capture=True,
+    )
+    application_privileges = psql(
+        f"SELECT has_database_privilege({sql_literal(database['role'])}, "
+        f"{sql_literal(database['database'])}, 'CONNECT,TEMPORARY') || ':' || "
+        f"has_schema_privilege({sql_literal(database['role'])}, 'public', "
+        "'USAGE,CREATE');",
+        database=database["database"],
+        capture=True,
+    )
+    if (
+        database_public_privileges != "none"
+        or schema_public_privileges != "none"
+        or application_privileges != "true:true"
+    ):
+        raise MigrationError("The PostgreSQL database or schema privileges are invalid.")
     role_flags = psql(
         "SELECT (CASE WHEN rolcanlogin THEN '1' ELSE '0' END) || ':' || "  # noqa: S608
         "(CASE WHEN rolsuper THEN '1' ELSE '0' END) || ':' || "

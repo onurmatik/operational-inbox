@@ -38,6 +38,8 @@ def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
     assert "descriptor = os.open(path, os.O_RDWR)" in migration
     assert "lock_handles = []" in migration
     assert "lock_handles = acquire_locks(args.project_name, args.app_user)" in migration
+    assert '"REVOKE ALL ON SCHEMA public FROM PUBLIC;' in migration
+    assert "a.grantee = 0" in migration
     assert '"--natural-foreign"' in migration
     assert '"--natural-primary"' not in migration
     assert '"contenttypes"' in migration
