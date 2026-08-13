@@ -17,8 +17,13 @@ from django.test import override_settings
 
 from inbox.database_validation import build_database_manifest
 from inbox.management.commands import backup_database
+from inbox.models import AuditEvent
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_audit_request_ids_preserve_legacy_migration_values():
+    assert AuditEvent._meta.get_field("request_id").max_length == 96
 
 
 def _settings_for(database_url: str):

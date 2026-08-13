@@ -1147,7 +1147,7 @@ class AuditEvent(DomainScopedModel):
     event_type = models.CharField(max_length=96)
     object_type = models.CharField(max_length=64)
     object_id = models.UUIDField(null=True, blank=True)
-    request_id = models.CharField(max_length=64, db_index=True)
+    request_id = models.CharField(max_length=96, db_index=True)
     metadata = models.JSONField(default=dict)
 
     objects = AuditEventQuerySet.as_manager()
