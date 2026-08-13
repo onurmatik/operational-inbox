@@ -99,9 +99,10 @@ def postgresql_sequence_status() -> list[dict[str, Any]]:
             )
             privileged = cursor.fetchone()[0]
             if maximum is None:
-                if next_value != start_value:
+                if next_value < start_value:
                     raise RuntimeError(
-                        f"Empty table {table} would generate {next_value}, expected {start_value}."
+                        f"Empty table {table} would generate {next_value}, "
+                        f"below sequence start {start_value}."
                     )
             elif next_value <= maximum:
                 raise RuntimeError(
