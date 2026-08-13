@@ -628,7 +628,7 @@ def finalize_routing_transition_test(
     with transaction.atomic():
         locked_test = (
             DomainTest.objects.select_for_update()
-            .select_related("routing_transition", "domain")
+            .select_related("domain")
             .get(id=test.id)
         )
         if (

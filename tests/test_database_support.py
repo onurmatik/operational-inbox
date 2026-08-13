@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 from django.test import override_settings
 
 from inbox.database_validation import build_database_manifest
@@ -158,6 +159,8 @@ def test_database_manifest_is_deterministic(tmp_path):
 
 @pytest.mark.django_db
 def test_postgresql_only_checks_fail_closed_on_sqlite():
+    if connection.vendor != "sqlite":
+        pytest.skip("SQLite fail-closed behavior requires the SQLite test backend.")
     with pytest.raises(CommandError, match="not PostgreSQL"):
         call_command("validate_postgresql_sequences", verbosity=0)
     with pytest.raises(CommandError, match="not PostgreSQL"):

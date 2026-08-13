@@ -586,7 +586,7 @@ def test_provider_forward_dns_check_does_not_query_customer_ses(project):
     )
     assert audit.actor_type == AuditEvent.ActorType.SYSTEM
     assert audit.object_type == "DomainTest"
-    assert audit.request_id == f"dns:{domain.id}:test:{test.id}"
+    assert audit.request_id == f"dns:test:{test.id}"
 
 
 @pytest.mark.django_db
@@ -672,7 +672,7 @@ def test_dns_check_auto_creates_and_reuses_the_transition_challenge(project):
     )
     assert audit.actor_type == AuditEvent.ActorType.SYSTEM
     assert audit.object_type == "DomainTest"
-    assert audit.request_id == f"dns:{domain.id}:test:{test.id}"
+    assert audit.request_id == f"dns:test:{test.id}"
     assert audit.metadata == {
         "routing_transition_id": str(transition.id),
         "setup_generation": transition.generation,

@@ -259,7 +259,7 @@ class Command(BaseCommand):
                     event_type="domain.routing_transition_test_created",
                     object_type="DomainTest",
                     object_id=test.id,
-                    request_id=f"dns:{transition.domain_id}:test:{test.id}",
+                    request_id=f"dns:test:{test.id}",
                     metadata={
                         "routing_transition_id": str(transition.id),
                         "setup_generation": test.setup_generation,
@@ -295,7 +295,7 @@ class Command(BaseCommand):
                     event_type="domain.test_created",
                     object_type="DomainTest",
                     object_id=test.id,
-                    request_id=f"dns:{domain.id}:test:{test.id}",
+                    request_id=f"dns:test:{test.id}",
                     metadata={"setup_generation": test.setup_generation},
                 )
         self.stdout.write(
