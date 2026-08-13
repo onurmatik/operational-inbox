@@ -228,7 +228,12 @@ def reset_sequences(args, *, database_url: str | None = None) -> None:
         database_url=database_url,
         capture=True,
     )
-    if not sql.strip():
+    sql = "\n".join(
+        line
+        for line in sql.splitlines()
+        if line.strip().upper() not in {"BEGIN;", "COMMIT;", "BEGIN", "COMMIT"}
+    ).strip()
+    if not sql:
         raise MigrationError("Django did not produce PostgreSQL sequence reset SQL.")
     app_manage(
         args,
@@ -238,7 +243,7 @@ def reset_sequences(args, *, database_url: str | None = None) -> None:
         "ON_ERROR_STOP=1",
         "-1",
         database_url=database_url,
-        input_text=sql,
+        input_text=sql + "\n",
     )
 
 

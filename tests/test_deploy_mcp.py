@@ -41,3 +41,4 @@ def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
     assert '"auth.permission"' in migration
     assert "validate_database_manifest" in migration
     assert "validate_postgresql_sequences" in migration
+    assert '{"BEGIN;", "COMMIT;", "BEGIN", "COMMIT"}' in migration
