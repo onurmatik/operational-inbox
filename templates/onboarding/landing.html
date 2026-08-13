@@ -22,33 +22,66 @@
           <span class="text-forest">without another workspace.</span>
         </h1>
         <p class="mx-auto mt-6 max-w-xl text-base leading-7 text-muted md:text-lg">
-          Receive at any routed address across your domains in one secure inbox, then let your own agents organize and reply through focused API and MCP access.
+          Bring every routed address across your domains into one secure inbox. Manage mail yourself or let your agents organize and reply through focused API and MCP access.
         </p>
 
-        <form action="{% url 'start_onboarding' %}" method="post" class="mx-auto mt-12 max-w-xl text-left">
-          {% csrf_token %}
-          <label for="domain-input" class="oi-label">Enter your domain to start managing mail</label>
-          <div class="flex flex-col gap-3 sm:flex-row">
-            <input
-              type="text"
-              id="domain-input"
-              name="hostname"
-              value="{{ hostname|default:'' }}"
-              placeholder="your-domain.com"
-              class="oi-input flex-1"
-              autocomplete="url"
-              autocapitalize="none"
-              spellcheck="false"
-              required
-            >
-            <button type="submit" class="oi-button-primary whitespace-nowrap sm:px-8">
-              Start managing mail
-              <img src="{% static 'img/arrow-right.svg' %}" alt="" class="size-[18px] brightness-0 invert" aria-hidden="true">
-            </button>
+        <div class="mx-auto mt-12 max-w-xl">
+          <form action="{% url 'start_onboarding' %}" method="post" class="text-left">
+            {% csrf_token %}
+            <label for="domain-input" class="oi-label">Enter your domain to start managing mail</label>
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <input
+                type="text"
+                id="domain-input"
+                name="hostname"
+                value="{{ hostname|default:'' }}"
+                placeholder="your-domain.com"
+                class="oi-input flex-1"
+                autocomplete="url"
+                autocapitalize="none"
+                spellcheck="false"
+                required
+              >
+              <button type="submit" class="oi-button-primary whitespace-nowrap sm:px-8">
+                Start managing mail
+                <img src="{% static 'img/arrow-right.svg' %}" alt="" class="size-[18px] brightness-0 invert" aria-hidden="true">
+              </button>
+            </div>
+            {% if domain_error %}<p class="mt-2 text-xs text-coral-strong" role="alert">{{ domain_error }}</p>{% endif %}
+          </form>
+
+          <div class="my-7 flex items-center gap-5" aria-hidden="true">
+            <span class="h-px flex-1 bg-line-strong"></span>
+            <span class="font-mono text-sm font-semibold uppercase tracking-[0.16em] text-ink">OR</span>
+            <span class="h-px flex-1 bg-line-strong"></span>
           </div>
-          {% if domain_error %}<p class="mt-2 text-xs text-coral-strong" role="alert">{{ domain_error }}</p>{% endif %}
-          <p class="mt-4 text-center text-sm text-muted">No password required.</p>
-        </form>
+
+          <section aria-labelledby="agent-start-heading">
+            <h2 id="agent-start-heading" class="font-heading text-xl font-semibold">Let your agent take care</h2>
+            <p class="sr-only">
+              Example agent prompts: @OperationalInbox onboard myproject.com;
+              @OperationalInbox brief mail from 24h;
+              @OperationalInbox draft help replies;
+              @OperationalInbox flag urgent mail;
+              @OperationalInbox list unread messages.
+            </p>
+            <div
+              class="mt-4 flex min-h-12 w-full items-center justify-start overflow-hidden text-left font-mono text-[11px] font-medium leading-6 text-forest-strong sm:text-sm"
+              data-agent-prompt-examples
+              data-agent-prompts='["onboard myproject.com","brief mail from 24h","draft help replies","flag urgent mail","list unread messages"]'
+              aria-hidden="true"
+            >
+              <span class="shrink-0" data-agent-prompt-prefix>@OperationalInbox&nbsp;</span>
+              <span class="min-w-0 whitespace-nowrap" data-agent-prompt-example>onboard myproject.com</span>
+              <span class="ml-1 h-4 w-px shrink-0 animate-pulse bg-forest" data-agent-prompt-cursor aria-hidden="true"></span>
+            </div>
+            <p class="mt-2 text-sm leading-6 text-muted">Paste this instruction into your agent to install the skill and connect securely.</p>
+            <div class="mt-4 overflow-hidden border border-ink bg-white text-left">
+              <pre id="landing-agent-prompt" class="whitespace-pre-wrap p-4 font-mono text-xs leading-6 text-ink">Help me manage my operational inboxes using the Operational Inbox skill. Read https://operationalinbox.com/INSTALL.md and follow every step.</pre>
+              <button type="button" class="flex min-h-12 w-full items-center justify-center border-t border-ink bg-ink px-4 font-mono text-xs font-semibold uppercase tracking-[0.06em] text-white transition-colors hover:bg-forest" data-copy-target="landing-agent-prompt" data-copy-label="Copy agent prompt" aria-live="polite">Copy agent prompt</button>
+            </div>
+          </section>
+        </div>
       </section>
 
       <section class="mx-auto max-w-[1120px] px-4 pb-20 md:px-8" aria-label="Operational Inbox preview">

@@ -58,6 +58,20 @@ def test_anonymous_home_renders_domain_first_landing_and_cta(client):
     assert b'name="hostname"' in response.content
     assert b'placeholder="your-domain.com"' in response.content
     assert b"Start managing mail" in response.content
+    assert b"Manage mail yourself or let your agents" in response.content
+    assert b"Let your agent take care" in response.content
+    assert b"Help me manage my operational inboxes using the Operational Inbox skill" in response.content
+    assert b'data-copy-target="landing-agent-prompt"' in response.content
+    assert b"No password required." not in response.content
+    assert b">OR</span>" in response.content
+    assert b"data-agent-prompt-examples" in response.content
+    assert b"data-agent-prompt-prefix" in response.content
+    assert b"@OperationalInbox onboard myproject.com" in response.content
+    assert b"@OperationalInbox brief mail from 24h" in response.content
+    assert b"@OperationalInbox draft help replies" in response.content
+    assert b"@OperationalInbox flag urgent mail" in response.content
+    assert b"@OperationalInbox list unread messages" in response.content
+    assert b'data-agent-prompts=' in response.content
     assert f'href="{reverse("login")}"'.encode() in response.content
 
 

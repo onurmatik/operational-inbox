@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/": {
+      "targetKind": "existing-ui",
+      "projectId": "04a87f91-aea0-4c8f-b358-afc8e0bbf553",
+      "baselineDraftId": "e3cf3269-d5b3-44c8-a50f-c532cd3c023d",
+      "activeDraftId": "38f272f1-c21e-4657-b562-bb5b4882a3ca",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        "templates/onboarding/landing.html",
+        "templates/base.html",
+        "assets/css/app.css",
+        "inbox/static/js/app.js",
+        "inbox/static/img/logo.svg",
+        "inbox/static/img/arrow-right.svg"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "6b1627dc38e2231d1a305fb9a6aaa2915da2baa396fbe6fd089aa74be75639ec",
+        "templates/onboarding/landing.html": "a7280284c66b91d3951bb7d5e3a4655f3eacf488de2e1d1121f3857731194ac2",
+        "templates/base.html": "a58cec166266ec6a33765ba1d1052b69605d51e9bf65c32881d5d55a070ef154",
+        "assets/css/app.css": "d3846413f3fe1af64a7ffc7e15c82072e5bd150a77fa0f7b5b32352470a1aa6f",
+        "inbox/static/js/app.js": "0127fb84c9cf52bd834ac1aaff0c2369df902913cb46abcaa5be20aec4e90e43",
+        "inbox/static/img/logo.svg": "2ead0c3af0e93277c417d7b9d882065163641ff3d0e83eab3db042c01aaf8ccd",
+        "inbox/static/img/arrow-right.svg": "ce9c1fb130756283654e09c343af520e8d75bc5b40dac0882c72b70a37fbd270"
+      },
+      "components": [],
+      "drafts": {
+        "e3cf3269-d5b3-44c8-a50f-c532cd3c023d": {
+          "title": "Operational Inbox Landing Page",
+          "visualDirection": "faithful landing baseline",
+          "currentVersion": 1
+        },
+        "38f272f1-c21e-4657-b562-bb5b4882a3ca": {
+          "title": "Operational Inbox Landing Page - Enhanced Command Animation",
+          "visualDirection": "left-aligned single-line command animation with a fixed OperationalInbox prefix",
+          "parentDraftId": "e3cf3269-d5b3-44c8-a50f-c532cd3c023d",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-08-12T13:50:33Z"
+    }
+  }
+}

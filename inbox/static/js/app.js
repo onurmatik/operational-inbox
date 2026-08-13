@@ -516,9 +516,67 @@
     });
   };
 
+  const initAgentPromptExamples = () => {
+    document.querySelectorAll("[data-agent-prompt-examples]").forEach((container) => {
+      const output = container.querySelector("[data-agent-prompt-example]");
+      const cursor = container.querySelector("[data-agent-prompt-cursor]");
+      if (!output) return;
+
+      let prompts = [];
+      try {
+        prompts = JSON.parse(container.dataset.agentPrompts || "[]");
+      } catch {
+        return;
+      }
+      if (!Array.isArray(prompts) || !prompts.every((prompt) => typeof prompt === "string"))
+        return;
+      const visiblePrompts = prompts.filter(Boolean);
+      if (!visiblePrompts.length) return;
+
+      output.textContent = visiblePrompts[0];
+      if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+        cursor?.classList.add("hidden");
+        return;
+      }
+
+      let promptIndex = 0;
+      let characterIndex = 0;
+      let deleting = false;
+      output.textContent = "";
+
+      const updatePrompt = () => {
+        const prompt = visiblePrompts[promptIndex];
+        if (!deleting) {
+          characterIndex += 1;
+          output.textContent = prompt.slice(0, characterIndex);
+          if (characterIndex === prompt.length) {
+            deleting = true;
+            window.setTimeout(updatePrompt, 1800);
+            return;
+          }
+          window.setTimeout(updatePrompt, 42);
+          return;
+        }
+
+        characterIndex -= 1;
+        output.textContent = prompt.slice(0, characterIndex);
+        if (characterIndex === 0) {
+          deleting = false;
+          promptIndex = (promptIndex + 1) % visiblePrompts.length;
+          window.setTimeout(updatePrompt, 320);
+          return;
+        }
+        window.setTimeout(updatePrompt, 22);
+      };
+
+      window.setTimeout(updatePrompt, 350);
+    });
+  };
+
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
   document.addEventListener("DOMContentLoaded", initCopyControls);
+  document.addEventListener("DOMContentLoaded", initAgentPromptExamples);
 
   document.addEventListener("change", (event) => {
     const field = event.target.closest("[data-auto-submit]");
