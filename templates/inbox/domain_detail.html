@@ -442,8 +442,8 @@
       {% if active_transition.status == 'WAITING_DNS' or active_transition.status == 'WAITING_TEST' or domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
         <section class="mt-8">
         <div class="mb-3">
-          <h2 class="font-heading text-lg font-semibold">{% if active_transition.to_mode == 'PROVIDER_FORWARD' %}Ownership record to keep{% elif active_transition.status == 'WAITING_DNS' %}Target DNS records to add{% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
-          <p class="text-sm text-muted">Copy each record exactly into your DNS provider. Operational Inbox verifies these values but never changes DNS for you.{% if active_transition %} Your current receiving route remains active while these target records are checked.{% endif %}</p>
+          <h2 class="font-heading text-lg font-semibold">{% if active_transition.to_mode == 'PROVIDER_FORWARD' %}Ownership record to keep{% elif has_verified_dns_records %}DNS records{% elif active_transition.status == 'WAITING_DNS' %}Target DNS records to add{% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
+          <p class="text-sm text-muted">{% if has_verified_dns_records %}Records marked Verified already match public DNS and do not need to be added again.{% if has_unverified_dns_records %} Add or correct the remaining records exactly as shown.{% endif %}{% else %}Copy each record exactly into your DNS provider.{% endif %} Operational Inbox verifies these values but never changes DNS for you.{% if active_transition %} Your current receiving route remains active while these target records are checked.{% endif %}</p>
         </div>
         <div class="oi-panel overflow-x-auto">
           <table class="w-full min-w-[820px] text-left text-sm">
@@ -472,7 +472,7 @@
                     </div>
                   </td>
                   <td class="px-4 py-4">
-                    <span class="{% if record.status == 'VALID' %}oi-status oi-status-ready{% elif record.status == 'INVALID' or record.status == 'MISSING' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{{ record.get_status_display }}</span>
+                    <span class="{% if record.status == 'VALID' %}oi-status oi-status-ready{% elif record.status == 'INVALID' or record.status == 'MISSING' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">{% if record.status == 'VALID' %}Verified{% else %}{{ record.get_status_display }}{% endif %}</span>
                     {% if record.error_message %}<p class="mt-2 max-w-xs text-xs text-coral-strong">{{ record.error_message }}</p>{% endif %}
                   </td>
                 </tr>

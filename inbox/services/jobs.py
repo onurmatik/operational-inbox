@@ -392,11 +392,30 @@ def _handle(job: DurableJob) -> None:
         ):
             raise RuntimeError("Notification delivery failed.")
     elif job.kind == "provision_domain":
-        provision_inbound(
+        provisioned_domain = provision_inbound(
             Domain.objects.get(id=job.payload["domain_id"]),
             expected_generation=_inbound_job_generation(job),
             expected_setup_mode=job.payload.get("setup_mode"),
         )
+        if (
+            provisioned_domain.status == Domain.Status.PENDING_DNS
+            and provisioned_domain.inbound_setup_generation == _inbound_job_generation(job)
+            and (
+                not job.payload.get("setup_mode")
+                or provisioned_domain.setup_mode == job.payload["setup_mode"]
+            )
+            and provisioned_domain.dns_records.exists()
+        ):
+            # Provisioning is the first point at which SES has supplied the
+            # exact verification token. Check all generated records right away
+            # so a matching pre-existing TXT/MX record is not presented as a
+            # change the owner still needs to make.
+            enqueue_job(
+                kind="dns_check",
+                idempotency_key=f"dns-check:provision:{job.id}",
+                payload={"domain_id": str(provisioned_domain.id)},
+                domain=provisioned_domain,
+            )
     elif job.kind == "provision_outbound":
         provision_outbound_identity(Domain.objects.get(id=job.payload["domain_id"]))
     elif job.kind == "provision_routing_transition":

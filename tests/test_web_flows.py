@@ -298,6 +298,35 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
 
 
 @pytest.mark.django_db
+def test_domain_detail_labels_an_existing_matching_dns_record_as_verified(
+    client, owner, organization, project
+):
+    client.force_login(owner)
+    domain = _setup_domain(
+        organization,
+        project,
+        hostname="existing-verification.example.org",
+        status=Domain.Status.PENDING_DNS,
+    )
+    build_inbound_dns_instructions(
+        domain,
+        ownership_token="ownership-proof",
+        verification_token="existing-ses-proof",
+    )
+    domain.dns_records.filter(purpose=DomainDNSRecord.Purpose.SES_VERIFICATION).update(
+        status=DomainDNSRecord.Status.VALID
+    )
+
+    response = client.get(reverse("domain_detail", args=[domain.id]))
+
+    assert response.status_code == 200
+    assert b"_amazonses.existing-verification.example.org" in response.content
+    assert b"Records marked Verified already match public DNS" in response.content
+    assert b"DNS records to add" not in response.content
+    assert b"Verified" in response.content
+
+
+@pytest.mark.django_db
 def test_provider_forward_inbound_detail_shows_only_claim_and_private_route(
     client, owner, organization, project
 ):

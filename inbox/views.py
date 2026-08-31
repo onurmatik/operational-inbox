@@ -1633,6 +1633,14 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
             "source_route": source_route,
             "target_route": target_route,
             "display_dns_records": display_dns_records,
+            "has_verified_dns_records": any(
+                record.status == DomainDNSRecord.Status.VALID
+                for record in display_dns_records
+            ),
+            "has_unverified_dns_records": any(
+                record.status != DomainDNSRecord.Status.VALID
+                for record in display_dns_records
+            ),
             "transition_can_cancel": (
                 active_transition is not None
                 and active_transition.status != InboundRoutingTransition.Status.GRACE

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
+from unittest.mock import Mock, patch
 
 import pytest
 from django.core.exceptions import ValidationError
@@ -61,6 +62,97 @@ def test_durable_job_retries_and_reclaims_expired_lease(monkeypatch, organizatio
     reclaimed = run_due_jobs(limit=1)
     job.refresh_from_db()
     assert reclaimed["complete"] == 1 and job.status == DurableJob.Status.COMPLETE
+
+
+@pytest.mark.django_db
+def test_successful_domain_provisioning_queues_an_initial_dns_check(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="existing-dns.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    job = enqueue_job(
+        kind="provision_domain",
+        idempotency_key=f"provision-domain:{domain.id}",
+        payload={
+            "domain_id": str(domain.id),
+            "setup_generation": domain.inbound_setup_generation,
+            "setup_mode": domain.setup_mode,
+        },
+        domain=domain,
+    )
+
+    counts = run_due_jobs(limit=1)
+
+    domain.refresh_from_db()
+    job.refresh_from_db()
+    dns_check = DurableJob.objects.get(
+        kind="dns_check",
+        payload__domain_id=str(domain.id),
+    )
+    assert counts["complete"] == 1
+    assert job.status == DurableJob.Status.COMPLETE
+    assert domain.status == Domain.Status.PENDING_DNS
+    assert dns_check.status == DurableJob.Status.PENDING
+    assert dns_check.domain_id == domain.id
+
+
+@pytest.mark.django_db
+def test_initial_dns_check_recognizes_a_matching_preexisting_ses_txt_record(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="existing-ses-txt.example",
+        setup_mode=Domain.SetupMode.DIRECT_MX,
+        status=Domain.Status.PROVISIONING,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    InboundRoute.objects.create(
+        domain=domain,
+        kind=InboundRoute.Kind.DIRECT_DOMAIN,
+        local_part="route-existing-ses-txt",
+        address="route-existing-ses-txt@inbound.example.net",
+    )
+    enqueue_job(
+        kind="provision_domain",
+        idempotency_key=f"provision-domain:{domain.id}",
+        payload={
+            "domain_id": str(domain.id),
+            "setup_generation": domain.inbound_setup_generation,
+            "setup_mode": domain.setup_mode,
+        },
+        domain=domain,
+    )
+    ses = Mock()
+    ses.get_identity_verification_attributes.return_value = {
+        "VerificationAttributes": {
+            domain.hostname: {
+                "VerificationStatus": "Success",
+                "VerificationToken": "existing-ses-proof",
+            }
+        }
+    }
+
+    with (
+        patch("inbox.services.domains.boto3.client", return_value=ses),
+        patch(
+            "inbox.management.commands.check_domain_drift.observed_values",
+            side_effect=lambda record: [record.value],
+        ),
+        patch("inbox.management.commands.check_domain_drift.boto3.client", return_value=ses),
+        patch("inbox.management.commands.check_domain_drift.reconcile_receipt_rule"),
+    ):
+        counts = run_due_jobs(limit=2)
+
+    domain.refresh_from_db()
+    ses_verification = domain.dns_records.get(
+        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
+    )
+    assert counts["complete"] == 2
+    assert ses_verification.value == "existing-ses-proof"
+    assert ses_verification.status == DomainDNSRecord.Status.VALID
+    assert domain.status == Domain.Status.PENDING_TEST
 
 
 @pytest.mark.django_db
