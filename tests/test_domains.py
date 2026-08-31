@@ -590,6 +590,40 @@ def test_provider_forward_dns_check_does_not_query_customer_ses(project):
 
 
 @pytest.mark.django_db
+def test_missing_dns_record_reports_that_no_public_value_was_found(project):
+    domain = Domain.objects.create(
+        owner=project.owner,
+        hostname="missing-public-dns.example",
+        setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
+        status=Domain.Status.PENDING_DNS,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    record = DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose=DomainDNSRecord.Purpose.OWNERSHIP,
+        record_type="TXT",
+        name=application_ownership_record_name(domain),
+        value="fresh-proof",
+    )
+
+    with (
+        patch(
+            "inbox.management.commands.check_domain_drift.observed_values",
+            return_value=[],
+        ),
+        patch(
+            "inbox.management.commands.check_domain_drift.boto3.client",
+            side_effect=AssertionError("provider-forward inbound must not query SES"),
+        ),
+    ):
+        call_command("check_domain_drift")
+
+    record.refresh_from_db()
+    assert record.status == DomainDNSRecord.Status.MISSING
+    assert record.error_message == "No public DNS value was found for this record."
+
+
+@pytest.mark.django_db
 @override_settings(
     AWS_INGRESS_BUCKET="bucket",
     AWS_INBOUND_TOPIC_ARN="arn:aws:sns:us-east-1:1:inbound",

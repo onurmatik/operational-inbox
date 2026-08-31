@@ -282,6 +282,11 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     assert b"cannot change them for you" in response.content
     assert b"incoming email for every address" in response.content
     assert b"I've updated DNS" in response.content
+    assert b'id="dns-check-button-records"' in response.content
+    assert b'data-feedback-id="dns-check-feedback-records"' in response.content
+    assert b'event.target.closest("[data-dns-check-button]")' in response.content
+    assert b"Background processing can take up to five minutes" in response.content
+    assert b"attempt < 72" in response.content
     assert b"_operational-inbox-claim.dns.example.org" in response.content
     assert b"ownership-proof" in response.content
     assert b"_amazonses.dns.example.org" in response.content

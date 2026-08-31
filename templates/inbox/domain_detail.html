@@ -22,8 +22,10 @@
           id="dns-check-button"
           type="button"
           class="oi-button-primary"
+          data-dns-check-button
           data-check-url="/api/v1/domains/{{ domain.id }}/check"
           data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-feedback-id="dns-check-feedback"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >I've updated target DNS — Check records</button>
       {% elif active_transition.status == 'WAITING_TEST' %}
@@ -31,8 +33,10 @@
           id="dns-check-button"
           type="button"
           class="oi-button-secondary"
+          data-dns-check-button
           data-check-url="/api/v1/domains/{{ domain.id }}/check"
           data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-feedback-id="dns-check-feedback"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >Check target DNS again</button>
       {% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}
@@ -40,8 +44,10 @@
           id="dns-check-button"
           type="button"
           class="oi-button-primary"
+          data-dns-check-button
           data-check-url="/api/v1/domains/{{ domain.id }}/check"
           data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-feedback-id="dns-check-feedback"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >I've updated DNS — Check records</button>
       {% elif domain.status == 'PENDING_TEST' %}
@@ -49,8 +55,10 @@
           id="dns-check-button"
           type="button"
           class="oi-button-secondary"
+          data-dns-check-button
           data-check-url="/api/v1/domains/{{ domain.id }}/check"
           data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-feedback-id="dns-check-feedback"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >Check DNS again</button>
       {% elif domain.status == 'READY' %}
@@ -58,8 +66,10 @@
           id="dns-check-button"
           type="button"
           class="oi-button-secondary"
+          data-dns-check-button
           data-check-url="/api/v1/domains/{{ domain.id }}/check"
           data-detail-url="/api/v1/domains/{{ domain.id }}"
+          data-feedback-id="dns-check-feedback"
           data-last-checked="{{ domain.last_checked_at|date:'c' }}"
         >Check DNS now</button>
       {% endif %}
@@ -441,10 +451,22 @@
     {% if dns_records %}
       {% if active_transition.status == 'WAITING_DNS' or active_transition.status == 'WAITING_TEST' or domain.status == 'PENDING_DNS' or domain.status == 'PENDING_TEST' or domain.status == 'READY' or domain.status == 'DEGRADED' %}
         <section class="mt-8">
-        <div class="mb-3">
-          <h2 class="font-heading text-lg font-semibold">{% if active_transition.to_mode == 'PROVIDER_FORWARD' %}Ownership record to keep{% elif has_verified_dns_records %}DNS records{% elif active_transition.status == 'WAITING_DNS' %}Target DNS records to add{% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
-          <p class="text-sm text-muted">{% if has_verified_dns_records %}Records marked Verified already match public DNS and do not need to be added again.{% if has_unverified_dns_records %} Add or correct the remaining records exactly as shown.{% endif %}{% else %}Copy each record exactly into your DNS provider.{% endif %} Operational Inbox verifies these values but never changes DNS for you.{% if active_transition %} Your current receiving route remains active while these target records are checked.{% endif %}</p>
+        <div class="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="font-heading text-lg font-semibold">{% if active_transition.to_mode == 'PROVIDER_FORWARD' %}Ownership record to keep{% elif has_verified_dns_records %}DNS records{% elif active_transition.status == 'WAITING_DNS' %}Target DNS records to add{% elif domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' or domain.outbound_status == 'PENDING_DNS' or domain.outbound_status == 'DEGRADED' %}DNS records to add{% else %}DNS records{% endif %}</h2>
+            <p class="text-sm text-muted">{% if has_verified_dns_records %}Records marked Verified already match public DNS and do not need to be added again.{% if has_unverified_dns_records %} Add or correct the remaining records exactly as shown.{% endif %}{% else %}Copy each record exactly into your DNS provider.{% endif %} Operational Inbox verifies these values but never changes DNS for you.{% if active_transition %} Your current receiving route remains active while these target records are checked.{% endif %}</p>
+          </div>
+          <button
+            id="dns-check-button-records"
+            type="button"
+            class="oi-button-secondary shrink-0"
+            data-dns-check-button
+            data-check-url="/api/v1/domains/{{ domain.id }}/check"
+            data-detail-url="/api/v1/domains/{{ domain.id }}"
+            data-feedback-id="dns-check-feedback-records"
+          >{% if active_transition.status == 'WAITING_DNS' or domain.status == 'PENDING_DNS' or domain.status == 'DEGRADED' %}Check records{% else %}Check records again{% endif %}</button>
         </div>
+        <div id="dns-check-feedback-records" class="mb-3 hidden border p-4 text-sm" role="status" aria-live="polite"></div>
         <div class="oi-panel overflow-x-auto">
           <table class="w-full min-w-[820px] text-left text-sm">
             <thead class="border-b border-line bg-paper/60 font-mono text-[10px] uppercase text-muted">
@@ -650,6 +672,8 @@
       poll();
     });
 
+    let dnsCheckPollGeneration = 0;
+
     document.addEventListener("click", async (event) => {
       const copyButton = event.target.closest("[data-copy]");
       if (copyButton) {
@@ -704,24 +728,44 @@
         return;
       }
 
-      const checkButton = event.target.closest("#dns-check-button");
+      const checkButton = event.target.closest("[data-dns-check-button]");
       if (!checkButton) return;
-      const feedback = document.getElementById("dns-check-feedback");
+      const feedback = document.getElementById(checkButton.dataset.feedbackId);
+      const checkButtons = document.querySelectorAll("[data-dns-check-button]");
       const showFeedback = (message, isError = false) => {
         feedback.className = `mt-5 border p-4 text-sm ${isError ? "border-coral-strong/40 bg-coral-soft text-coral-strong" : "border-blue-strong/40 bg-blue-soft text-blue-strong"}`;
         feedback.textContent = message;
       };
-      checkButton.disabled = true;
+      const setButtonsDisabled = (disabled) => {
+        checkButtons.forEach((button) => {
+          button.disabled = disabled;
+        });
+      };
+      const pollGeneration = ++dnsCheckPollGeneration;
+      setButtonsDisabled(true);
       feedback.setAttribute("aria-busy", "true");
+      let beforeCheck;
       try {
-        const beforeCheck = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
+        beforeCheck = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
         await window.OperationalInbox.request(checkButton.dataset.checkUrl, {method: "POST"});
-        showFeedback("Checking public DNS. Changes can take a little while to become visible; this page will refresh when the check finishes.");
-        const initialStatus = beforeCheck.status;
-        const initialCheckedAt = beforeCheck.last_checked_at || "";
-        for (let attempt = 0; attempt < 36; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 5000));
+      } catch (error) {
+        showFeedback(error.message || "The DNS check could not be started.", true);
+        setButtonsDisabled(false);
+        feedback.setAttribute("aria-busy", "false");
+        return;
+      }
+
+      setButtonsDisabled(false);
+      showFeedback("DNS check queued. Background processing can take up to five minutes; this page will refresh when it completes. You can keep using this page or refresh later.");
+      const initialStatus = beforeCheck.status;
+      const initialCheckedAt = beforeCheck.last_checked_at || "";
+      let consecutiveErrors = 0;
+      for (let attempt = 0; attempt < 72; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        if (pollGeneration !== dnsCheckPollGeneration) return;
+        try {
           const domain = await window.OperationalInbox.request(checkButton.dataset.detailUrl);
+          consecutiveErrors = 0;
           if (
             domain.status !== initialStatus ||
             (domain.last_checked_at && domain.last_checked_at !== initialCheckedAt)
@@ -729,14 +773,17 @@
             window.location.reload();
             return;
           }
+        } catch (error) {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 3) {
+            showFeedback("The check was queued, but its status could not be refreshed automatically. Reload this page later to see the latest result.", true);
+            feedback.setAttribute("aria-busy", "false");
+            return;
+          }
         }
-        showFeedback("The check is still running in the background. You can leave this page and return later.");
-      } catch (error) {
-        showFeedback(error.message || "The DNS check could not be started.", true);
-      } finally {
-        checkButton.disabled = false;
-        feedback.setAttribute("aria-busy", "false");
       }
+      showFeedback("The check is still queued or running. Refresh this page later to see the latest result.");
+      feedback.setAttribute("aria-busy", "false");
     });
   </script>
 {% endblock %}

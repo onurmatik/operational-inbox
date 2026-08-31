@@ -107,7 +107,11 @@ class Command(BaseCommand):
                     if not observed
                     else DomainDNSRecord.Status.INVALID
                 )
-                record.error_message = "The observed DNS value does not match the required value."
+                record.error_message = (
+                    "No public DNS value was found for this record."
+                    if not observed
+                    else "The observed DNS value does not match the required value."
+                )
                 if record.is_required:
                     invalid += 1
             record.save(
