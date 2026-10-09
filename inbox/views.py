@@ -35,6 +35,7 @@ from sesame.utils import get_parameters
 from sesame.views import LoginView as SesameLoginView
 
 from inbox.forms import (
+    ComposeForm,
     DomainForm,
     DraftRevisionForm,
     RetentionForm,
@@ -76,6 +77,7 @@ from inbox.services.billing import (
     price_summary,
     process_event,
 )
+from inbox.services.compose import send_composed_email
 from inbox.services.conversations import apply_conversation_action, mark_conversation_viewed
 from inbox.services.domain_entitlements import domain_capacity, select_free_primary_domain
 from inbox.services.domains import (
@@ -870,21 +872,25 @@ def inbox_list(request: HttpRequest) -> HttpResponse:
     latest_message = Message.objects.filter(conversation=OuterRef("pk")).order_by(
         "-received_at", "-created_at"
     )
-    conversations = Conversation.objects.filter(domain=domain).annotate(
-        message_count=Coalesce(
-            Subquery(message_totals, output_field=IntegerField()),
-            Value(0),
-        ),
-        new_message_count=Coalesce(
-            Subquery(new_message_totals, output_field=IntegerField()),
-            Value(0),
-        ),
-        preview_from_address=Subquery(latest_message.values("from_address")[:1]),
-        preview_text_body=Subquery(latest_message.values("text_body")[:1]),
-        preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
-        has_quarantined=Exists(
-            Message.objects.filter(conversation=OuterRef("pk"), is_quarantined=True)
-        ),
+    conversations = (
+        Conversation.objects.filter(domain=domain)
+        .annotate(
+            message_count=Coalesce(
+                Subquery(message_totals, output_field=IntegerField()),
+                Value(0),
+            ),
+            new_message_count=Coalesce(
+                Subquery(new_message_totals, output_field=IntegerField()),
+                Value(0),
+            ),
+            preview_from_address=Subquery(latest_message.values("from_address")[:1]),
+            preview_text_body=Subquery(latest_message.values("text_body")[:1]),
+            preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
+            has_quarantined=Exists(
+                Message.objects.filter(conversation=OuterRef("pk"), is_quarantined=True)
+            ),
+        )
+        .filter(message_count__gt=0)
     )
     if folder == "inbox":
         conversations = conversations.filter(archived_at__isnull=True, trashed_at__isnull=True)
@@ -1056,6 +1062,8 @@ def outbox(request: HttpRequest) -> HttpResponse:
             "page": page,
             "statuses": OutboundMessage.Status.choices,
             "selected_domain": selected_domain,
+            "compose_domain_id": selected_domain
+            or (str(current_domain(request).id) if domains else ""),
             "selected_status": selected_status,
             "recipient": recipient,
             "selected_range": selected_range,
@@ -1075,6 +1083,70 @@ def outbox(request: HttpRequest) -> HttpResponse:
                 "problems": recent.filter(status__in=OUTBOUND_PROBLEM_STATUSES).count(),
             },
         },
+    )
+
+
+@verified_required
+@require_http_methods(["GET", "POST"])
+def compose(request: HttpRequest) -> HttpResponse:
+    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
+    if not domains.exists():
+        messages.info(request, "Connect a domain before composing an email.")
+        return redirect("domain_create")
+    requested_domain = request.GET.get("domain", "").strip()
+    if requested_domain:
+        try:
+            domain = get_owned_domain(request.user, uuid.UUID(requested_domain))
+        except ValueError as exc:
+            raise Http404 from exc
+    else:
+        domain = current_domain(request)
+    form = ComposeForm(
+        request.POST if request.method == "POST" else None,
+        domains=domains,
+        initial={"domain": domain, "idempotency_key": uuid.uuid4()},
+    )
+    response_status = 200
+    if request.method == "POST":
+        valid = form.is_valid()
+        domain = form.cleaned_data.get("domain") or domain
+        if valid:
+            try:
+                outbound = send_composed_email(
+                    domain=domain,
+                    owner=request.user,
+                    from_address=f"{form.cleaned_data['from_local_part']}@{domain.hostname}",
+                    to_address=form.cleaned_data["to_address"],
+                    subject=form.cleaned_data["subject"],
+                    body_text=form.cleaned_data["body_text"],
+                    idempotency_key=form.cleaned_data["idempotency_key"],
+                    authorization_mode=OutboundMessage.AuthorizationMode.OWNER_APPROVAL,
+                )
+            except ValidationError as exc:
+                if hasattr(exc, "error_dict"):
+                    for name, errors in exc.error_dict.items():
+                        name = "from_local_part" if name == "from_address" else name
+                        form.add_error(name if name in form.fields else None, errors)
+                else:
+                    form.add_error(None, exc)
+                    if any(error.code == "idempotency_conflict" for error in exc.error_list):
+                        response_status = 409
+            else:
+                request.session["domain_id"] = str(domain.id)
+                messages.success(request, f"Email status: {outbound.get_status_display()}.")
+                return redirect(f"{reverse('outbox')}?{urlencode({'domain': str(domain.id)})}")
+    request.session["domain_id"] = str(domain.id)
+    return render(
+        request,
+        "inbox/compose.html",
+        {
+            "active_nav": "outbox",
+            "form": form,
+            "domain": domain,
+            "compose_domains": domains,
+            "cancel_url": f"{reverse('outbox')}?{urlencode({'domain': str(domain.id)})}",
+        },
+        status=response_status,
     )
 
 
@@ -1124,7 +1196,10 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
                 {"messages_viewed": viewed_messages},
             )
     draft = (
-        conversation.reply_drafts.select_related("current_revision").order_by("-created_at").first()
+        conversation.reply_drafts.filter(kind=ReplyDraft.Kind.REPLY)
+        .select_related("current_revision")
+        .order_by("-created_at")
+        .first()
     )
     return render(
         request,
@@ -1259,7 +1334,9 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Reply drafts")
     draft = domain_get_or_404(
-        ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
+        ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY).select_related("conversation"),
+        domain=domain,
+        id=draft_id,
     )
     form = DraftRevisionForm(request.POST)
     if form.is_valid():
@@ -1284,7 +1361,9 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Outbound sending")
     draft = domain_get_or_404(
-        ReplyDraft.objects.select_related("conversation"), domain=domain, id=draft_id
+        ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY).select_related("conversation"),
+        domain=domain,
+        id=draft_id,
     )
     try:
         outbound = approve_exact_revision(
@@ -1634,12 +1713,10 @@ def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
             "target_route": target_route,
             "display_dns_records": display_dns_records,
             "has_verified_dns_records": any(
-                record.status == DomainDNSRecord.Status.VALID
-                for record in display_dns_records
+                record.status == DomainDNSRecord.Status.VALID for record in display_dns_records
             ),
             "has_unverified_dns_records": any(
-                record.status != DomainDNSRecord.Status.VALID
-                for record in display_dns_records
+                record.status != DomainDNSRecord.Status.VALID for record in display_dns_records
             ),
             "transition_can_cancel": (
                 active_transition is not None

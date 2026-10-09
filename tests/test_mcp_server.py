@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -35,6 +36,7 @@ from inbox.models import (
     User,
 )
 from inbox.services.domains import classify_domain_routing
+from inbox.services.outbound import set_outbound_paused
 from oauth_server.models import OAuthApplication
 
 
@@ -136,6 +138,106 @@ def oauth_access_token(owner, *, scope: str) -> str:
         resource=[settings.MCP_RESOURCE_URL],
     )
     return raw_token
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("status", ["QUEUED", "FAILED", "UNKNOWN"])
+def test_send_email_requires_only_send_scope_and_is_idempotent(mcp_client, owner, domain, status):
+    raw = oauth_access_token(owner, scope="send")
+    payload = {
+        "domain_id": str(domain.id),
+        "from_address": "onur@example.com",
+        "to_address": "contact@example.net",
+        "subject": "New email from MCP",
+        "body_text": "Hello from the agent.",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    first = tool_call(mcp_client, raw, "send_email", payload)
+    assert first["isError"] is False
+    outbound = OutboundMessage.objects.get(id=first["structuredContent"]["outbound_id"])
+    assert outbound.status == OutboundMessage.Status.QUEUED
+    OutboundMessage.objects.filter(id=outbound.id).update(status=status)
+    set_outbound_paused(owner, paused=True)
+    repeated = tool_call(mcp_client, raw, "send_email", payload)
+    assert repeated["structuredContent"] == {**first["structuredContent"], "status": status}
+    assert outbound.revision.draft.context_message is None
+    assert not DraftApproval.objects.exists()
+    assert DurableJob.objects.count() == 1
+    payload["to_address"] = "changed@example.net"
+    assert tool_error_payload(tool_call(mcp_client, raw, "send_email", payload))["code"] == (
+        "idempotency_conflict"
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_send_email_rejects_missing_send_scope_and_cross_tenant(mcp_client, owner, domain):
+    payload = {
+        "domain_id": str(domain.id),
+        "from_address": "onur@example.com",
+        "to_address": "contact@example.net",
+        "subject": "New email",
+        "body_text": "Hello.",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    readonly = oauth_access_token(owner, scope="read")
+    assert tool_call(mcp_client, readonly, "send_email", payload)["isError"] is True
+    outsider = User.objects.create_user(
+        email="outsider@example.net", email_verified_at=timezone.now()
+    )
+    foreign = oauth_access_token(outsider, scope="send")
+    assert tool_call(mcp_client, foreign, "send_email", payload)["isError"] is True
+    assert not OutboundMessage.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("blocked", "expected_code"),
+    [
+        ("paused", "outbound_paused"),
+        ("not_ready", "outbound_not_ready"),
+        ("unverified", "outbound_not_ready"),
+        ("quota", "quota_exhausted"),
+        ("foreign_from", "validation_error"),
+        ("invalid_to", "validation_error"),
+        ("missing_subject", "validation_error"),
+    ],
+)
+def test_send_email_reports_atomic_validation_and_capacity_errors(
+    mcp_client, owner, domain, settings, blocked, expected_code
+):
+    raw = oauth_access_token(owner, scope="send")
+    payload = {
+        "domain_id": str(domain.id),
+        "from_address": "onur@example.com",
+        "to_address": "contact@example.net",
+        "subject": "New email",
+        "body_text": "Hello.",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    existing_count = 0
+    if blocked == "paused":
+        set_outbound_paused(owner, paused=True)
+    elif blocked in {"not_ready", "unverified"}:
+        field = "outbound_ready" if blocked == "not_ready" else "ownership_verified"
+        setattr(domain, field, False)
+        domain.save(update_fields=[field])
+    elif blocked == "quota":
+        settings.OUTBOUND_MONTHLY_ACCOUNT_LIMIT = 1
+        assert tool_call(mcp_client, raw, "send_email", payload)["isError"] is False
+        existing_count = 1
+        payload["idempotency_key"] = str(uuid.uuid4())
+    elif blocked == "foreign_from":
+        payload["from_address"] = "onur@other.example"
+    elif blocked == "invalid_to":
+        payload["to_address"] = "contact@example.net\r\nBcc: hidden@example.net"
+    else:
+        del payload["subject"]
+    error = tool_error_payload(tool_call(mcp_client, raw, "send_email", payload))
+    assert error["code"] == expected_code
+    assert OutboundMessage.objects.count() == DurableJob.objects.count() == existing_count
+    if blocked == "quota":
+        assert error["resource"] == "outbound_replies"
+        assert error["period"] == "calendar_month" and error["reset_at"] is not None
 
 
 @pytest.mark.django_db(transaction=True)
@@ -257,6 +359,7 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "get_reply_draft",
         "revise_reply_draft",
         "send_reply",
+        "send_email",
         "resend_outbound",
     }
     for tool in tools:
@@ -346,6 +449,7 @@ def test_mcp_account_limits_are_neutral_and_actionable(mcp_client):
         "can_add_domain": True,
         "can_create_reply_draft": True,
         "can_send_reply": True,
+        "can_send_email": True,
         "can_pause_outbound": True,
     }
     assert payload["limits"]["active_domains"] == {
@@ -852,7 +956,7 @@ def test_mcp_send_quota_error_exposes_only_neutral_reset_contract(
 
     assert tool_error_payload(result) == {
         "code": "quota_exhausted",
-        "message": "The outbound reply quota is exhausted for the current period.",
+        "message": "The outbound email quota is exhausted for the current period.",
         "resource": "outbound_replies",
         "used": 30,
         "limit": 30,

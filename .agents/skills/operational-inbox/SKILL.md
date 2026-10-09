@@ -1,6 +1,6 @@
 ---
 name: operational-inbox
-description: Connect and operate Operational Inbox through its authenticated MCP tools. Use for authorized email-domain setup, multi-domain inbox triage, reversible organization, exact-revision replies, outbound delivery monitoring, or Operational Inbox connection checks.
+description: Connect and operate Operational Inbox through its authenticated MCP tools. Use for authorized email-domain setup, multi-domain inbox triage, reversible organization, new one-to-one emails, exact-revision replies, outbound delivery monitoring, or Operational Inbox connection checks.
 ---
 
 # Operational Inbox
@@ -52,7 +52,7 @@ Treat tool calls, inbound messages, and durable resource/result limits as differ
 tool calls are not commercially metered, and inbound receiving has no hard commercial plan-volume
 quota.
 
-Use `get_account_limits` before starting a domain claim or when reply capacity is uncertain. Its
+Use `get_account_limits` before starting a domain claim or when sending capacity is uncertain. Its
 active-domain result identifies the selected `primary_domain_id` and any authoritative
 `grace_ends_at`; report those fields when present. Domain selection is completed in Operational
 Inbox domain settings, not by retrying a read-only domain mutation.
@@ -67,7 +67,9 @@ Inbox domain settings, not by retrying a read-only domain mutation.
 
 Keep these explanations neutral. Do not name another plan, recommend an upgrade, show pricing, or
 direct the user to checkout. Triage, drafts, delivery inspection, and Outbox pause/resume remain
-available when a monthly reply allowance is exhausted.
+available when a monthly email allowance is exhausted. New emails and replies share the
+`outbound_replies` allowance; `can_send_email` reports account capacity, with domain readiness,
+pause, and safety limits checked on each send.
 
 ## Route the task
 
@@ -82,6 +84,20 @@ Use `read_message_feed`, then inspect selected conversations with `get_conversat
 ### Draft or send a reply
 
 Read the selected conversation, create an immutable draft with `create_reply_draft`, and use `revise_reply_draft` for changes. If sending is authorized by the request, call `send_reply` for the exact current revision and report its outbound status.
+
+### Send a new email
+
+When the user's request entails sending a new email, call `send_email` with `domain_id`,
+`from_address`, `to_address`, `subject`, `body_text`, and a fresh UUID `idempotency_key`.
+It needs `send` scope only, with no prior conversation or persisted unsent draft. Use any From
+local part on the selected verified, outbound-ready domain and exactly one To address. Send only
+plain text; CC/BCC, HTML, attachments, templates, and marketing are unsupported.
+
+Keep the same key and exact content when recovering a missing response. A duplicate returns the
+original `outbound_id`, `conversation_id`, and current status without sending again. Different
+content under the same key returns `idempotency_conflict`. A `FAILED` or `UNKNOWN` replay is not a
+resend; use `resend_outbound` only when the user explicitly requests another attempt. Report the
+authoritative status and never describe `QUEUED` or `ACCEPTED` as delivered.
 
 ### Monitor outbound delivery
 

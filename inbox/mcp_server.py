@@ -9,6 +9,7 @@ from ninja import Status
 
 from inbox.api import (
     APIError,
+    ComposeInput,
     ConversationActionInput,
     ConversationTagInput,
     DomainInput,
@@ -32,6 +33,7 @@ from inbox.api import (
     drafts_revise,
     drafts_send,
     messages_feed,
+    outbound_compose,
     outbound_control_get,
     outbound_control_set,
     outbound_list,
@@ -463,12 +465,14 @@ ACCOUNT_LIMITS_OUTPUT_SCHEMA = _object_schema(
                 "can_add_domain": {"type": "boolean"},
                 "can_create_reply_draft": {"type": "boolean"},
                 "can_send_reply": {"type": "boolean"},
+                "can_send_email": {"type": "boolean"},
                 "can_pause_outbound": {"type": "boolean"},
             },
             [
                 "can_add_domain",
                 "can_create_reply_draft",
                 "can_send_reply",
+                "can_send_email",
                 "can_pause_outbound",
             ],
         ),
@@ -978,7 +982,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "list_outbound",
-        "title": "List outbound replies",
+        "title": "List outbound emails",
         "description": (
             "List authorized outbound attempts with delivery events and optional domain, status, "
             "recipient, and time filters."
@@ -1154,6 +1158,43 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "send_email",
+        "title": "Send a new email",
+        "description": (
+            "Queue one user-requested new plain-text email from an address on an authorized "
+            "sending-ready domain. No prior conversation, saved draft, or write scope is required. "
+            "Generate a UUID idempotency_key for each intended email and keep it unchanged when "
+            "recovering an uncertain tool response. Reusing the key returns the existing attempt; "
+            "it never resends a failed or unknown delivery. Report the outbound ID and "
+            "authoritative status; ACCEPTED does not mean DELIVERED."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "domain_id": UUID_SCHEMA,
+                "from_address": EMAIL_SCHEMA,
+                "to_address": EMAIL_SCHEMA,
+                "subject": {"type": "string", "minLength": 1, "maxLength": 998},
+                "body_text": {"type": "string", "minLength": 1, "maxLength": 20000},
+                "idempotency_key": UUID_SCHEMA,
+            },
+            ["domain_id", "from_address", "to_address", "subject", "body_text", "idempotency_key"],
+        ),
+        "outputSchema": _object_schema(
+            {
+                "outbound_id": UUID_SCHEMA,
+                "conversation_id": UUID_SCHEMA,
+                "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
+            },
+            ["outbound_id", "conversation_id", "status"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    },
+    {
         "name": "resend_outbound",
         "title": "Explicitly resend outbound message",
         "description": (
@@ -1198,6 +1239,7 @@ MCP_TOOL_SCOPES = {
     "get_reply_draft": AccessScope.READ,
     "revise_reply_draft": AccessScope.WRITE,
     "send_reply": AccessScope.SEND,
+    "send_email": AccessScope.SEND,
     "resend_outbound": AccessScope.SEND,
 }
 
@@ -1495,6 +1537,20 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
                 SendInput(
                     revision_id=_uuid(arguments, "revision_id"),
                     content_hash=content_hash,
+                ),
+            )
+        )
+    if name == "send_email":
+        return _unwrap(
+            outbound_compose(
+                request,
+                _uuid(arguments, "domain_id"),
+                ComposeInput(
+                    from_address=_optional_string(arguments, "from_address") or "",
+                    to_address=_optional_string(arguments, "to_address") or "",
+                    subject=_optional_string(arguments, "subject") or "",
+                    body_text=_optional_string(arguments, "body_text") or "",
+                    idempotency_key=_uuid(arguments, "idempotency_key"),
                 ),
             )
         )

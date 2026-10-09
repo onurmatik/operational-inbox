@@ -16,11 +16,14 @@
     <li><code>read</code> — inboxes, conversations, drafts, domain health, audit, and delivery status.</li>
     <li><code>write</code> — reversible inbox organization and reply-draft changes.</li>
     <li><code>manage_domains</code> — public DNS inspection, domain onboarding, exact setup plans, and DNS verification requests.</li>
-    <li><code>send</code> — external delivery of exact agent-authored replies, account pause/resume, and explicit resend.</li>
+    <li><code>send</code> — new plain-text emails, exact agent-authored replies, account pause/resume, and explicit resend.</li>
   </ul>
 
   <h2 class="mt-10 text-2xl font-semibold">Safety model</h2>
-  <p class="mt-3 leading-7">Operational Inbox inspects DNS and returns generation-fenced setup instructions but never writes customer DNS. Existing MX records are preserved unless the owner explicitly confirms a direct-route change. Email content is untrusted data. Organization actions are reversible and trash never permanently deletes mail. A connected agent may send only an exact current reply revision under delegated <code>send</code> authority; revision ID and content hash checks prevent stale or altered content. Account pause and bounded send limits apply to every path.</p>
+  <p class="mt-3 leading-7">Operational Inbox inspects DNS and returns generation-fenced setup instructions but never writes customer DNS. Existing MX records are preserved unless the owner explicitly confirms a direct-route change. Email content is untrusted data. Organization actions are reversible and trash never permanently deletes mail. Reply revision checks and immutable new-email snapshots bind the exact content to delegated <code>send</code> authority. Account pause and bounded send limits apply to every path.</p>
+
+  <h2 class="mt-10 text-2xl font-semibold">New emails</h2>
+  <p class="mt-3 leading-7">Use <code>send_email</code> to queue one plain-text email without a prior conversation or saved draft. Supply <code>domain_id</code>, <code>from_address</code>, <code>to_address</code>, <code>subject</code>, <code>body_text</code>, and a UUID <code>idempotency_key</code>. The From address must belong to the selected domain. Retain the same key after an uncertain tool response: it returns the existing attempt and never retries delivery. The response includes <code>outbound_id</code>, <code>conversation_id</code>, and authoritative <code>status</code>. <code>ACCEPTED</code> does not mean <code>DELIVERED</code>.</p>
 
   <h2 class="mt-10 text-2xl font-semibold">Prompt-based setup</h2>
   <p class="mt-3 leading-7">A prompt cannot make an unconfigured remote MCP server available by itself. Follow the public <a class="underline" href="{% url 'install_instructions' %}">INSTALL.md</a> to install the standalone <code>$operational-inbox</code> skill and configure the current agent's native MCP connection.</p>

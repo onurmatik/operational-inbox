@@ -46,7 +46,7 @@
 
         <ul class="mt-4 divide-y divide-line border-y border-line text-sm" aria-label="Pro Scale plan highlights">
           <li class="py-2.5"><span class="font-semibold">Up to {{ pro_domain_limit }} managed domains</span></li>
-          <li class="py-2.5"><span class="font-semibold">5,000 user-requested replies</span><span class="text-muted"> · per UTC calendar month</span></li>
+          <li class="py-2.5"><span class="font-semibold">5,000 user-requested emails</span><span class="text-muted"> · per UTC calendar month</span></li>
           <li class="py-2.5"><span class="font-semibold">Custom retention &amp; server-side AI classification</span></li>
         </ul>
 
@@ -67,12 +67,12 @@
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Active-domain feed, search, tags, folders</span><span>Yes</span><span>Yes</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>API &amp; MCP access</span><span>Yes</span><span>Yes</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Agent-authored drafts</span><span>Yes</span><span>Yes</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>User-requested reply delivery / month</span><span>30</span><span>5,000</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>User-requested email delivery / month</span><span>30</span><span>5,000</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Outbox safety and delivery events</span><span>Yes</span><span>Yes</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Retention controls</span><span>Fixed</span><span>Custom</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Server-side AI classification</span><span>—</span><span>Yes</span></div>
       </div>
-      <p class="border-t border-line bg-paper/60 px-5 py-3 text-xs leading-5 text-muted">Reply allowances follow the UTC calendar month and reset at 00:00 UTC on day one. Inbound receiving and MCP tool calls do not consume that allowance. Technical and abuse-prevention safety limits apply to both plans.</p>
+      <p class="border-t border-line bg-paper/60 px-5 py-3 text-xs leading-5 text-muted">New emails and replies share one allowance. It follows the UTC calendar month and resets at 00:00 UTC on day one. Inbound receiving and MCP tool calls do not consume that allowance. Technical and abuse-prevention safety limits apply to both plans.</p>
     </section>
   </div>
 {% endblock %}

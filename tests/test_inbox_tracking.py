@@ -204,6 +204,7 @@ def test_conversation_tags_are_free_form_idempotent_and_filterable(
     owner,
     domain,
     conversation,
+    inbound_message,
 ):
     _select_domain(client, owner, domain)
     url = reverse("conversation_tag", args=[conversation.id])

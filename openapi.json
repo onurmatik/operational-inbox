@@ -54,6 +54,83 @@
         "title": "ClassificationInput",
         "type": "object"
       },
+      "ComposeInput": {
+        "properties": {
+          "body_text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Body Text",
+            "type": "string"
+          },
+          "from_address": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "From Address",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "format": "uuid",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "subject": {
+            "maxLength": 998,
+            "minLength": 1,
+            "title": "Subject",
+            "type": "string"
+          },
+          "to_address": {
+            "maxLength": 320,
+            "minLength": 1,
+            "title": "To Address",
+            "type": "string"
+          }
+        },
+        "required": [
+          "subject",
+          "body_text",
+          "from_address",
+          "to_address",
+          "idempotency_key"
+        ],
+        "title": "ComposeInput",
+        "type": "object"
+      },
+      "ComposeSendOutput": {
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "outbound_id": {
+            "format": "uuid",
+            "title": "Outbound Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "SUBMITTING",
+              "ACCEPTED",
+              "DELIVERED",
+              "FAILED",
+              "UNKNOWN",
+              "BOUNCED",
+              "COMPLAINED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outbound_id",
+          "status",
+          "conversation_id"
+        ],
+        "title": "ComposeSendOutput",
+        "type": "object"
+      },
       "ConversationActionInput": {
         "properties": {
           "action": {
@@ -171,6 +248,15 @@
             "title": "Minute Count",
             "type": "integer"
           },
+          "month_count": {
+            "title": "Month Count",
+            "type": "integer"
+          },
+          "month_reset_at": {
+            "format": "date-time",
+            "title": "Month Reset At",
+            "type": "string"
+          },
           "paused": {
             "title": "Paused",
             "type": "boolean"
@@ -193,6 +279,8 @@
           "paused_at",
           "minute_count",
           "day_count",
+          "month_count",
+          "month_reset_at",
           "by_domain",
           "limits"
         ],
@@ -212,12 +300,17 @@
           "minute": {
             "title": "Minute",
             "type": "integer"
+          },
+          "month": {
+            "title": "Month",
+            "type": "integer"
           }
         },
         "required": [
           "minute",
           "day",
-          "domain_day"
+          "domain_day",
+          "month"
         ],
         "title": "OutboundLimitsOutput",
         "type": "object"
@@ -511,6 +604,29 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/account/limits": {
+      "get": {
+        "operationId": "inbox_api_account_limits_get",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Account Limits Get",
+        "tags": [
+          "Account"
+        ]
+      }
+    },
     "/api/v1/domains": {
       "get": {
         "operationId": "inbox_api_domains_list",
@@ -1586,6 +1702,57 @@
         "summary": "Notifications Read",
         "tags": [
           "Notifications"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/outbound/compose": {
+      "post": {
+        "operationId": "inbox_api_outbound_compose",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ComposeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComposeSendOutput"
+                }
+              }
+            },
+            "description": "Accepted"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Outbound Compose",
+        "tags": [
+          "Outbound"
         ]
       }
     },

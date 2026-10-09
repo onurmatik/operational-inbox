@@ -42,12 +42,15 @@ from inbox.services.notifications import (
     create_outbound_problem_notifications,
     create_security_notifications,
 )
+from inbox.services.outbound_records import record_outbound_message
 from inbox.services.routing_transitions import finalize_routing_transition_test
 from inbox.services.threading import (
     match_conversation,
     merge_suggestion,
     normalize_subject,
+    record_ses_reference,
     reference_hash,
+    reference_hashes,
 )
 
 logger = logging.getLogger(__name__)
@@ -332,9 +335,12 @@ def _store_domain_message(
                 "updated_at",
             )
         )
-        ReplyDraft.objects.filter(conversation=conversation, is_stale=False).update(is_stale=True)
+        ReplyDraft.objects.filter(
+            conversation=conversation, kind=ReplyDraft.Kind.REPLY, is_stale=False
+        ).update(is_stale=True)
         DraftApproval.objects.filter(
             revision__draft__conversation=conversation,
+            revision__draft__kind=ReplyDraft.Kind.REPLY,
             invalidated_at__isnull=True,
         ).update(
             invalidated_at=timezone.now(),
@@ -415,9 +421,10 @@ def _store_domain_message(
             message=message,
             kind=MessageReference.Kind.REFERENCE,
             position=index,
-            value_hash=reference_hash(value),
+            value_hash=value_hash,
         )
         for index, value in enumerate(parsed.references)
+        for value_hash in reference_hashes(value)
     )
     reference_rows.extend(
         MessageReference(
@@ -425,9 +432,10 @@ def _store_domain_message(
             message=message,
             kind=MessageReference.Kind.IN_REPLY_TO,
             position=index,
-            value_hash=reference_hash(value),
+            value_hash=value_hash,
         )
         for index, value in enumerate(parsed.in_reply_to)
+        for value_hash in reference_hashes(value)
     )
     MessageReference.objects.bulk_create(reference_rows, ignore_conflicts=True)
 
@@ -705,6 +713,8 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
     if not isinstance(mail, dict):
         return True
     provider_message_id = str(mail.get("messageId", ""))
+    if not provider_message_id:
+        return True
     outbound = OutboundMessage.objects.filter(provider_message_id=provider_message_id).first()
     if outbound is None:
         tags = mail.get("tags", {})
@@ -723,6 +733,13 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
         # Keep the SQS message visible for retry; SES delivery events can arrive before
         # the local ACCEPTED transaction becomes observable.
         return False
+    requested_message_id = outbound.rfc_message_id
+    if outbound.rfc_message_id.endswith("@operationalinbox.com>"):
+        outbound.rfc_message_id = provider_message_id
+        outbound.save(update_fields=("rfc_message_id", "updated_at"))
+    common_headers = mail.get("commonHeaders", {})
+    if isinstance(common_headers, dict) and isinstance(common_headers.get("messageId"), str):
+        record_ses_reference(outbound, common_headers["messageId"])
     event_type = str(
         notification.get("notificationType") or notification.get("eventType") or "Unknown"
     )
@@ -770,6 +787,10 @@ def process_delivery_notification(envelope: IngressEnvelope) -> bool:
             fields.append("failed_at")
         outbound.save(update_fields=fields)
         create_outbound_problem_notifications(outbound)
+    if event_type in {"Send", "Delivery", "Bounce", "Complaint", "DeliveryDelay"}:
+        record_outbound_message(
+            outbound, requested_message_id=requested_message_id, sent_at=occurred_at
+        )
     if created:
         AuditEvent.objects.create(
             domain=outbound.domain,

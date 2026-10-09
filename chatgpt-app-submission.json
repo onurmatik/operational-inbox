@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Operational Inbox",
     "subtitle": "Set up, triage, and reply",
-    "description": "Operational Inbox lets an authenticated owner inspect and connect email domains, review inbound email across routing addresses, apply reversible organization actions, send exact agent-authored replies under delegated authority, and monitor outbound delivery.",
+    "description": "Operational Inbox lets an authenticated owner inspect and connect email domains, review inbound email across routing addresses, apply reversible organization actions, send new one-to-one emails and exact agent-authored replies under delegated authority, and monitor outbound delivery.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -27,9 +27,9 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Only reads current account capabilities, active-domain capacity, outbound-reply usage, and applicable reset times.",
+        "read_only_justification": "Only reads current account capabilities, active-domain capacity, outbound email usage, and applicable reset times.",
         "open_world_justification": "Retrieves stored Operational Inbox account state without contacting or modifying third-party systems.",
-        "destructive_justification": "Does not create a domain, change a limit, send a reply, or modify outbound controls."
+        "destructive_justification": "Does not create a domain, change a limit, send an email, or modify outbound controls."
       }
     },
     "list_domains": {
@@ -284,6 +284,18 @@
         "destructive_justification": "An external email cannot be recalled reliably after submission; exact revision and content-hash checks bind the delegated send."
       }
     },
+    "send_email": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": true
+      },
+      "justifications": {
+        "read_only_justification": "Atomically persists an immutable email snapshot and queues a new one-to-one outbound attempt under delegated send authority.",
+        "open_world_justification": "The queued email can be handed to SES and delivered to the specified external recipient.",
+        "destructive_justification": "External email cannot be recalled. A domain-scoped idempotency key prevents duplicate calls from creating another attempt."
+      }
+    },
     "resend_outbound": {
       "annotations": {
         "readOnlyHint": false,
@@ -344,6 +356,14 @@
       "file_attachment_urls": null,
       "tools_triggered": "get_conversation, create_reply_draft, send_reply, get_outbound_status",
       "expected_output": "Authors and persists an exact revision, queues exactly one reply under delegated send authority without adding a second approval prompt, and reports its authoritative status without claiming Accepted means Delivered.",
+      "expected_output_url": null
+    },
+    {
+      "description": "Send a new plain-text email from the owner's verified domain.",
+      "user_prompt": "Use Operational Inbox to send a new email from onur@menu.fit to recipient@example.net with subject Hello and body Hello from MenuFit, then check its outbound status.",
+      "file_attachment_urls": null,
+      "tools_triggered": "send_email, get_outbound_status",
+      "expected_output": "Uses the authorized ready domain and one UUID idempotency key, queues one plain-text email without a reply draft or second approval prompt, and reports outbound_id, conversation_id, and authoritative status. It never describes Queued or Accepted as Delivered.",
       "expected_output_url": null
     }
   ],

@@ -16,7 +16,10 @@
           <p class="mt-1 text-sm text-muted">{{ folder_label }} conversations for this domain.</p>
         {% endif %}
       </div>
-      {% if has_active_filters %}<a href="{{ clear_filters_url }}" class="text-sm font-semibold text-forest underline decoration-line underline-offset-4 hover:decoration-forest">Clear filters</a>{% endif %}
+      <div class="flex flex-wrap items-center gap-3">
+        {% if has_active_filters %}<a href="{{ clear_filters_url }}" class="text-sm font-semibold text-forest underline decoration-line underline-offset-4 hover:decoration-forest">Clear filters</a>{% endif %}
+        <a href="{% url 'compose' %}?domain={{ domain.id }}" class="oi-button-primary min-h-11">Compose</a>
+      </div>
     </div>
   </div>
 

@@ -40,6 +40,48 @@
         }
       },
       "updatedAt": "2026-08-12T13:50:33Z"
+    },
+    "/app/compose/": {
+      "targetKind": "new-ui",
+      "projectId": "04a87f91-aea0-4c8f-b358-afc8e0bbf553",
+      "activeDraftId": "299aba27-c385-4b41-9e8e-198d6700ed0e",
+      "designSystemPath": ".superdesign/compose/design-system.md",
+      "referenceIds": [
+        "inbox-static-img-logo.svg"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "inbox-static-img-logo.svg",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/04a87f91-aea0-4c8f-b358-afc8e0bbf553/brand-assets/inbox-static-img-logo.svg/logo.svg",
+          "sourcePath": "inbox/static/img/logo.svg"
+        }
+      },
+      "contextFiles": [
+        ".superdesign/compose/design-system.md",
+        ".superdesign/compose/brief.md",
+        ".superdesign/compose/tokens.css"
+      ],
+      "fingerprints": {
+        ".superdesign/compose/design-system.md": "c63ef04819e80066ba4193727f35c74779d1211d19ed7d74b086a84af5ae89ab",
+        ".superdesign/compose/brief.md": "6aa62db39f852f23fbbadd363b65f80d8c04d8f7a72bf2579fca342fefb05f43",
+        ".superdesign/compose/tokens.css": "59bab1a78a11871f10aecf8f6152cfb4bf91e7e1024db18a1586c15dd10b7925"
+      },
+      "components": [
+        {
+          "name": "AppShell",
+          "id": "8d5e52a3-a977-47e9-b153-2ba0adec5000",
+          "sourcePath": "templates/app_base.html",
+          "logoAssetKey": "inbox-static-img-logo.svg"
+        }
+      ],
+      "drafts": {
+        "299aba27-c385-4b41-9e8e-198d6700ed0e": {
+          "title": "Compose Email",
+          "visualDirection": "existing app shell and native single-recipient form, no unsent drafts",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-10-09T07:53:14.487299+00:00"
     }
   }
 }

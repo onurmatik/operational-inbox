@@ -696,18 +696,27 @@ def test_api_attachment_url_contract(client, monkeypatch, owner, organization, i
 
 @pytest.mark.django_db
 def test_api_opaque_cursor_and_invalid_cursor_contract(
-    client, owner, organization, project, conversation
+    client, owner, organization, project, inbound_message
 ):
     client.force_login(owner)
     from inbox.models import Conversation
 
     for index in range(3):
         at = timezone.now() - timedelta(minutes=index + 1)
-        Conversation.objects.create(
+        conversation = Conversation.objects.create(
             domain=project,
             subject=f"Conversation {index}",
             first_message_at=at,
             last_message_at=at,
+        )
+        Message.objects.create(
+            domain=project,
+            conversation=conversation,
+            direction=Message.Direction.INBOUND,
+            provider_message_id=f"pagination-{index}",
+            from_address="sender@example.net",
+            subject=conversation.subject,
+            received_at=at,
         )
     base = f"/api/v1/domains/{organization.id}/conversations"
     first = client.get(base, {"limit": 2})

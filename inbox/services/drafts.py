@@ -15,7 +15,7 @@ from inbox.models import (
     User,
 )
 from inbox.services.entitlements import can_manage_domain
-from inbox.services.outbound import require_outbound_capacity
+from inbox.services.outbound import get_outbound_control, require_outbound_capacity
 
 
 def create_authored_draft(
@@ -57,6 +57,8 @@ def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
     locked = ReplyDraft.objects.select_for_update().select_related("domain").get(id=draft.id)
+    if locked.kind != ReplyDraft.Kind.REPLY:
+        raise ValidationError("Sent Compose snapshots cannot be edited as reply drafts.")
     if locked.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can edit a draft.")
     if not can_manage_domain(owner, locked.domain):
@@ -93,8 +95,11 @@ def _outbound_for_revision(
     revision: ReplyDraftRevision,
     authorization_mode: str,
 ) -> OutboundMessage:
-    recipient = draft.context_message.reply_to_address or draft.context_message.from_address
-    routing_recipient = draft.context_message.recipients.filter(is_routing_recipient=True).first()
+    context = draft.context_message
+    if context is None or draft.kind != ReplyDraft.Kind.REPLY:
+        raise ValidationError("A reply requires its original inbound message.")
+    recipient = context.reply_to_address or context.from_address
+    routing_recipient = context.recipients.filter(is_routing_recipient=True).first()
     if routing_recipient is None:
         raise ValidationError("The original routing recipient is unavailable.")
     local_part, recipient_domain = routing_recipient.address.rsplit("@", 1)
@@ -131,12 +136,15 @@ def _outbound_for_revision(
 def approve_exact_revision(
     *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
 ) -> OutboundMessage:
+    get_outbound_control(owner, lock=True)
     locked = (
-        ReplyDraft.objects.select_for_update()
+        ReplyDraft.objects.select_for_update(of=("self",))
         .select_related("domain", "context_message", "conversation")
         .get(id=draft.id)
     )
     revision = locked.current_revision
+    if locked.kind != ReplyDraft.Kind.REPLY:
+        raise ValidationError("Use Compose to send a new email.")
     if revision is None or revision.id != revision_id:
         raise ValidationError({"revision": "The draft changed. Review the current revision."})
     if locked.is_stale:
@@ -184,12 +192,15 @@ def send_exact_revision(
     *, draft: ReplyDraft, revision_id: object, content_hash: str, owner: User
 ) -> OutboundMessage:
     """Queue an exact agent-authored revision under an already-delegated send scope."""
+    get_outbound_control(owner, lock=True)
     locked = (
-        ReplyDraft.objects.select_for_update()
+        ReplyDraft.objects.select_for_update(of=("self",))
         .select_related("domain", "context_message", "conversation")
         .get(id=draft.id)
     )
     revision = locked.current_revision
+    if locked.kind != ReplyDraft.Kind.REPLY:
+        raise ValidationError("Use Compose to send a new email.")
     if revision is None or revision.id != revision_id:
         raise ValidationError({"revision": "The draft changed. Read the current revision."})
     if locked.is_stale:
@@ -215,6 +226,7 @@ def send_exact_revision(
 
 @transaction.atomic
 def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessage:
+    get_outbound_control(owner, lock=True)
     if original.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can resend a message.")
     if not can_manage_domain(owner, original.domain):

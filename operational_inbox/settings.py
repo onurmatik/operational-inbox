@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
@@ -77,6 +78,7 @@ WSGI_APPLICATION = "operational_inbox.wsgi.application"
 ASGI_APPLICATION = "operational_inbox.asgi.application"
 
 database_url = os.getenv("DJANGO_DATABASE_URL", "").strip() or "sqlite:///db.sqlite3"
+DATABASES: dict[str, Any]
 if database_url.startswith("sqlite:///"):
     sqlite_path = database_url.removeprefix("sqlite:///")
     DATABASES = {

@@ -1473,7 +1473,7 @@ def test_owner_can_switch_domains(client, owner, organization, project):
 
 @pytest.mark.django_db
 def test_complete_inbox_has_filter_preserving_pagination(
-    client, owner, organization, project, conversation
+    client, owner, organization, project, conversation, inbound_message
 ):
     now = timezone.now()
     for index in range(50):
@@ -1488,6 +1488,15 @@ def test_complete_inbox_has_filter_preserving_pagination(
             domain=project,
             name="agent-review",
             normalized_name="agent-review",
+        )
+        Message.objects.create(
+            domain=project,
+            conversation=item,
+            direction=Message.Direction.INBOUND,
+            provider_message_id=f"web-pagination-{index}",
+            from_address="sender@example.net",
+            subject=item.subject,
+            received_at=item.last_message_at,
         )
     conversation.tags.create(
         domain=project,

@@ -18,8 +18,8 @@ overview and agent setup prompt, see the [README](README.md).
 - A complete inbox with automatic viewed tracking, domain/mailbox navigation, new-message counts,
   search, tag/security/folder filters, inline Star/Archive/Trash/Restore actions, conversation
   timelines, quarantined attachments, API-token management, and an append-only audit view.
-- Account-level Free Core and Pro Scale access with one or 20 active domains, monthly reply
-  allowances of 30 or 5,000 user-requested replies, Stripe Checkout, dynamically configured
+- Account-level Free Core and Pro Scale access with one or 20 active domains, monthly email
+  allowances of 30 or 5,000 user-requested emails, Stripe Checkout, dynamically configured
   monthly pricing, Customer Portal subscription management, and signature-verified webhook
   synchronization.
 - Tenant-scoped SES/S3/SNS/SQS ingestion with durable idempotency, bounded MIME parsing, HTML
@@ -103,7 +103,7 @@ The model covers:
 - DNS instructions/results, inbound routes, and delivery tests;
 - conversations, free-form tags, messages, envelope/header recipients, RFC references, and attachments;
 - classifications, agent runs, and idempotent leased jobs;
-- reply drafts, immutable revisions, exact approvals, and outbound messages;
+- reply drafts and compose snapshots, immutable revisions, exact approvals, and outbound messages;
 - reports/items, notifications, ingress/delivery events, API tokens, and append-only audits.
 
 Conversations have no built-in Open/Waiting/Resolved or Start work state. Organization is limited
@@ -114,12 +114,13 @@ message security verdicts. Threading is domain-local: RFC `References` is consid
 silently merges conversations. New inbound mail restores an archived or trashed conversation to
 Inbox, preserves its Star and tags, and invalidates any existing draft approval.
 
-Free Core allows one active domain, 30 user-requested one-to-one replies per UTC calendar month,
+Free Core allows one active domain, 30 user-requested one-to-one emails per UTC calendar month,
 fixed default retention, and no server-side AI classification. Pro Scale allows 20 active domains,
-5,000 user-requested one-to-one replies per UTC calendar month, custom retention, and server-side
+5,000 user-requested one-to-one emails per UTC calendar month, custom retention, and server-side
 AI classification. Both plans expose the same API and MCP workflow for inbound feed/search,
-reversible organization, drafts, reply submission, delivery events, and account-wide Outbox safety.
-Inbound receiving and MCP tool calls have no commercial usage meter. Monthly reply allowances reset
+reversible organization, reply drafts, email submission, delivery events, and account-wide Outbox safety.
+New emails and replies share the existing `outbound_replies` allowance for compatibility.
+Inbound receiving and MCP tool calls have no commercial usage meter. Monthly email allowances reset
 at 00:00 UTC on the first day of the next month; short-window outbound and abuse-prevention limits
 continue to apply independently.
 
@@ -219,6 +220,27 @@ project priority and may persist them as ordinary free-form tags. Security/quara
 domain-health conditions create deduplicated email notifications.
 
 ## Agent-authored outbound mail
+
+New one-to-one plain-text emails use `send_composed_email` through `/app/compose/`,
+`POST /api/v1/domains/{domain_id}/outbound/compose`, or MCP `send_email` with `send` scope.
+The service validates the owner's domain, arbitrary local From address, single To address,
+subject/body limits, readiness, pause, and allowance before creating records. An account row lock
+and a domain-scoped UUID uniqueness constraint serialize duplicate sends. The same key and payload
+return the original authoritative attempt; a different payload returns `idempotency_conflict`.
+
+Conversation, immutable `ReplyDraft(kind=COMPOSE, context_message=NULL)` snapshot, envelope-bearing
+revision, outbound attempt, and durable job are created in one transaction. Unsent content is never
+persisted. Compose hashes bind From, To, Subject, and Body; legacy reply hashes remain unchanged.
+Reply interfaces only expose `kind=REPLY`. The SES worker omits reply headers for Compose, records
+Message-ID/To in the conversation timeline, and matches incoming references against outbound
+Message-IDs even before provider handoff completes. SES replaces the requested Message-ID header;
+the returned SES ID is recorded, and observed wire IDs become reference aliases. Inbound references
+also carry a namespaced hash of the SES ID, so replies received before the response or tagged Send
+event can be joined to the original conversation when that ID becomes known. Related messages,
+reply drafts, tags, and conversation timestamps follow that reconciliation. See the
+[SES SendRawEmail contract](https://docs.aws.amazon.com/ses/latest/APIReference/API_SendRawEmail.html).
+Message-less conversations are excluded from
+Inbox lists; their attempts remain inspectable in Outbox. Retention also scrubs revision addresses.
 
 Editing a reply creates a new immutable revision. The native web flow can retain owner approval,
 while API and MCP integrations use the connection's delegated `send` scope. Every path queues only
@@ -359,10 +381,10 @@ mailbox, tag, folder, new-only, and security filters.
 API and personal-token access are available on both Free Core and Pro Scale. Domain onboarding
 through the API uses the same account capacity as the web application: one active domain on Free
 Core and up to 20 active domains on Pro Scale. Both plans can read the active-domain feed, search,
-organize, draft, submit replies, inspect delivery, and use account-wide Outbox pause/resume.
-Free Core permits 30 user-requested replies per UTC calendar month with fixed retention; Pro Scale
+organize, draft replies, submit new emails and replies, inspect delivery, and use account-wide Outbox pause/resume.
+Free Core permits 30 user-requested emails per UTC calendar month with fixed retention; Pro Scale
 permits 5,000 with custom retention and server-side AI classification. Monthly limits are enforced
-on reply results rather than raw API or MCP call counts, and inbound receiving has no hard
+on outbound attempts rather than raw API or MCP call counts, and inbound receiving has no hard
 commercial plan quota. Independent safety and abuse limits apply to every outbound path.
 
 Browser requests use the authenticated Django session and CSRF protection. External clients use
@@ -430,7 +452,7 @@ authenticated, and every tool call enforces its `read`, `write`, `manage_domains
 Domain setup tools inspect public DNS, create an owner-authorized claim, return exact
 provider-neutral instructions, and verify the result; they never write customer DNS.
 Plugin and skill output describes account capacity and quotas neutrally. A non-renewing resource
-limit returns `capacity_reached` with `used`, `limit`, and no reset time; a renewable reply quota
+limit returns `capacity_reached` with `used`, `limit`, and no reset time; a renewable email quota
 returns `quota_exhausted` with its period and next UTC `reset_at`; short-window protection returns
 `rate_limited` with retry timing. Plugin-facing output does not include plan promotion, pricing, or
 checkout direction.

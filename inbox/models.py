@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 import uuid
 from typing import Any
@@ -24,6 +25,10 @@ def token_digest(raw_token: str) -> str:
 def content_digest(*parts: str) -> str:
     payload = "\x1f".join(parts).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def compose_content_digest(from_address: str, to_address: str, subject: str, body_text: str) -> str:
+    return content_digest(json.dumps([from_address, to_address, subject, body_text]))
 
 
 def reject_header_injection(value: str, field_name: str) -> None:
@@ -838,11 +843,16 @@ class DurableJob(UUIDTimeStampedModel):
 
 
 class ReplyDraft(DomainScopedModel):
+    class Kind(models.TextChoices):
+        REPLY = "REPLY", "Reply"
+        COMPOSE = "COMPOSE", "New email"
+
+    kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.REPLY)
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, related_name="reply_drafts"
     )
     context_message = models.ForeignKey(
-        Message, on_delete=models.PROTECT, related_name="reply_drafts"
+        Message, on_delete=models.PROTECT, related_name="reply_drafts", null=True, blank=True
     )
     current_revision = models.ForeignKey(
         "ReplyDraftRevision",
@@ -854,10 +864,23 @@ class ReplyDraft(DomainScopedModel):
     is_stale = models.BooleanField(default=False)
     rejected_at = models.DateTimeField(null=True, blank=True)
 
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(kind="REPLY", context_message__isnull=False)
+                    | Q(kind="COMPOSE", context_message__isnull=True)
+                ),
+                name="draft_kind_context",
+            )
+        ]
+
 
 class ReplyDraftRevision(DomainScopedModel):
     draft = models.ForeignKey(ReplyDraft, on_delete=models.CASCADE, related_name="revisions")
     number = models.PositiveSmallIntegerField()
+    from_address = models.EmailField(max_length=320, blank=True)
+    to_address = models.EmailField(max_length=320, blank=True)
     subject = models.CharField(max_length=998)
     body_text = models.TextField()
     content_hash = models.CharField(max_length=64, editable=False)
@@ -877,11 +900,22 @@ class ReplyDraftRevision(DomainScopedModel):
         if self.draft_id and self.domain_id != self.draft.domain_id:
             raise ValidationError("Draft and revision must belong to the same domain.")
         reject_header_injection(self.subject, "subject")
+        if self.draft_id and self.draft.kind == ReplyDraft.Kind.COMPOSE:
+            if not self.from_address or not self.to_address:
+                raise ValidationError("A composed email requires From and To addresses.")
+            reject_header_injection(self.from_address, "from_address")
+            reject_header_injection(self.to_address, "to_address")
+        elif self.from_address or self.to_address:
+            raise ValidationError("Reply addresses are derived from the inbound message.")
 
     def save(self, *args: Any, **kwargs: Any) -> None:
         if not self._state.adding:
             raise ValidationError("Reply draft revisions are immutable.")
-        self.content_hash = content_digest(self.subject, self.body_text)
+        self.content_hash = (
+            compose_content_digest(self.from_address, self.to_address, self.subject, self.body_text)
+            if self.draft.kind == ReplyDraft.Kind.COMPOSE
+            else content_digest(self.subject, self.body_text)
+        )
         super().save(*args, **kwargs)
 
 
@@ -942,6 +976,7 @@ class OutboundMessage(DomainScopedModel):
         "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="resends"
     )
     attempt_number = models.PositiveSmallIntegerField(default=1)
+    idempotency_key = models.UUIDField(null=True, blank=True)
     authorization_mode = models.CharField(
         max_length=24,
         choices=AuthorizationMode.choices,
@@ -953,7 +988,7 @@ class OutboundMessage(DomainScopedModel):
     subject = models.CharField(max_length=998)
     body_text = models.TextField()
     content_hash = models.CharField(max_length=64)
-    rfc_message_id = models.CharField(max_length=998)
+    rfc_message_id = models.CharField(max_length=998, db_index=True)
     provider_message_id = models.CharField(max_length=160, blank=True, db_index=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -978,7 +1013,12 @@ class OutboundMessage(DomainScopedModel):
         constraints = [
             models.UniqueConstraint(
                 fields=("revision", "attempt_number"), name="uniq_revision_send_attempt"
-            )
+            ),
+            models.UniqueConstraint(
+                fields=("domain", "idempotency_key"),
+                condition=Q(idempotency_key__isnull=False),
+                name="uniq_domain_compose_send_key",
+            ),
         ]
 
     def clean(self) -> None:
@@ -990,10 +1030,21 @@ class OutboundMessage(DomainScopedModel):
             raise ValidationError(
                 {"content_hash": "Outbound content must match its exact revision."}
             )
-        if self.content_hash != content_digest(self.subject, self.body_text):
+        composed = self.revision_id and self.revision.draft.kind == ReplyDraft.Kind.COMPOSE
+        expected_hash = (
+            compose_content_digest(self.from_address, self.to_address, self.subject, self.body_text)
+            if composed
+            else content_digest(self.subject, self.body_text)
+        )
+        if self.content_hash != expected_hash:
             raise ValidationError(
                 {"content_hash": "Outbound subject and body must match the approved content."}
             )
+        if composed and (
+            self.from_address != self.revision.from_address
+            or self.to_address != self.revision.to_address
+        ):
+            raise ValidationError("Outbound addresses must match the exact composed revision.")
         if self.revision_id and self.authorization_mode == self.AuthorizationMode.OWNER_APPROVAL:
             approval = getattr(self.revision, "approval", None)
             if (

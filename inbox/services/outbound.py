@@ -21,13 +21,15 @@ from inbox.models import (
     Domain,
     DraftApproval,
     DurableJob,
-    Message,
     OutboundControl,
     OutboundMessage,
+    ReplyDraft,
     User,
+    compose_content_digest,
 )
 from inbox.services.entitlements import can_manage_domain, for_user
 from inbox.services.notifications import create_outbound_problem_notifications
+from inbox.services.outbound_records import record_outbound_message
 
 OUTBOUND_RESOURCE = "outbound_replies"
 
@@ -265,6 +267,18 @@ def _authorization_error(outbound: OutboundMessage) -> str:
     draft = outbound.revision.draft
     if draft.current_revision_id != outbound.revision_id or draft.is_stale:
         return "The exact draft revision is no longer current."
+    if draft.kind == ReplyDraft.Kind.COMPOSE and (
+        outbound.from_address != outbound.revision.from_address
+        or outbound.to_address != outbound.revision.to_address
+        or outbound.subject != outbound.revision.subject
+        or outbound.body_text != outbound.revision.body_text
+        or outbound.content_hash != outbound.revision.content_hash
+        or outbound.content_hash
+        != compose_content_digest(
+            outbound.from_address, outbound.to_address, outbound.subject, outbound.body_text
+        )
+    ):
+        return "The email no longer matches its exact send snapshot."
     if outbound.authorization_mode == OutboundMessage.AuthorizationMode.OWNER_APPROVAL:
         approval = DraftApproval.objects.filter(
             revision=outbound.revision,
@@ -296,7 +310,7 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
     message["Subject"] = outbound.subject
     message["Message-ID"] = outbound.rfc_message_id
     context = outbound.revision.draft.context_message
-    if context.rfc_message_id:
+    if context is not None and context.rfc_message_id:
         message["In-Reply-To"] = context.rfc_message_id
         # Raw reference values are not persisted; preserve the immediate parent ID.
         message["References"] = context.rfc_message_id
@@ -307,7 +321,7 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
 def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None) -> OutboundMessage:
     with transaction.atomic():
         locked = (
-            OutboundMessage.objects.select_for_update()
+            OutboundMessage.objects.select_for_update(of=("self", "revision__draft"))
             .select_related("domain__owner", "revision__draft")
             .get(id=outbound.id)
         )
@@ -373,7 +387,7 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
 
     with transaction.atomic():
         current = (
-            OutboundMessage.objects.select_for_update()
+            OutboundMessage.objects.select_for_update(of=("self",))
             .select_related("domain", "conversation", "revision__draft")
             .get(id=locked.id)
         )
@@ -382,6 +396,11 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
             if not current.provider_message_id:
                 current.provider_message_id = provider_message_id
                 update_fields.add("provider_message_id")
+            if current.rfc_message_id == locked.rfc_message_id:
+                # SES replaces the requested header. Store its authoritative assigned ID;
+                # a full wire ID can also be observed in a delivery event or incoming reply.
+                current.rfc_message_id = provider_message_id
+                update_fields.add("rfc_message_id")
             if current.accepted_at is None:
                 current.accepted_at = accepted_at
                 update_fields.add("accepted_at")
@@ -425,25 +444,5 @@ def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None)
         create_outbound_problem_notifications(current)
 
     if current.provider_message_id:
-        Message.objects.get_or_create(
-            domain=current.domain,
-            provider_message_id=current.provider_message_id,
-            defaults={
-                "conversation": current.conversation,
-                "direction": Message.Direction.OUTBOUND,
-                "rfc_message_id": current.rfc_message_id,
-                "from_address": current.from_address,
-                "subject": current.subject,
-                "text_body": current.body_text,
-                "received_at": current.accepted_at or accepted_at or timezone.now(),
-            },
-        )
-        if current.status in {OutboundMessage.Status.ACCEPTED, OutboundMessage.Status.DELIVERED}:
-            outbound_at = current.accepted_at or accepted_at or timezone.now()
-            with transaction.atomic():
-                conversation = current.conversation.__class__.objects.select_for_update().get(
-                    id=current.conversation_id
-                )
-                conversation.last_outbound_at = outbound_at
-                conversation.save(update_fields=("last_outbound_at", "updated_at"))
+        current = record_outbound_message(current, requested_message_id=locked.rfc_message_id)
     return current

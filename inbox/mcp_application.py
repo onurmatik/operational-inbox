@@ -17,6 +17,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.mcpserver.context import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, Tool
+from pydantic import ValidationError as PydanticValidationError
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -324,6 +325,14 @@ class OperationalInboxMCPServer(MCPServer[None]):
             )
         except DjangoValidationError as exc:
             return _tool_error(request_id, "validation_error", "; ".join(exc.messages))
+        except PydanticValidationError as exc:
+            messages = [
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors(
+                    include_input=False, include_context=False, include_url=False
+                )
+            ]
+            return _tool_error(request_id, "validation_error", "; ".join(messages))
         except Exception:
             logger.exception("MCP tool call failed", extra={"tool_name": name})
             return _tool_error(

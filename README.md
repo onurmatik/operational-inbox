@@ -34,6 +34,7 @@ the copied skill.
 - Review and search mail across domains and routed addresses.
 - Organize conversations with tags, Star, Archive, Trash, and Restore.
 - Draft immutable reply revisions and send only the exact authorized revision.
+- Send a new one-to-one plain-text email from any address on a verified sending domain.
 - Monitor outbound delivery, including failures, bounces, and complaints.
 
 The standalone skill routes these jobs through focused setup, triage, reply, and delivery
@@ -59,13 +60,20 @@ active domain, search, tags and folders, immutable drafts, Outbox pause/resume a
 and API + MCP access. MCP tool calls are not commercially metered, and incoming mail has no hard
 plan-volume quota. Technical and abuse-prevention safety limits still apply.
 
-- **Free Core:** one active domain, 30 user-requested one-to-one replies per UTC calendar month,
+- **Free Core:** one active domain, 30 user-requested one-to-one outbound emails per UTC calendar month,
   and fixed retention.
-- **Pro Scale:** up to 20 active domains, 5,000 user-requested one-to-one replies per UTC calendar
+- **Pro Scale:** up to 20 active domains, 5,000 user-requested one-to-one outbound emails per UTC calendar
   month, custom retention, and server-side AI classification.
 
-Reply allowances reset at 00:00 UTC on the first day of each month. Drafting and Outbox safety
-remain available when the reply allowance is exhausted.
+New emails and replies share this allowance, which resets at 00:00 UTC on the first day of each
+month. Reply drafting and Outbox safety remain available when it is exhausted.
+
+The site exposes **Compose** from Inbox and Outbox. It sends one plain-text email immediately
+into the delivery queue; it does not save unsent drafts. Agents use `send_email` with `domain_id`,
+`from_address`, `to_address`, `subject`, `body_text`, and a UUID `idempotency_key`. The HTTP equivalent
+is `POST /api/v1/domains/{domain_id}/outbound/compose`. Retain the same key after an uncertain API
+response to recover the existing attempt without sending again. Both interfaces return the
+outbound ID, conversation ID, and authoritative status.
 
 If an account returns to Free Core while more than one domain is active, it receives a 30-day
 capacity grace period. The owner chooses the domain that will keep the Free slot; the others remain

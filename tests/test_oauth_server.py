@@ -398,8 +398,8 @@ def test_public_review_and_install_surfaces(client, settings):
     assert manifest["Access-Control-Allow-Origin"] == "*"
     assert manifest.json() == {
         "server_version": "0.1.0",
-        "mcp_contract_version": "1.0.0",
-        "skill_version": "1.0.0",
+        "mcp_contract_version": "1.1.0",
+        "skill_version": "1.1.0",
         "minimum_skill_version": "1.0.0",
         "skill_update_url": "https://operationalinbox.com/INSTALL.md",
     }

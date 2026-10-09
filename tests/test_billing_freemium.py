@@ -366,7 +366,7 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"<del>USD 9.99</del>" in response.content
     assert b"USD 4.99" in response.content
     assert b"Up to 20 managed domains" in response.content
-    assert b"5,000 user-requested replies" in response.content
+    assert b"5,000 user-requested emails" in response.content
     assert b"Custom retention &amp; server-side AI classification" in response.content
     assert b"API &amp; MCP access</span><span>Yes</span><span>Yes" in response.content
     assert b"Agent-authored drafts</span><span>Yes</span><span>Yes" in response.content
