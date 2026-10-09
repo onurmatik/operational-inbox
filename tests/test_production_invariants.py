@@ -18,7 +18,6 @@ from inbox.email_backend import SESEmailBackend
 from inbox.models import (
     APIToken,
     Attachment,
-    Classification,
     Domain,
     DomainDNSRecord,
     DomainTest,
@@ -27,12 +26,9 @@ from inbox.models import (
     IngressEvent,
     Message,
     MessageRecipient,
-    Notification,
     OutboundMessage,
     ReplyDraft,
     ReplyDraftRevision,
-    Report,
-    ReportItem,
 )
 from inbox.services.domains import (
     apply_domain_readiness,
@@ -49,8 +45,10 @@ from inbox.services.ingestion import (
     quarantine_invalid_sqs_body,
 )
 from inbox.services.jobs import schedule_work
+from inbox.services.legacy import legacy_payload
 from inbox.services.outbound import recover_stale_submissions, submit_outbound
 from inbox.services.retention import purge_retention
+from tests.legacy_helpers import archived_record
 from tests.test_ingestion import BUCKET, DELIVERY_TOPIC, FakeS3, create_route, sns_body
 
 
@@ -477,11 +475,13 @@ def test_retention_redacts_normalized_personal_content(
     old = timezone.now() - timedelta(days=2)
     inbound_message.received_at = old
     inbound_message.save(update_fields=("received_at", "updated_at"))
-    classification = Classification.objects.create(
-        domain=organization,
-        message=inbound_message,
-        source=Classification.Source.OWNER,
-        category=Classification.Category.ACTIONABLE,
+    classification = archived_record(
+        organization,
+        "Classification",
+        content_created_at=old,
+        message_id=str(inbound_message.id),
+        source="OWNER",
+        category="ACTIONABLE",
         topic="Sensitive customer request",
         summary="Personal summary",
         recommended_action="Personal action",
@@ -497,31 +497,30 @@ def test_retention_redacts_normalized_personal_content(
         scan_status=Attachment.ScanStatus.CLEAN,
         purge_at=timezone.now() + timedelta(days=90),
     )
-    notification = Notification.objects.create(
-        domain=project,
-        conversation=conversation,
-        channel=Notification.Channel.IN_APP,
+    notification = archived_record(
+        organization,
+        "Notification",
+        created_at=old,
         kind="sensitive",
-        dedupe_key="retention-sensitive",
         title="Customer name",
         body="Sensitive notification body",
     )
-    Notification.objects.filter(id=notification.id).update(created_at=old)
-    report = Report.objects.create(
-        domain=organization,
-        kind=Report.Kind.DAILY,
-        schedule_key="old-retention-report",
+    report = archived_record(
+        organization,
+        "Report",
+        content_created_at=old,
+        kind="DAILY",
         period_start=old - timedelta(days=1),
         period_end=old,
-        status=Report.Status.READY,
+        status="READY",
         title="Sensitive report",
         content="Sensitive report content",
     )
-    report_item = ReportItem.objects.create(
-        domain=organization,
-        report=report,
-        conversation=conversation,
-        classification=classification,
+    report_item = archived_record(
+        organization,
+        "ReportItem",
+        content_created_at=old,
+        report_id=str(report.object_id),
         rank=1,
         summary="Sensitive item",
     )
@@ -544,9 +543,16 @@ def test_retention_redacts_normalized_personal_content(
     assert inbound_message.from_address == "redacted@invalid.local"
     assert inbound_message.subject == ""
     assert not inbound_message.recipients.exists()
-    assert classification.topic == classification.summary == ""
+    assert (
+        legacy_payload(classification)["topic"] == legacy_payload(classification)["summary"] == ""
+    )
     assert attachment.display_name == "expired attachment" and attachment.sha256 == ""
-    assert notification.body == "" and report.content == "" and report_item.summary == ""
+    assert (
+        legacy_payload(notification)["body"]
+        == legacy_payload(report)["content"]
+        == legacy_payload(report_item)["summary"]
+        == ""
+    )
     assert revision.subject == revision.body_text == ""
     assert outbound.to_address == "redacted@invalid.local" and outbound.body_text == ""
 
@@ -582,9 +588,5 @@ def test_disabled_domain_is_hidden_without_invalidating_global_token(client, own
 @pytest.mark.django_db
 def test_scheduler_does_not_create_classification_or_report_work(organization, inbound_message):
     now = datetime(2026, 7, 31, 12, 5, tzinfo=ZoneInfo("UTC"))
-    schedule = organization.report_schedule
-    schedule.review_frequency = schedule.Frequency.HOURLY
-    schedule.last_review_at = now - timedelta(hours=3, minutes=5)
-    schedule.save(update_fields=("review_frequency", "last_review_at", "updated_at"))
     schedule_work(now=now)
     assert not DurableJob.objects.filter(kind__in=("classify_message", "generate_report")).exists()

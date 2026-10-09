@@ -1,6 +1,7 @@
 {% extends "app_base.html" %}
 {% block title %}Plan & billing · Operational Inbox{% endblock %}
 {% block content %}
+{% include "inbox/partials/settings_tabs.html" %}
   <div class="border-b border-line pb-6">
     <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Account subscription</p>
     <h1 class="mt-1 font-heading text-3xl font-semibold">Plan &amp; billing</h1>
@@ -47,7 +48,7 @@
         <ul class="mt-4 divide-y divide-line border-y border-line text-sm" aria-label="Pro Scale plan highlights">
           <li class="py-2.5"><span class="font-semibold">Up to {{ pro_domain_limit }} managed domains</span></li>
           <li class="py-2.5"><span class="font-semibold">5,000 user-requested emails</span><span class="text-muted"> · per UTC calendar month</span></li>
-          <li class="py-2.5"><span class="font-semibold">Custom retention &amp; server-side AI classification</span></li>
+          <li class="py-2.5"><span class="font-semibold">Custom retention &amp; more domains</span></li>
         </ul>
 
         {% if billing_configured %}
@@ -70,7 +71,6 @@
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>User-requested email delivery / month</span><span>30</span><span>5,000</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Outbox safety and delivery events</span><span>Yes</span><span>Yes</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Retention controls</span><span>Fixed</span><span>Custom</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_88px_88px] px-5 py-3"><span>Server-side AI classification</span><span>—</span><span>Yes</span></div>
       </div>
       <p class="border-t border-line bg-paper/60 px-5 py-3 text-xs leading-5 text-muted">New emails and replies share one allowance. It follows the UTC calendar month and resets at 00:00 UTC on day one. Inbound receiving and MCP tool calls do not consume that allowance. Technical and abuse-prevention safety limits apply to both plans.</p>
     </section>

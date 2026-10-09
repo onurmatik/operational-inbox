@@ -1,6 +1,6 @@
 [project]
 name = "operational-inbox"
-version = "0.1.0"
+version = "0.2.0"
 description = "A tenant-safe multi-domain email layer for people and agents."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -17,7 +17,6 @@ dependencies = [
   "gunicorn>=23,<24",
   "mcp>=2.0,<2.1",
   "nh3>=0.2.20,<1",
-  "openai>=1.99,<3",
   "pydantic>=2.11,<3",
   "python-dotenv>=1.0,<2",
   "psycopg[binary]>=3.3,<4",

@@ -36,8 +36,7 @@ Both plans expose the full agent workflow: the feed for every authorized active 
 reversible organization, reply drafts, user-requested email submission, delivery events, and Outbox
 pause/resume. The all-active-domain feed is not a Pro-only API. Free Core has one active-domain
 slot, 30 user-requested emails per UTC calendar month, and fixed retention. Pro Scale has 20
-active-domain slots, 5,000 user-requested emails per UTC calendar month, custom retention, and
-server-side AI classification.
+active-domain slots, 5,000 user-requested emails per UTC calendar month, custom retention.
 
 MCP and API call counts are not commercially metered, and inbound receiving has no hard commercial
 plan-volume quota. Independent technical, provider, and abuse-prevention limits still apply.

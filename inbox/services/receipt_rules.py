@@ -25,7 +25,7 @@ class ReconciliationResult:
 def receipt_allowlist() -> tuple[str, ...]:
     now = timezone.now()
     direct_domains = (
-        Domain.objects.filter(ownership_verified=True)
+        Domain.objects.filter(ownership_verified=True, receiving_enabled=True)
         .exclude(status=Domain.Status.DISABLED)
         .filter(
             Q(

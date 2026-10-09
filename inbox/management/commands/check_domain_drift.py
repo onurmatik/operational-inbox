@@ -142,7 +142,7 @@ class Command(BaseCommand):
         verification_domains = [
             domain
             for domain in domains
-            if domain.setup_mode == Domain.SetupMode.DIRECT_MX
+            if (domain.receiving_enabled and domain.setup_mode == Domain.SetupMode.DIRECT_MX)
             or domain.outbound_status != Domain.OutboundStatus.DISABLED
             or any(
                 transition.domain_id == domain.id
@@ -224,7 +224,10 @@ class Command(BaseCommand):
             settings.AWS_INGRESS_BUCKET
             and settings.AWS_INBOUND_TOPIC_ARN
             and (
-                any(domain.setup_mode == Domain.SetupMode.DIRECT_MX for domain in domains)
+                any(
+                    (domain.receiving_enabled and domain.setup_mode == Domain.SetupMode.DIRECT_MX)
+                    for domain in domains
+                )
                 or any(
                     transition.to_mode == Domain.SetupMode.DIRECT_MX for transition in transitions
                 )
@@ -283,7 +286,9 @@ class Command(BaseCommand):
             .order_by("hostname")
         )
         for domain in pending_test_domains:
-            if domain.setup_mode == Domain.SetupMode.DIRECT_MX and not receipt_rule_reconciled:
+            if (
+                domain.receiving_enabled and domain.setup_mode == Domain.SetupMode.DIRECT_MX
+            ) and not receipt_rule_reconciled:
                 continue
             try:
                 test, _, created = ensure_domain_test(

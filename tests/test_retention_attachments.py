@@ -1,117 +1,26 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from types import SimpleNamespace
+from datetime import timedelta
 from unittest.mock import Mock
-from zoneinfo import ZoneInfo
 
 import pytest
 from django.test import override_settings
 from django.utils import timezone
 
 from inbox.models import (
-    AgentRun,
     Attachment,
     AuditEvent,
-    Classification,
     DurableJob,
     EmailVerificationToken,
     IngressEvent,
-    Report,
     SignupAttempt,
 )
-from inbox.services.ai import ReportItemOutput, ReportOutput
 from inbox.services.attachments import (
     AttachmentGoneError,
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.reports import daily_report_due, generate_report, schedule_key
 from inbox.services.retention import purge_retention
-
-
-@pytest.mark.django_db
-@override_settings(OPENAI_API_KEY="")
-def test_report_fallback_is_deterministic_and_deduplicated(organization, inbound_message):
-    Classification.objects.create(
-        domain=organization,
-        message=inbound_message,
-        source=Classification.Source.OWNER,
-        category=Classification.Category.ACTIONABLE,
-        urgency=Classification.Urgency.HIGH,
-        summary="Respond to the privacy request.",
-    )
-    now = timezone.now()
-    first = generate_report(domain=organization, kind=Report.Kind.DAILY, now=now)
-    second = generate_report(domain=organization, kind=Report.Kind.DAILY, now=now)
-    assert first.id == second.id
-    assert first.generation_mode == Report.GenerationMode.DETERMINISTIC
-    assert "Deterministic fallback" in first.content
-    assert first.items.count() == 1
-
-
-@pytest.mark.django_db
-@override_settings(OPENAI_API_KEY="")
-def test_report_fallback_includes_unclassified_messages(organization, inbound_message):
-    report = generate_report(
-        domain=organization,
-        kind=Report.Kind.DAILY,
-        now=timezone.now(),
-    )
-    assert "Messages reviewed: 1" in report.content
-    item = report.items.get()
-    assert item.classification is None
-    assert "Unclassified message" in item.summary
-
-
-@pytest.mark.django_db
-def test_ai_report_attaches_persisted_agent_run(organization, inbound_message):
-    output = ReportOutput(
-        title="Daily operational review",
-        overview="One message requires review.",
-        items=[
-            ReportItemOutput(
-                conversation_id=str(inbound_message.conversation_id),
-                summary="Review the privacy request.",
-                priority=1,
-            )
-        ],
-    )
-    responses = Mock()
-    responses.parse.return_value = SimpleNamespace(
-        status="completed",
-        output_parsed=output,
-        usage=SimpleNamespace(input_tokens=20, output_tokens=8),
-    )
-    report = generate_report(
-        domain=organization,
-        kind=Report.Kind.DAILY,
-        now=timezone.now(),
-        client=SimpleNamespace(responses=responses),
-    )
-    assert report.generation_mode == Report.GenerationMode.AI
-    assert report.agent_run is not None
-    assert report.agent_run.kind == AgentRun.Kind.REPORT
-    assert report.agent_run.status == AgentRun.Status.SUCCEEDED
-    assert report.agent_run.input_tokens == 20
-
-
-@pytest.mark.django_db
-def test_timezone_daily_due_and_dst_schedule_key(organization):
-    organization.timezone = "Europe/Berlin"
-    organization.save(update_fields=("timezone", "updated_at"))
-    schedule = organization.report_schedule
-    schedule.daily_report_time = datetime.strptime("09:00", "%H:%M").time()
-    schedule.save(update_fields=("daily_report_time", "updated_at"))
-    before = datetime(2026, 3, 29, 6, 59, tzinfo=ZoneInfo("UTC"))
-    after = datetime(2026, 3, 29, 7, 1, tzinfo=ZoneInfo("UTC"))
-    assert not daily_report_due(organization, before)
-    assert daily_report_due(organization, after)
-    first_repeated_hour = datetime(2026, 10, 25, 0, 30, tzinfo=ZoneInfo("UTC"))
-    second_repeated_hour = datetime(2026, 10, 25, 1, 30, tzinfo=ZoneInfo("UTC"))
-    assert schedule_key(organization, Report.Kind.HOURLY, first_repeated_hour) != schedule_key(
-        organization, Report.Kind.HOURLY, second_repeated_hour
-    )
 
 
 @pytest.mark.django_db

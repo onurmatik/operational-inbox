@@ -307,6 +307,18 @@
         "open_world_justification": "May deliver another email to an external recipient.",
         "destructive_justification": "A resend can create a duplicate external delivery and cannot be reliably recalled, so a new explicit user request is required."
       }
+    },
+    "enable_domain_receiving": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Prepares the receiving route explicitly selected by the authenticated owner.",
+        "open_world_justification": "Provisioning contacts managed SES infrastructure without changing customer DNS.",
+        "destructive_justification": "Keeps existing sending and does not replace MX or delete messages."
+      }
     }
   },
   "test_cases": [

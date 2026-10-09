@@ -99,25 +99,23 @@ keys and AWS implementation details are never exposed in API errors.
 
 The model covers:
 
-- domains, domain-specific report schedules and retention policies;
+- domains and retention policies;
 - DNS instructions/results, inbound routes, and delivery tests;
 - conversations, free-form tags, messages, envelope/header recipients, RFC references, and attachments;
-- classifications, agent runs, and idempotent leased jobs;
+- idempotent leased jobs;
 - reply drafts and compose snapshots, immutable revisions, exact approvals, and outbound messages;
-- reports/items, notifications, ingress/delivery events, API tokens, and append-only audits.
+- email notifications and ingress/delivery events, API tokens, and append-only audits.
 
 Conversations have no built-in Open/Waiting/Resolved or Start work state. Organization is limited
 to viewed timestamps, Starred, Archive, Trash, and usage-derived free-form tags; tag names come
 from people or their agents rather than an account-level allowed list. Quarantine is derived from
 message security verdicts. Threading is domain-local: RFC `References` is considered first, then
-`In-Reply-To` with participant overlap. Subject similarity can create a merge suggestion but never
-silently merges conversations. New inbound mail restores an archived or trashed conversation to
+`In-Reply-To` with participant overlap. Subject similarity never merges conversations. New inbound mail restores an archived or trashed conversation to
 Inbox, preserves its Star and tags, and invalidates any existing draft approval.
 
 Free Core allows one active domain, 30 user-requested one-to-one emails per UTC calendar month,
-fixed default retention, and no server-side AI classification. Pro Scale allows 20 active domains,
-5,000 user-requested one-to-one emails per UTC calendar month, custom retention, and server-side
-AI classification. Both plans expose the same API and MCP workflow for inbound feed/search,
+fixed default retention. Pro Scale allows 20 active domains,
+5,000 user-requested one-to-one emails per UTC calendar month, custom retention. Both plans expose the same API and MCP workflow for inbound feed/search,
 reversible organization, reply drafts, email submission, delivery events, and account-wide Outbox safety.
 New emails and replies share the existing `outbound_replies` allowance for compatibility.
 Inbound receiving and MCP tool calls have no commercial usage meter. Monthly email allowances reset
@@ -204,20 +202,20 @@ writes customer records. Provider-forward domains with sending disabled are not 
 - Logs and direct API error envelopes may carry request IDs, but MCP tool content does not expose
   internal request identifiers. Neither surface includes message bodies, secrets, tenant S3 keys,
   or raw AWS details.
-- Raw email and every metadata value are marked as untrusted data in model prompts. The model has
-  no tools, cannot browse or open links, and receives only attachment filename/type/size/scan
-  metadata—not attachment bytes.
+- Email content and attachment metadata are untrusted input for connected agents; the server does not execute their instructions or run an internal language model.
 
 Agents connected through MCP persist their own subject and body as an exact agent-authored draft
 revision. Operational Inbox does not generate reply copy. A connection with focused `send`
 authority may queue the exact current revision without a second per-message approval prompt;
 revision ID, content hash, freshness, domain readiness, pause state, and send limits are revalidated.
 
-Operational Inbox does not autonomously schedule workflow classification, aging, or report jobs
-and does not create in-app notifications. Pro accounts may explicitly use server-side AI
-classification, but the user's agent still decides concepts such as Requires reply, Aging, or
-project priority and may persist them as ordinary free-form tags. Security/quarantine and
-domain-health conditions create deduplicated email notifications.
+Operational Inbox has no internal classification, report, or agent-run runtime. The user's external agent decides triage and customer relationship actions and persists ordinary tags and exact draft revisions. Domain-health, security, and delivery issues still create deduplicated email alerts.
+
+Migration `0015_simplify_agent_first` snapshots retired ReportSchedule, Report, ReportItem, AgentRun, Classification, in-app notification records, and nondefault removed fields into scoped audit history before dropping their tables/fields. Original IDs and timestamps are preserved. Deprecated report/notification reads and classification overrides remain compatible; new overrides persist tags plus audit evidence. Archived content follows normalized-content retention and is excluded from ordinary audit API metadata. Stop old workers and use the normal deployment backup contract before applying this migration. Reversal restores retained snapshots; rollback after retention expiry cannot recover purged content.
+
+The web UI has two main destinations: Conversations and Domains. Conversations spans owned active domains, with an explicit optional domain filter; individual reads and actions do not use a session domain. Sent includes queued attempts before provider handoff creates a normalized Message. Setup-test mail stays out of the default conversation list. Settings groups account sending controls, access, retention, audit, and plan management.
+
+Domain goals are `receive`, `send`, and `both`. `receiving_enabled` and `sending_requested` track intent separately from `inbound_ready` and `outbound_ready`. Sending-only provisioning creates ownership instructions without inspecting or changing MX or allocating an inbound route. Valid ownership enables independent SES/DKIM provisioning; no inbound delivery test is needed for sending. `enable_domain_receiving` can later add a chosen receiving route without resetting sending. Sending-only domains are excluded from the receipt allowlist and ingestion route resolution.
 
 ## Agent-authored outbound mail
 
@@ -294,12 +292,10 @@ DJANGO_SECURE_COOKIES=false
 DJANGO_SECURE_SSL_REDIRECT=false
 PUBLIC_BASE_URL=http://localhost:8000
 DJANGO_EMAIL_BACKEND=console
-OPENAI_API_KEY=
 ```
 
 With the console email backend, passwordless sign-in links and legacy verification-resend links
-are printed in the server terminal. Leave `OPENAI_API_KEY` blank to exercise graceful
-AI-unavailable behavior; add a key only when testing live Responses API calls. The ignored `.env`
+are printed in the server terminal. The ignored `.env`
 and `.env-prod` files must never be committed.
 
 The Tailwind input is [`assets/css/app.css`](assets/css/app.css); the minified output
@@ -345,7 +341,6 @@ python3 -c "import base64,secrets; print(base64.urlsafe_b64encode(secrets.token_
   limits;
 - dedicated AWS `us-east-1` credentials plus bucket, queue, topic, configuration-set, and
   receipt-rule names;
-- OpenAI API key and model names;
 - backup encryption key and destination.
 
 Production AWS credentials belong only in ignored `.env-prod` and the mode-`0600` server `.env`.
@@ -383,7 +378,7 @@ through the API uses the same account capacity as the web application: one activ
 Core and up to 20 active domains on Pro Scale. Both plans can read the active-domain feed, search,
 organize, draft replies, submit new emails and replies, inspect delivery, and use account-wide Outbox pause/resume.
 Free Core permits 30 user-requested emails per UTC calendar month with fixed retention; Pro Scale
-permits 5,000 with custom retention and server-side AI classification. Monthly limits are enforced
+permits 5,000 with custom retention. Monthly limits are enforced
 on outbound attempts rather than raw API or MCP call counts, and inbound receiving has no hard
 commercial plan quota. Independent safety and abuse limits apply to every outbound path.
 
@@ -594,7 +589,7 @@ signup and provisioning limits, IDNA and claim expiry,
 MX safety, explicit receipt-rule reconciliation and the 500-recipient limit, duplicate and
 out-of-order AWS events, multi-domain routing, malformed MIME, crash idempotency, sanitization,
 quarantine, prompt injection, attachment authorization, retention, threading, DST scheduling,
-OpenAI failure, stale drafts, exact approval, header injection, ambiguous SES submission,
+stale drafts, exact approval, header injection, ambiguous SES submission,
 bounce/complaint handling, and explicit resend.
 
 Run the local quality gate:

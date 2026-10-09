@@ -174,13 +174,11 @@ def test_quick_actions_are_idempotent_restoreable_and_preserve_return_location(
 
     archived_page = client.get(
         reverse("inbox"),
-        {"domain": domain.id, "folder": "archive"},
+        {"domain": domain.id, "folder": "archive", "conversation": str(conversation.id)},
     )
     assert archived_page.status_code == 200
     assert b'aria-label="Unstar conversation"' in archived_page.content
-    assert b'data-icon="star-filled"' in archived_page.content
-    assert b'data-tooltip="Restore to Inbox"' in archived_page.content
-    assert b'data-icon="restore"' in archived_page.content
+    assert b">Restore</button>" in archived_page.content
 
     for action in ("trash", "trash", "restore", "restore", "unstar", "unstar"):
         client.post(action_url, {"action": action, "next": next_url})
@@ -265,12 +263,10 @@ def test_sidebar_counts_unique_new_messages_per_domain_and_per_routing_address(
     response = client.get(reverse("inbox"), {"domain": domain.id})
 
     assert response.status_code == 200
-    tree_domain = next(
-        item for item in response.context["nav_inbox_tree"] if item["id"] == domain.id
-    )
-    address_counts = {item["address"]: item["new_count"] for item in tree_domain["addresses"]}
-    assert tree_domain["new_count"] == 2
-    assert address_counts == {"contact@example.com": 1, "support@example.com": 2}
+    rows = {item.id: item for item in response.context["conversations"]}
+    assert sum(item.new_message_count for item in rows.values()) == 2
+    assert rows[conversation.id].routing_addresses == ["contact@example.com", "support@example.com"]
+    assert rows[second_conversation.id].routing_addresses == ["support@example.com"]
     assert b"ignored@example.com" not in response.content
 
     filtered = client.get(
@@ -285,11 +281,7 @@ def test_sidebar_counts_unique_new_messages_per_domain_and_per_routing_address(
     second_conversation.trashed_at = timezone.now()
     second_conversation.save(update_fields=("trashed_at", "updated_at"))
     emptied = client.get(reverse("inbox"), {"domain": domain.id})
-    tree_domain = next(
-        item for item in emptied.context["nav_inbox_tree"] if item["id"] == domain.id
-    )
-    assert tree_domain["new_count"] == 0
-    assert all(item["new_count"] == 0 for item in tree_domain["addresses"])
+    assert not emptied.context["conversations"]
 
 
 @pytest.mark.django_db
@@ -303,21 +295,17 @@ def test_inbox_rows_keep_detail_link_separate_from_post_actions(
     _routing_recipient(inbound_message, "support@example.com")
     _select_domain(client, owner, domain)
 
-    response = client.get(reverse("inbox"), {"domain": domain.id})
+    response = client.get(
+        reverse("inbox"), {"domain": domain.id, "conversation": str(conversation.id)}
+    )
 
     parser = _ActionNestingParser()
     parser.feed(response.content.decode())
     assert parser.form_inside_anchor is False
-    assert b"1 new" in response.content
     assert b"support@example.com" in response.content
     assert reverse("conversation_action", args=[conversation.id]).encode() in response.content
     assert b'aria-label="Star conversation"' in response.content
     assert b'aria-label="Archive conversation"' in response.content
-    assert b'data-tooltip="Move to Trash"' in response.content
-    assert b'data-icon="star"' in response.content
-    assert b'data-icon="start"' not in response.content
-    assert b'data-icon="archive"' in response.content
-    assert b'data-icon="trash"' in response.content
     assert b"iconify-icon" not in response.content
 
 
@@ -352,7 +340,8 @@ def test_cross_owner_filters_and_actions_are_not_found(
     _select_domain(client, owner, domain)
 
     assert client.get(reverse("inbox"), {"domain": other_domain.id}).status_code == 404
-    assert client.get(reverse("inbox"), {"recipient": "private@other.example"}).status_code == 404
+    filtered = client.get(reverse("inbox"), {"recipient": "private@other.example"})
+    assert filtered.status_code == 200 and not filtered.context["conversations"]
     action_url = reverse("conversation_action", args=[other_conversation.id])
     assert client.post(action_url, {"action": "star"}).status_code == 404
     assert client.get(reverse("conversation_action", args=[conversation.id])).status_code == 405

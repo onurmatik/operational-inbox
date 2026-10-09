@@ -28,7 +28,6 @@ class DomainScopedAdmin(admin.ModelAdmin):
 
 
 for model in (
-    models.ReportSchedule,
     models.RetentionPolicy,
     models.Domain,
     models.DomainDNSRecord,
@@ -40,15 +39,11 @@ for model in (
     models.MessageRecipient,
     models.MessageReference,
     models.Attachment,
-    models.Classification,
-    models.AgentRun,
     models.DurableJob,
     models.ReplyDraft,
     models.ReplyDraftRevision,
     models.DraftApproval,
     models.OutboundMessage,
-    models.Report,
-    models.ReportItem,
     models.Notification,
     models.DeliveryEvent,
     models.APIToken,

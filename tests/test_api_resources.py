@@ -20,13 +20,12 @@ from inbox.models import (
     InboundRoutingTransition,
     Message,
     MessageRecipient,
-    Notification,
     OutboundMessage,
     ReplyDraft,
-    Report,
     User,
 )
 from inbox.services.drafts import revise_draft
+from tests.legacy_helpers import archived_record
 
 
 @pytest.mark.django_db
@@ -292,6 +291,14 @@ def test_outbound_enable_api_is_idempotent_and_reports_separate_state(client, ow
         inbound_ready=True,
         ownership_verified=True,
         claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose="OWNERSHIP",
+        record_type="TXT",
+        name=f"_operational-inbox.{domain.hostname}",
+        value="proof",
+        status="VALID",
     )
     url = f"/api/v1/domains/{domain.id}/outbound/enable"
 
@@ -615,21 +622,22 @@ def test_session_api_resource_surface(
         "content_hash": revision.content_hash,
     }
 
-    report = Report.objects.create(
-        domain=organization,
-        kind=Report.Kind.HOURLY,
-        schedule_key="api-hour",
+    report = archived_record(
+        organization,
+        "Report",
+        kind="HOURLY",
         period_start=timezone.now() - timedelta(hours=1),
         period_end=timezone.now(),
-        status=Report.Status.READY,
+        status="READY",
+        generation_mode="DETERMINISTIC",
         title="Hourly review",
         content="Review complete.",
     )
-    notification = Notification.objects.create(
-        domain=organization,
-        channel=Notification.Channel.IN_APP,
+    notification = archived_record(
+        organization,
+        "Notification",
         kind="api",
-        dedupe_key="api-notification",
+        status="SENT",
         title="API notification",
         body="Review this.",
     )
@@ -638,13 +646,13 @@ def test_session_api_resource_surface(
         actor_type=AuditEvent.ActorType.SYSTEM,
         event_type="api.test",
         object_type="Report",
-        object_id=report.id,
+        object_id=report.object_id,
         request_id="api-test",
     )
     assert client.get(f"{base}/reports").json()["items"]
     assert client.get(f"{base}/notifications").json()["items"]
     read = client.post(
-        f"{base}/notifications/{notification.id}/read",
+        f"{base}/notifications/{notification.object_id}/read",
         data={},
         content_type="application/json",
     )

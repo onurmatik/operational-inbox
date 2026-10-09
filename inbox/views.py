@@ -20,10 +20,10 @@ from django.core.exceptions import ValidationError
 from django.core.mail import EmailMultiAlternatives, send_mail
 from django.core.paginator import Paginator
 from django.db import connection, transaction
-from django.db.models import Count, Exists, IntegerField, OuterRef, Prefetch, Q, Subquery, Value
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Exists, F, IntegerField, OuterRef, Prefetch, Q, Subquery, Value
+from django.db.models.functions import Coalesce, Greatest
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
-from django.shortcuts import redirect, render
+from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse
 from django.utils import timezone
@@ -48,7 +48,6 @@ from inbox.models import (
     Attachment,
     AuditEvent,
     Conversation,
-    ConversationTag,
     Domain,
     DomainDNSRecord,
     DomainTest,
@@ -85,6 +84,7 @@ from inbox.services.domains import (
     DomainClaimLookupError,
     classify_stored_mx,
     create_domain,
+    enable_receiving,
     ensure_domain_test,
     inspect_domain_routing,
     normalize_hostname,
@@ -111,8 +111,8 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     ensure_routing_transition_test,
 )
-from inbox.services.tags import add_conversation_tag, normalize_tag, remove_conversation_tag
-from inbox.services.tenancy import current_domain, domain_get_or_404, get_owned_domain
+from inbox.services.tags import add_conversation_tag, remove_conversation_tag
+from inbox.services.tenancy import domain_get_or_404, get_owned_domain
 
 logger = logging.getLogger(__name__)
 
@@ -130,17 +130,6 @@ ACTIVE_ROUTING_TRANSITION_STATUSES = (
     InboundRoutingTransition.Status.FAILED,
 )
 
-RECENT_AUDIT_EVENT_LIMIT = 6
-AUDIT_PROBLEM_EVENT_TYPES = frozenset(
-    {
-        "agent.draft_failed",
-        "agent.report_failed",
-        "domain.outbound_provision_failed",
-        "domain.provision_failed",
-    }
-)
-AUDIT_PROBLEM_STATUSES = frozenset({"BOUNCED", "COMPLAINED", "FAILED", "UNKNOWN"})
-
 
 def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | None:
     transitions = sorted(
@@ -153,35 +142,6 @@ def _active_routing_transition(domain: Domain) -> InboundRoutingTransition | Non
         reverse=True,
     )
     return transitions[0] if transitions else None
-
-
-def _domain_readiness_alert(domain: Domain) -> dict[str, str] | None:
-    inbound_problem = not domain.inbound_ready
-    outbound_problem = (
-        domain.outbound_status != Domain.OutboundStatus.DISABLED and not domain.outbound_ready
-    )
-    if not inbound_problem and not outbound_problem:
-        return None
-
-    danger = domain.status in {Domain.Status.ERROR, Domain.Status.DEGRADED} or (
-        domain.outbound_status in {Domain.OutboundStatus.ERROR, Domain.OutboundStatus.DEGRADED}
-    )
-    if domain.error_code:
-        message = domain.public_error_message
-    elif domain.outbound_error_code:
-        message = domain.public_outbound_error_message
-    elif inbound_problem:
-        message = f"Receiving is not ready. Current domain status: {domain.get_status_display()}."
-    else:
-        message = (
-            f"Sending is not ready. Current sending status: {domain.get_outbound_status_display()}."
-        )
-    return {"severity": "danger" if danger else "warning", "message": message}
-
-
-def _audit_event_has_problem(event: AuditEvent) -> bool:
-    status = str(event.metadata.get("status", "")).upper()
-    return event.event_type in AUDIT_PROBLEM_EVENT_TYPES or status in AUDIT_PROBLEM_STATUSES
 
 
 def _active_domain_test(
@@ -772,318 +732,279 @@ def verify_email(request: HttpRequest, token: str) -> HttpResponse:
 
 @verified_required
 def dashboard(request: HttpRequest) -> HttpResponse:
-    domains = list(request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname"))
-    if not domains:
-        return redirect("domain_create")
-    domain_ids = [domain.id for domain in domains]
-    messages_qs = Message.objects.filter(domain_id__in=domain_ids)
-    recent_messages = (
-        messages_qs.filter(
-            direction=Message.Direction.INBOUND,
-            conversation__trashed_at__isnull=True,
-        )
-        .select_related("conversation", "domain")
-        .prefetch_related("conversation__tags", "recipients")
-        .order_by("-received_at")[:8]
-    )
-    recent_audit_events = list(
-        AuditEvent.objects.filter(domain_id__in=domain_ids).select_related("domain")[
-            :RECENT_AUDIT_EVENT_LIMIT
-        ]
-    )
-    domain_readiness_alerts = []
-    for domain in domains:
-        if alert := _domain_readiness_alert(domain):
-            domain_readiness_alerts.append({"domain": domain, **alert})
-    context = {
-        "active_nav": "overview",
-        "recent_messages": recent_messages,
-        "domain_readiness_alerts": domain_readiness_alerts,
-        "audit_alert_events": [
-            event for event in recent_audit_events if _audit_event_has_problem(event)
-        ],
-        "metrics": {
-            "new_messages": messages_qs.filter(
-                direction=Message.Direction.INBOUND,
-                viewed_at__isnull=True,
-                conversation__archived_at__isnull=True,
-                conversation__trashed_at__isnull=True,
-            ).count(),
-            "quarantined": messages_qs.filter(is_quarantined=True).count(),
-            "mailboxes": MessageRecipient.objects.filter(
-                domain_id__in=domain_ids,
-                is_routing_recipient=True,
-            )
-            .values("address")
-            .distinct()
-            .count(),
-        },
-    }
-    return render(request, "inbox/dashboard.html", context)
+    return redirect("inbox")
 
 
 @verified_required
 def agents(request: HttpRequest) -> HttpResponse:
-    return render(
-        request,
-        "inbox/agents.html",
-        {"active_nav": "agents"},
+    return render(request, "inbox/agents.html", {"active_nav": "settings"})
+
+
+def _owned_record(request: HttpRequest, queryset, **lookup):
+    try:
+        record = get_object_or_404(
+            queryset.select_related("domain"), domain__owner=request.user, **lookup
+        )
+    except (ValidationError, ValueError) as exc:
+        raise Http404 from exc
+    if record.domain.status == Domain.Status.DISABLED:
+        raise Http404
+    explicit_domain = request.GET.get("domain") or request.POST.get("domain")
+    if explicit_domain and str(record.domain_id) != explicit_domain:
+        raise Http404
+    return record
+
+
+def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpResponse:
+    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
+    domain = (
+        get_owned_domain(request.user, request.GET["domain"]) if request.GET.get("domain") else None
     )
+    selected_id = conversation_id or request.GET.get("conversation")
+    selected = None
+    timeline = []
+    draft = None
+    if selected_id:
+        with transaction.atomic():
+            selected = _owned_record(
+                request, Conversation.objects.select_for_update(), id=selected_id
+            )
+            viewed = mark_conversation_viewed(selected)
+            if viewed:
+                _audit(
+                    selected.domain,
+                    request,
+                    "conversation.viewed",
+                    selected,
+                    {"messages_viewed": viewed},
+                )
+        mail = list(
+            selected.messages.filter(domain=selected.domain).prefetch_related(
+                "recipients", "attachments", "delivery_events"
+            )
+        )
+        outbound = list(
+            selected.outbound_messages.filter(domain=selected.domain)
+            .prefetch_related("delivery_events")
+            .order_by("created_at")
+        )
+        by_rfc = {item.rfc_message_id: item for item in outbound}
+        represented = set()
+        for item in mail:
+            item.outbound = (
+                by_rfc.get(item.rfc_message_id)
+                if item.direction == Message.Direction.OUTBOUND
+                else None
+            )
+            if item.outbound:
+                represented.add(item.outbound.id)
+            timeline.append({"message": item, "outbound": item.outbound, "at": item.received_at})
+        for item in outbound:
+            if item.id not in represented:
+                timeline.append({"outbound": item, "at": item.created_at})
+        timeline.sort(key=lambda item: item["at"])
+        draft = (
+            selected.reply_drafts.filter(domain=selected.domain, kind=ReplyDraft.Kind.REPLY)
+            .select_related("current_revision")
+            .order_by("-created_at")
+            .first()
+        )
 
-
-@verified_required
-def inbox_list(request: HttpRequest) -> HttpResponse:
-    requested_domain = request.GET.get("domain", "").strip()
-    if requested_domain:
-        domain = get_owned_domain(request.user, requested_domain)
-        if request.session.get("domain_id") != str(domain.id):
-            request.session["domain_id"] = str(domain.id)
-    else:
-        domain = current_domain(request)
-
+    folder = request.GET.get("folder", "inbox")
     folders = {
         "inbox": "Inbox",
-        "starred": "Starred",
+        "sent": "Sent",
         "archive": "Archive",
+        "starred": "Starred",
         "trash": "Trash",
     }
-    folder = request.GET.get("folder", "inbox")
     if folder not in folders:
         folder = "inbox"
-
-    message_totals = (
-        Message.objects.filter(conversation=OuterRef("pk"))
+    base = Conversation.objects.filter(domain__in=domains)
+    if domain:
+        base = base.filter(domain=domain)
+    scoped_messages = Message.objects.filter(
+        conversation=OuterRef("pk"), domain_id=OuterRef("domain_id"), domain_tests__isnull=True
+    )
+    scoped_outbound = OutboundMessage.objects.filter(
+        conversation=OuterRef("pk"), domain_id=OuterRef("domain_id")
+    )
+    latest_message = scoped_messages.order_by("-received_at", "-id")
+    latest_outbound = scoped_outbound.order_by("-created_at", "-id")
+    unread = (
+        scoped_messages.filter(direction=Message.Direction.INBOUND, viewed_at__isnull=True)
         .order_by()
         .values("conversation")
         .annotate(total=Count("id"))
         .values("total")[:1]
     )
-    new_message_totals = (
-        Message.objects.filter(
-            conversation=OuterRef("pk"),
-            direction=Message.Direction.INBOUND,
-            viewed_at__isnull=True,
-        )
-        .order_by()
-        .values("conversation")
-        .annotate(total=Count("id"))
-        .values("total")[:1]
-    )
-    latest_message = Message.objects.filter(conversation=OuterRef("pk")).order_by(
-        "-received_at", "-created_at"
-    )
-    conversations = (
-        Conversation.objects.filter(domain=domain)
-        .annotate(
-            message_count=Coalesce(
-                Subquery(message_totals, output_field=IntegerField()),
-                Value(0),
-            ),
-            new_message_count=Coalesce(
-                Subquery(new_message_totals, output_field=IntegerField()),
-                Value(0),
-            ),
-            preview_from_address=Subquery(latest_message.values("from_address")[:1]),
-            preview_text_body=Subquery(latest_message.values("text_body")[:1]),
-            preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
-            has_quarantined=Exists(
-                Message.objects.filter(conversation=OuterRef("pk"), is_quarantined=True)
-            ),
-        )
-        .filter(message_count__gt=0)
-    )
+    conversations = base.annotate(
+        has_inbound=Exists(scoped_messages.filter(direction=Message.Direction.INBOUND)),
+        has_outbound=Exists(scoped_outbound)
+        | Exists(scoped_messages.filter(direction=Message.Direction.OUTBOUND)),
+        has_quarantined=Exists(scoped_messages.filter(is_quarantined=True)),
+        new_message_count=Coalesce(Subquery(unread, output_field=IntegerField()), Value(0)),
+        preview_from_address=Subquery(latest_message.values("from_address")[:1]),
+        preview_text_body=Subquery(latest_message.values("text_body")[:1]),
+        preview_is_quarantined=Subquery(latest_message.values("is_quarantined")[:1]),
+        preview_message_at=Subquery(latest_message.values("received_at")[:1]),
+        activity_at=Greatest(
+            "last_message_at",
+            Coalesce(Subquery(latest_outbound.values("created_at")[:1]), "last_message_at"),
+        ),
+    ).filter(Q(has_inbound=True) | Q(has_outbound=True))
     if folder == "inbox":
-        conversations = conversations.filter(archived_at__isnull=True, trashed_at__isnull=True)
-    elif folder == "starred":
-        conversations = conversations.filter(starred_at__isnull=False, trashed_at__isnull=True)
+        conversations = conversations.filter(has_inbound=True, archived_at=None, trashed_at=None)
+    elif folder == "sent":
+        conversations = conversations.filter(has_outbound=True, trashed_at=None)
     elif folder == "archive":
-        conversations = conversations.filter(archived_at__isnull=False, trashed_at__isnull=True)
+        conversations = conversations.filter(archived_at__isnull=False, trashed_at=None)
+    elif folder == "starred":
+        conversations = conversations.filter(starred_at__isnull=False, trashed_at=None)
     else:
         conversations = conversations.filter(trashed_at__isnull=False)
-
-    recipient = request.GET.get("recipient", "").strip().casefold()
-    if recipient:
-        if not MessageRecipient.objects.filter(
-            domain=domain,
-            is_routing_recipient=True,
-            address__iexact=recipient,
-        ).exists():
-            raise Http404
-        conversations = conversations.filter(
-            messages__direction=Message.Direction.INBOUND,
-            messages__recipients__is_routing_recipient=True,
-            messages__recipients__address__iexact=recipient,
-        ).distinct()
     query = request.GET.get("q", "").strip()
     if query:
         conversations = conversations.filter(
             Q(subject__icontains=query)
-            | Q(messages__from_address__icontains=query)
-            | Q(messages__text_body__icontains=query)
-        ).distinct()
-    raw_tag = request.GET.get("tag", "")
-    tag = ""
-    if raw_tag:
-        try:
-            _, tag = normalize_tag(raw_tag)
-        except ValidationError:
-            tag = raw_tag.casefold()[:64]
+            | Exists(
+                scoped_messages.filter(
+                    Q(from_address__icontains=query)
+                    | Q(is_quarantined=False, text_body__icontains=query)
+                    | Q(recipients__address__icontains=query, recipients__domain_id=F("domain_id"))
+                )
+            )
+            | Exists(
+                scoped_outbound.filter(
+                    Q(to_address__icontains=query) | Q(body_text__icontains=query)
+                )
+            )
+        )
+    tag = request.GET.get("tag", "").strip().casefold()
+    if tag:
         conversations = conversations.filter(tags__normalized_name=tag).distinct()
     security = request.GET.get("security", "")
-    if security == "suspicious":
-        conversations = conversations.filter(messages__is_suspicious=True).distinct()
-    elif security == "quarantined":
-        conversations = conversations.filter(messages__is_quarantined=True).distinct()
-    ordered_conversations = conversations.prefetch_related(
-        Prefetch("tags", queryset=ConversationTag.objects.order_by("normalized_name"))
-    ).order_by("-last_message_at")
-    paginator = Paginator(ordered_conversations, 50)
-    page = paginator.get_page(request.GET.get("page"))
-    conversation_ids = [conversation.id for conversation in page.object_list]
-    routing_addresses: dict[uuid.UUID, list[dict[str, str]]] = {}
-    if conversation_ids:
-        recipient_rows = (
-            MessageRecipient.objects.filter(
-                domain=domain,
-                message__conversation_id__in=conversation_ids,
-                message__direction=Message.Direction.INBOUND,
-                is_routing_recipient=True,
-            )
-            .values("message__conversation_id", "address")
-            .order_by("message__conversation_id", "address")
-            .distinct()
+    if security in {"suspicious", "quarantined"}:
+        conversations = conversations.filter(
+            Exists(scoped_messages.filter(**{f"is_{security}": True}))
         )
-        for row in recipient_rows:
-            address = row["address"]
-            routing_addresses.setdefault(row["message__conversation_id"], []).append(
-                {
-                    "address": address,
-                    "local_part": address.rsplit("@", 1)[0],
-                }
+    recipient = request.GET.get("recipient", "").strip().casefold()
+    if recipient:
+        conversations = conversations.filter(
+            Exists(
+                scoped_messages.filter(
+                    direction=Message.Direction.INBOUND,
+                    recipients__address__iexact=recipient,
+                    recipients__is_routing_recipient=True,
+                    recipients__domain_id=F("domain_id"),
+                )
             )
-    for conversation in page.object_list:
-        conversation.routing_addresses = routing_addresses.get(conversation.id, [])
-
-    pagination_params = request.GET.copy()
-    pagination_params.pop("page", None)
-    clear_params = {"domain": str(domain.id)}
-    if folder != "inbox":
-        clear_params["folder"] = folder
+        )
+    delivery = request.GET.get("status", "").strip().upper()
+    if delivery in OutboundMessage.Status.values:
+        conversations = conversations.filter(Exists(scoped_outbound.filter(status=delivery)))
+    else:
+        delivery = ""
+    page = Paginator(
+        conversations.select_related("domain")
+        .prefetch_related(
+            "tags",
+            Prefetch("outbound_messages", queryset=OutboundMessage.objects.order_by("-created_at")),
+        )
+        .order_by("-activity_at", "-id"),
+        50,
+    ).get_page(request.GET.get("page"))
+    params = request.GET.copy()
+    params.pop("conversation", None)
+    params.pop("page", None)
+    routing_addresses = {}
+    for row in (
+        MessageRecipient.objects.filter(
+            message__conversation_id__in=[item.id for item in page.object_list],
+            domain_id=F("message__domain_id"),
+            message__direction=Message.Direction.INBOUND,
+            message__domain_id=F("message__conversation__domain_id"),
+            message__domain_tests__isnull=True,
+            is_routing_recipient=True,
+        )
+        .values("message__conversation_id", "address")
+        .distinct()
+    ):
+        routing_addresses.setdefault(row["message__conversation_id"], set()).add(row["address"])
+    for item in page.object_list:
+        item.list_url = (
+            f"{reverse('inbox')}?{urlencode({**params.dict(), 'conversation': str(item.id)})}"
+        )
+        latest = next(
+            (out for out in item.outbound_messages.all() if out.domain_id == item.domain_id), None
+        )
+        item.latest_outbound = latest
+        if latest and (not item.preview_message_at or latest.created_at >= item.preview_message_at):
+            item.preview_from_address = latest.to_address
+            item.preview_text_body = latest.body_text
+            item.preview_is_quarantined = False
+        item.routing_addresses = sorted(routing_addresses.get(item.id, set()))
+    back_url = f"{reverse('inbox')}?{params.urlencode()}"
+    initial_domain = domain or domains.filter(outbound_ready=True).first() or domains.first()
     return render(
         request,
         "inbox/inbox_list.html",
         {
             "active_nav": "inbox",
+            "domains": domains,
             "domain": domain,
-            "folder": folder,
-            "folder_label": folders[folder],
             "conversations": page.object_list,
             "page_obj": page,
-            "pagination_query": pagination_params.urlencode(),
+            "pagination_query": params.urlencode(),
+            "folder": folder,
+            "folder_label": folders[folder],
+            "conversation": selected,
+            "timeline": timeline,
+            "draft": draft,
+            "back_url": back_url,
+            "domain_writable": selected and can_manage_domain(request.user, selected.domain),
+            "draft_form": DraftRevisionForm(
+                auto_id="draft_%s",
+                initial={
+                    "subject": draft.current_revision.subject,
+                    "body_text": draft.current_revision.body_text,
+                }
+                if draft and draft.current_revision
+                else None
+            ),
             "filters": {
                 "q": query,
                 "tag": tag,
                 "security": security,
                 "recipient": recipient,
+                "status": delivery,
             },
-            "observed_tags": ConversationTag.objects.filter(domain=domain)
-            .values_list("name", flat=True)
-            .order_by("normalized_name")
-            .distinct(),
-            "has_active_filters": any((query, tag, security, recipient)),
-            "clear_filters_url": f"{reverse('inbox')}?{urlencode(clear_params)}",
+            "statuses": OutboundMessage.Status.choices,
+            "has_active_filters": any((tag, security, recipient, delivery)),
+            "compose_form": ComposeForm(
+                auto_id="compose_%s",
+                domains=domains,
+                initial={
+                    "from_address": f"hello@{initial_domain.hostname}" if initial_domain else "",
+                    "idempotency_key": uuid.uuid4(),
+                },
+            ),
+            "outbound_control": get_outbound_control(request.user),
         },
     )
 
 
-OUTBOUND_PROBLEM_STATUSES = {
-    OutboundMessage.Status.FAILED,
-    OutboundMessage.Status.UNKNOWN,
-    OutboundMessage.Status.BOUNCED,
-    OutboundMessage.Status.COMPLAINED,
-}
+@verified_required
+def inbox_list(request: HttpRequest) -> HttpResponse:
+    return _conversation_workspace(request)
 
 
 @verified_required
 def outbox(request: HttpRequest) -> HttpResponse:
-    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
-    outbound = (
-        OutboundMessage.objects.filter(domain__in=domains)
-        .select_related("domain", "conversation")
-        .prefetch_related("delivery_events")
-    )
-    selected_domain = request.GET.get("domain", "").strip()
-    selected_status = request.GET.get("status", "").strip().upper()
-    recipient = request.GET.get("recipient", "").strip()
-    selected_range = request.GET.get("time", "24h")
-    if selected_domain:
-        try:
-            selected = domains.get(id=selected_domain)
-        except (Domain.DoesNotExist, ValidationError, ValueError) as exc:
-            raise Http404 from exc
-        outbound = outbound.filter(domain=selected)
-    if selected_status in OutboundMessage.Status.values:
-        outbound = outbound.filter(status=selected_status)
-    else:
-        selected_status = ""
-    if recipient:
-        outbound = outbound.filter(to_address__icontains=recipient)
-    windows = {
-        "1h": timedelta(hours=1),
-        "24h": timedelta(hours=24),
-        "7d": timedelta(days=7),
-        "30d": timedelta(days=30),
-    }
-    if selected_range not in {*windows, "all"}:
-        selected_range = "24h"
-    if selected_range != "all":
-        outbound = outbound.filter(created_at__gte=timezone.now() - windows[selected_range])
-    page = Paginator(outbound.order_by("-created_at"), 50).get_page(request.GET.get("page"))
-    pagination_params = request.GET.copy()
-    pagination_params.pop("page", None)
-    recent = OutboundMessage.objects.filter(
-        domain__in=domains, created_at__gte=timezone.now() - timedelta(hours=24)
-    )
-    control = get_outbound_control(request.user)
-    usage = outbound_usage(request.user)
-    domain_usage = [
-        {
-            "domain": domain,
-            "count": usage["by_domain"].get(str(domain.id), 0),
-        }
-        for domain in domains
-    ]
-    return render(
-        request,
-        "inbox/outbox.html",
-        {
-            "active_nav": "outbox",
-            "domains": domains,
-            "page": page,
-            "statuses": OutboundMessage.Status.choices,
-            "selected_domain": selected_domain,
-            "compose_domain_id": selected_domain
-            or (str(current_domain(request).id) if domains else ""),
-            "selected_status": selected_status,
-            "recipient": recipient,
-            "selected_range": selected_range,
-            "pagination_query": pagination_params.urlencode(),
-            "control": control,
-            "usage": usage,
-            "domain_usage": domain_usage,
-            "metrics": {
-                "queued": recent.filter(status=OutboundMessage.Status.QUEUED).count(),
-                "in_flight": recent.filter(
-                    status__in={
-                        OutboundMessage.Status.SUBMITTING,
-                        OutboundMessage.Status.ACCEPTED,
-                    }
-                ).count(),
-                "delivered": recent.filter(status=OutboundMessage.Status.DELIVERED).count(),
-                "problems": recent.filter(status__in=OUTBOUND_PROBLEM_STATUSES).count(),
-            },
-        },
-    )
+    params = request.GET.copy()
+    params["folder"] = "sent"
+    params.pop("time", None)
+    return redirect(f"{reverse('inbox')}?{params.urlencode()}")
 
 
 @verified_required
@@ -1100,11 +1021,11 @@ def compose(request: HttpRequest) -> HttpResponse:
         except ValueError as exc:
             raise Http404 from exc
     else:
-        domain = current_domain(request)
+        domain = domains.filter(outbound_ready=True).first() or domains.first()
     form = ComposeForm(
         request.POST if request.method == "POST" else None,
         domains=domains,
-        initial={"domain": domain, "idempotency_key": uuid.uuid4()},
+        initial={"from_address": f"hello@{domain.hostname}", "idempotency_key": uuid.uuid4()},
     )
     response_status = 200
     if request.method == "POST":
@@ -1115,7 +1036,7 @@ def compose(request: HttpRequest) -> HttpResponse:
                 outbound = send_composed_email(
                     domain=domain,
                     owner=request.user,
-                    from_address=f"{form.cleaned_data['from_local_part']}@{domain.hostname}",
+                    from_address=form.cleaned_data["from_address"],
                     to_address=form.cleaned_data["to_address"],
                     subject=form.cleaned_data["subject"],
                     body_text=form.cleaned_data["body_text"],
@@ -1125,22 +1046,20 @@ def compose(request: HttpRequest) -> HttpResponse:
             except ValidationError as exc:
                 if hasattr(exc, "error_dict"):
                     for name, errors in exc.error_dict.items():
-                        name = "from_local_part" if name == "from_address" else name
                         form.add_error(name if name in form.fields else None, errors)
                 else:
                     form.add_error(None, exc)
                     if any(error.code == "idempotency_conflict" for error in exc.error_list):
                         response_status = 409
             else:
-                request.session["domain_id"] = str(domain.id)
                 messages.success(request, f"Email status: {outbound.get_status_display()}.")
-                return redirect(f"{reverse('outbox')}?{urlencode({'domain': str(domain.id)})}")
-    request.session["domain_id"] = str(domain.id)
+                params = {"folder": "sent", "conversation": str(outbound.conversation_id)}
+                return redirect(f"{reverse('inbox')}?{urlencode(params)}")
     return render(
         request,
         "inbox/compose.html",
         {
-            "active_nav": "outbox",
+            "active_nav": "inbox",
             "form": form,
             "domain": domain,
             "compose_domains": domains,
@@ -1168,72 +1087,18 @@ def outbox_control(request: HttpRequest) -> HttpResponse:
         request,
         "External sending is paused." if control.is_paused else "External sending resumed.",
     )
-    return redirect("outbox")
+    return redirect("settings")
 
 
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    requested_domain = request.GET.get("domain", "").strip()
-    if requested_domain:
-        domain = get_owned_domain(request.user, requested_domain)
-        if request.session.get("domain_id") != str(domain.id):
-            request.session["domain_id"] = str(domain.id)
-    else:
-        domain = current_domain(request)
-    with transaction.atomic():
-        conversation = domain_get_or_404(
-            Conversation.objects.select_for_update().prefetch_related("tags"),
-            domain=domain,
-            id=conversation_id,
-        )
-        viewed_messages = mark_conversation_viewed(conversation)
-        if viewed_messages:
-            _audit(
-                domain,
-                request,
-                "conversation.viewed",
-                conversation,
-                {"messages_viewed": viewed_messages},
-            )
-    draft = (
-        conversation.reply_drafts.filter(kind=ReplyDraft.Kind.REPLY)
-        .select_related("current_revision")
-        .order_by("-created_at")
-        .first()
-    )
-    return render(
-        request,
-        "inbox/conversation_detail.html",
-        {
-            "active_nav": "inbox",
-            "conversation": conversation,
-            "timeline": conversation.messages.prefetch_related(
-                "recipients", "attachments", "classifications", "delivery_events"
-            ),
-            "draft": draft,
-            "draft_form": DraftRevisionForm(
-                initial=(
-                    {
-                        "subject": draft.current_revision.subject,
-                        "body_text": draft.current_revision.body_text,
-                    }
-                    if draft and draft.current_revision
-                    else None
-                )
-            ),
-            "outbound_messages": conversation.outbound_messages.prefetch_related(
-                "delivery_events"
-            ).order_by("-created_at"),
-            "has_quarantined": conversation.messages.filter(is_quarantined=True).exists(),
-            "domain_writable": can_manage_domain(request.user, domain),
-        },
-    )
+    return _conversation_workspace(request, conversation_id)
 
 
 @verified_required
 @require_POST
 def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, Conversation.objects, id=conversation_id).domain
     next_url = _safe_next(request, request.POST.get("next") or reverse("inbox"))
     if denied := _domain_write_required(request, domain):
         return denied
@@ -1282,7 +1147,7 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 @verified_required
 @require_POST
 def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, Conversation.objects, id=conversation_id).domain
     next_url = _safe_next(
         request,
         request.POST.get("next") or reverse("conversation_detail", args=[conversation_id]),
@@ -1328,7 +1193,7 @@ def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpRe
 @verified_required
 @require_POST
 def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, ReplyDraft.objects, id=draft_id).domain
     if denied := _domain_write_required(request, domain):
         return denied
     if not for_user(request.user).outbound:
@@ -1355,7 +1220,7 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @verified_required
 @require_POST
 def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, ReplyDraft.objects, id=draft_id).domain
     if denied := _domain_write_required(request, domain):
         return denied
     if not for_user(request.user).outbound:
@@ -1389,7 +1254,7 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
 @verified_required
 @require_POST
 def outbound_resend(request: HttpRequest, outbound_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, OutboundMessage.objects, id=outbound_id).domain
     if denied := _domain_write_required(request, domain):
         return denied
     if not for_user(request.user).outbound:
@@ -1512,7 +1377,7 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     pending_domain = request.session.get(PENDING_DOMAIN_SESSION_KEY, "")
     form = DomainForm(
         request.POST or None,
-        initial={"hostname": pending_domain} if pending_domain else None,
+        initial={"hostname": pending_domain, "goal": Domain.Goal.BOTH},
     )
     entitlements = for_user(request.user)
     active_domain_count = request.user.domains.exclude(status=Domain.Status.DISABLED).count()
@@ -1524,6 +1389,7 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
                 owner=request.user,
                 hostname=form.cleaned_data["hostname"],
                 setup_mode=form.cleaned_data["setup_mode"],
+                goal=form.cleaned_data["goal"],
             )
         except DomainClaimConflict as exc:
             if exc.existing_domain is not None:
@@ -1587,7 +1453,6 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
 @verified_required
 def domain_detail(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
     domain = get_owned_domain(request.user, domain_id)
-    request.session["domain_id"] = str(domain.id)
     domain = Domain.objects.prefetch_related(
         "dns_records",
         "inbound_routes",
@@ -1998,24 +1863,33 @@ def domain_disable(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
 @verified_required
 def retention_settings(request: HttpRequest) -> HttpResponse:
     try:
-        domain = current_domain(request)
+        domain = (
+            get_owned_domain(request.user, request.POST.get("domain") or request.GET.get("domain"))
+            if (request.POST.get("domain") or request.GET.get("domain"))
+            else request.user.domains.exclude(status=Domain.Status.DISABLED).first()
+        )
+        if domain is None:
+            raise Http404
     except Http404:
         return _domain_required_redirect(request, "retention settings")
     retention, _ = RetentionPolicy.objects.get_or_create(domain=domain)
     retention_form = RetentionForm(request.POST or None, instance=retention, prefix="retention")
     if request.method == "POST" and not for_user(request.user).custom_settings:
         return _upgrade_required(request, "Custom retention")
+    if request.method == "POST" and (denied := _domain_write_required(request, domain)):
+        return denied
     if request.method == "POST" and retention_form.is_valid():
         retention_form.save()
         _audit(domain, request, "retention.updated", retention)
         messages.success(request, "Retention policy updated.")
-        return redirect("retention_settings")
+        return redirect(f"{reverse('retention_settings')}?{urlencode({'domain': str(domain.id)})}")
     return render(
         request,
         "inbox/settings_retention.html",
         {
             "active_nav": "retention",
             "retention_form": retention_form,
+            "domain": domain,
         },
     )
 
@@ -2065,7 +1939,13 @@ def api_token_revoke(request: HttpRequest, token_id: uuid.UUID) -> HttpResponse:
 @verified_required
 def audit_log(request: HttpRequest) -> HttpResponse:
     try:
-        domain = current_domain(request)
+        domain = (
+            get_owned_domain(request.user, request.POST.get("domain") or request.GET.get("domain"))
+            if (request.POST.get("domain") or request.GET.get("domain"))
+            else request.user.domains.exclude(status=Domain.Status.DISABLED).first()
+        )
+        if domain is None:
+            raise Http404
     except Http404:
         return _domain_required_redirect(request, "audit history")
     return render(
@@ -2074,6 +1954,7 @@ def audit_log(request: HttpRequest) -> HttpResponse:
         {
             "active_nav": "audit",
             "audit_events": AuditEvent.objects.filter(domain=domain)[:250],
+            "domain": domain,
         },
     )
 
@@ -2148,7 +2029,7 @@ def stripe_webhook(request: HttpRequest) -> JsonResponse:
 
 @verified_required
 def attachment_download(request: HttpRequest, attachment_id: uuid.UUID) -> HttpResponse:
-    domain = current_domain(request)
+    domain = _owned_record(request, Attachment.objects, id=attachment_id).domain
     attachment = domain_get_or_404(Attachment.objects, domain=domain, id=attachment_id)
     try:
         authorized = authorized_attachment_url(attachment=attachment, domain=domain)
@@ -2162,3 +2043,39 @@ def attachment_download(request: HttpRequest, attachment_id: uuid.UUID) -> HttpR
         )
     _audit(domain, request, "attachment.download_authorized", attachment)
     return redirect(authorized.url)
+
+
+@verified_required
+def settings_view(request: HttpRequest) -> HttpResponse:
+    return render(
+        request,
+        "inbox/settings.html",
+        {
+            "active_nav": "settings",
+            "control": get_outbound_control(request.user),
+            "usage": outbound_usage(request.user),
+        },
+    )
+
+
+@verified_required
+@require_POST
+def domain_enable_receiving(request: HttpRequest, domain_id: uuid.UUID) -> HttpResponse:
+    domain = get_owned_domain(request.user, domain_id)
+    if denied := _domain_write_required(request, domain):
+        return denied
+    try:
+        domain, started = enable_receiving(domain, setup_mode=request.POST.get("setup_mode", ""))
+    except ValidationError as exc:
+        messages.error(request, "; ".join(exc.messages))
+    else:
+        if started:
+            _audit(
+                domain,
+                request,
+                "domain.receiving_requested",
+                domain,
+                {"setup_mode": domain.setup_mode},
+            )
+        messages.success(request, "Receiving setup is being prepared.")
+    return redirect("domain_detail", domain_id=domain.id)

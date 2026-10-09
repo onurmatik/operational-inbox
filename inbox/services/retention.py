@@ -12,7 +12,6 @@ from django.utils import timezone
 from inbox.models import (
     Attachment,
     AuditEvent,
-    Classification,
     Conversation,
     DeliveryEvent,
     Domain,
@@ -26,14 +25,13 @@ from inbox.models import (
     OutboundMessage,
     ReplyDraft,
     ReplyDraftRevision,
-    Report,
-    ReportItem,
     RetentionPolicy,
     SignupAttempt,
     compose_content_digest,
     content_digest,
 )
 from inbox.services.entitlements import for_user
+from inbox.services.legacy import redact_legacy_content
 
 
 def _delete_s3_key(client: Any, key: str) -> None:
@@ -186,9 +184,6 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             counts["normalized"] += 1
         if old_message_ids:
             MessageRecipient.objects.filter(message_id__in=old_message_ids).delete()
-            Classification.objects.filter(message_id__in=old_message_ids).update(
-                topic="", summary="", recommended_action=""
-            )
         Conversation.objects.filter(domain=domain).exclude(
             messages__normalized_purged_at__isnull=True
         ).update(subject="", normalized_subject="")
@@ -242,10 +237,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         old_outbound.filter(revision__draft__kind=ReplyDraft.Kind.COMPOSE).update(
             content_hash=compose_redacted_hash
         )
-        report_cutoff = now - timedelta(days=normalized_content_days)
-        old_reports = Report.objects.filter(domain=domain, period_end__lte=report_cutoff)
-        ReportItem.objects.filter(report__in=old_reports).update(summary="")
-        old_reports.update(title="Expired report", content="")
+        redact_legacy_content(domain=domain, cutoff=normalized_cutoff)
         Notification.objects.filter(domain=domain, created_at__lte=normalized_cutoff).update(
             title="Expired notification", body=""
         )

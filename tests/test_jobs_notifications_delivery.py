@@ -11,7 +11,6 @@ from django.utils import timezone
 
 from inbox.models import (
     AuditEvent,
-    Classification,
     Domain,
     DomainDNSRecord,
     DurableJob,
@@ -38,12 +37,13 @@ DELIVERY_TOPIC = "arn:aws:sns:us-east-1:123456789012:delivery"
 @pytest.mark.django_db
 def test_durable_job_retries_and_reclaims_expired_lease(monkeypatch, organization, inbound_message):
     job = enqueue_job(
-        kind="classify_message",
-        idempotency_key=f"classify:{inbound_message.id}",
-        payload={"message_id": str(inbound_message.id)},
+        kind="dns_check",
+        idempotency_key=f"dns:{organization.id}",
+        payload={"domain_id": str(organization.id)},
         domain=organization,
     )
-    monkeypatch.setattr("inbox.services.jobs.classify_message", lambda message: None)
+    command = Mock(side_effect=RuntimeError("DNS service unavailable"))
+    monkeypatch.setattr("django.core.management.call_command", command)
     counts = run_due_jobs(limit=1)
     job.refresh_from_db()
     assert counts["retry"] == 1 and job.status == DurableJob.Status.RETRY
@@ -51,14 +51,7 @@ def test_durable_job_retries_and_reclaims_expired_lease(monkeypatch, organizatio
     job.leased_until = timezone.now() - timedelta(seconds=1)
     job.due_at = timezone.now() - timedelta(seconds=1)
     job.save()
-    classification = Classification.objects.create(
-        domain=organization,
-        message=inbound_message,
-        source=Classification.Source.OWNER,
-        category=Classification.Category.INFORMATIONAL,
-        urgency=Classification.Urgency.NORMAL,
-    )
-    monkeypatch.setattr("inbox.services.jobs.classify_message", lambda message: classification)
+    command.side_effect = None
     reclaimed = run_due_jobs(limit=1)
     job.refresh_from_db()
     assert reclaimed["complete"] == 1 and job.status == DurableJob.Status.COMPLETE
@@ -146,9 +139,7 @@ def test_initial_dns_check_recognizes_a_matching_preexisting_ses_txt_record(proj
         counts = run_due_jobs(limit=2)
 
     domain.refresh_from_db()
-    ses_verification = domain.dns_records.get(
-        purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
-    )
+    ses_verification = domain.dns_records.get(purpose=DomainDNSRecord.Purpose.SES_VERIFICATION)
     assert counts["complete"] == 2
     assert ses_verification.value == "existing-ses-proof"
     assert ses_verification.status == DomainDNSRecord.Status.VALID
@@ -249,6 +240,14 @@ def test_outbound_enable_is_idempotent_and_does_not_change_inbound(project):
         claim_expires_at=timezone.now() + timedelta(days=1),
     )
 
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose="OWNERSHIP",
+        record_type="TXT",
+        name=f"_operational-inbox.{domain.hostname}",
+        value="proof",
+        status="VALID",
+    )
     first_domain, first_job, started = request_outbound_provisioning(domain)
     second_domain, second_job, repeated_started = request_outbound_provisioning(first_domain)
 

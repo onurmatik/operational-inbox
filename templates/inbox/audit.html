@@ -1,11 +1,13 @@
 {% extends "app_base.html" %}
 {% block title %}Audit · Operational Inbox{% endblock %}
 {% block content %}
+{% include "inbox/partials/settings_tabs.html" %}
   <div class="border-b border-line pb-6">
     <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Append-only operational history</p>
     <h1 class="mt-1 font-heading text-3xl font-semibold">Audit</h1>
     <p class="mt-1 text-sm text-muted">Redacted metadata only. Bodies, addresses, secrets, and raw prompts are excluded.</p>
   </div>
+  {% include "inbox/partials/settings_domain_filter.html" %}
   <div class="mt-6 oi-panel overflow-x-auto">
     <table class="w-full min-w-[820px] text-left font-mono text-xs">
       <thead class="border-b border-line bg-paper/60 uppercase tracking-[0.08em] text-muted">

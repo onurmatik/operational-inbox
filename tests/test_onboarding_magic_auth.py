@@ -12,7 +12,7 @@ from django.utils import timezone
 from freezegun import freeze_time
 from sesame.utils import get_query_string, get_token
 
-from inbox.models import Domain, ReportSchedule, RetentionPolicy, User
+from inbox.models import Domain, RetentionPolicy, User
 
 MAGIC_LINK_SCOPE = "operational-inbox-login"
 LOCMEM_EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
@@ -26,7 +26,6 @@ def _workspace_for(user: User) -> Domain:
         status=Domain.Status.READY,
         claim_expires_at=timezone.now(),
     )
-    ReportSchedule.objects.create(domain=domain)
     RetentionPolicy.objects.create(domain=domain)
     return domain
 
@@ -144,7 +143,6 @@ def test_magic_link_request_creates_passwordless_user_without_domain(client, mai
     assert not user.has_usable_password()
     assert User.objects.filter(email=user.email).count() == 1
     assert not Domain.objects.filter(owner=user).exists()
-    assert not ReportSchedule.objects.filter(domain__owner=user).exists()
     assert not RetentionPolicy.objects.filter(domain__owner=user).exists()
     assert len(mailoutbox) == 2
 

@@ -1,13 +1,13 @@
 {% extends "app_base.html" %}
 {% block title %}Domains · Operational Inbox{% endblock %}
+{% block main_class %}app-page domain-page{% endblock %}
 {% block content %}
-  <div class="flex items-end justify-between border-b border-line pb-6">
+  <div class="flex flex-col items-start gap-4 sm:flex-row sm:items-end sm:justify-between">
     <div>
-      <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Manual DNS, verified by us</p>
-      <h1 class="mt-1 font-heading text-3xl font-semibold">Domains</h1>
-      <p class="mt-1 text-sm text-muted">Existing root MX records are never replaced automatically.</p>
+      <h1 class="font-heading text-3xl font-semibold">Domains</h1>
+      <p class="mt-1 text-sm text-muted">Connect a domain for receiving, sending, or both.</p>
     </div>
-    <a href="{% url 'domain_create' %}" class="oi-button-primary">Connect domain</a>
+    <a href="{% url 'domain_create' %}" class="oi-button-primary shrink-0 whitespace-nowrap">Connect domain</a>
   </div>
   {% if capacity.over_capacity %}
     <section class="mt-6 border border-gold/40 bg-gold/10 p-4 text-sm" aria-label="Domain capacity grace period">
@@ -18,34 +18,29 @@
       </p>
     </section>
   {% endif %}
-  <div class="mt-6 oi-panel divide-y divide-line">
+  <div class="mt-8 space-y-4">
     {% for domain in domains %}
-      <div class="grid gap-3 p-5 hover:bg-paper/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-        <div>
+      <div class="oi-panel grid min-h-[88px] gap-3 p-6 hover:bg-paper/60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+        <div class="grid gap-3 sm:grid-cols-[174px_minmax(0,1fr)] sm:items-center">
           <div class="flex flex-wrap items-center gap-2">
             <strong class="font-mono text-sm">{{ domain.hostname }}</strong>
-            <span class="{% if domain.status == 'READY' %}oi-status oi-status-ready{% elif domain.status == 'ERROR' or domain.status == 'DEGRADED' %}oi-status oi-status-danger{% else %}oi-status oi-status-pending{% endif %}">
-              {% if domain.status == 'ERROR' %}Setup paused{% else %}{{ domain.get_status_display }}{% endif %}
-            </span>
             {% if capacity.primary_domain_id == domain.id and capacity.over_capacity %}<span class="oi-status oi-status-ready">Keeps Free Core slot</span>{% endif %}
           </div>
-          <p class="mt-2 text-sm text-muted">
-            {{ domain.get_setup_mode_display }} · receiving {{ domain.inbound_ready|yesno:"ready,not ready" }} · sending {{ domain.get_outbound_status_display|lower }}
-          </p>
+          <div class="flex flex-col gap-x-6 gap-y-2 text-xs text-muted sm:flex-row sm:flex-wrap"><span>Receiving: <strong class="{% if domain.inbound_ready %}text-mint-strong{% endif %}">{% if not domain.receiving_enabled %}Not enabled{% elif domain.inbound_ready %}Ready{% elif domain.status == 'PENDING_TEST' %}Test email needed{% else %}Setup needed{% endif %}</strong></span><span>Sending: <strong class="{% if domain.outbound_ready %}text-mint-strong{% endif %}">{% if domain.outbound_ready %}Ready{% elif domain.outbound_status == 'DISABLED' and not domain.sending_requested %}Not enabled{% else %}Setup needed{% endif %}</strong></span></div>
           {% if domain.status == 'ERROR' %}<p class="mt-1 text-xs text-coral-strong">Open this domain to review what happened and the available next step.</p>{% endif %}
         </div>
-        <div class="flex flex-wrap items-center justify-end gap-3">
+        <div class="flex flex-wrap items-center justify-start gap-3 sm:justify-end">
           {% if capacity.over_capacity and domain.status != 'DISABLED' and capacity.primary_domain_id != domain.id %}
             <form method="post" action="{% url 'domain_keep_on_free' domain.id %}">{% csrf_token %}<button class="oi-button-secondary">Keep on Free Core</button></form>
           {% endif %}
-          <a href="{% url 'domain_detail' domain.id %}" class="text-sm font-semibold text-forest">Inspect →</a>
+          <a href="{% url 'domain_detail' domain.id %}" class="inline-flex min-h-11 items-center text-sm font-semibold text-forest sm:min-h-0">{% if domain.status == 'PROVISIONING' %}Preparing setup{% elif domain.status == 'PENDING_TEST' %}Send test email{% elif not domain.ownership_verified or domain.outbound_status == 'PENDING_DNS' or domain.status == 'PENDING_DNS' %}Verify DNS{% elif domain.status == 'ERROR' or domain.outbound_status == 'ERROR' %}Review setup{% else %}Settings{% endif %}</a>
         </div>
       </div>
     {% empty %}
       <div class="p-12 text-center">
         <p class="font-semibold">No domains connected</p>
         <p class="mt-1 text-sm text-muted">Up to {{ limit }} domains can be connected to this account.</p>
-        <a href="{% url 'domain_create' %}" class="oi-button-primary mt-4">Start safe setup</a>
+        <a href="{% url 'domain_create' %}" class="oi-button-primary mt-4">Connect domain</a>
       </div>
     {% endfor %}
   </div>

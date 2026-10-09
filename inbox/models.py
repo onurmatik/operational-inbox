@@ -232,7 +232,8 @@ class Domain(UUIDTimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="domains"
     )
     hostname = models.CharField(max_length=253)
-    timezone = models.CharField(max_length=64, default="UTC")
+    receiving_enabled = models.BooleanField(default=True)
+    sending_requested = models.BooleanField(default=False)
     setup_mode = models.CharField(max_length=24, choices=SetupMode.choices)
     inbound_setup_generation = models.PositiveBigIntegerField(default=1)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.PROVISIONING)
@@ -274,6 +275,19 @@ class Domain(UUIDTimeStampedModel):
 
     def __str__(self) -> str:
         return self.hostname
+
+    class Goal(models.TextChoices):
+        RECEIVE = "receive", "Receive email"
+        SEND = "send", "Send email"
+        BOTH = "both", "Both"
+
+    @property
+    def setup_goal(self) -> str:
+        if not self.receiving_enabled:
+            return self.Goal.SEND
+        if self.sending_requested or self.outbound_status != self.OutboundStatus.DISABLED:
+            return self.Goal.BOTH
+        return self.Goal.RECEIVE
 
     @property
     def public_error_message(self) -> str:
@@ -327,22 +341,6 @@ class DomainScopedModel(UUIDTimeStampedModel):
 
     class Meta:
         abstract = True
-
-
-class ReportSchedule(DomainScopedModel):
-    class Frequency(models.TextChoices):
-        HOURLY = "HOURLY", "Hourly"
-        DAILY = "DAILY", "Daily"
-
-    domain = models.OneToOneField(Domain, on_delete=models.CASCADE, related_name="report_schedule")
-    review_frequency = models.CharField(
-        max_length=10, choices=Frequency.choices, default=Frequency.HOURLY
-    )
-    daily_report_time = models.TimeField(default="09:00")
-    aging_reminder_hours = models.PositiveSmallIntegerField(default=24)
-    is_enabled = models.BooleanField(default=True)
-    last_review_at = models.DateTimeField(null=True, blank=True)
-    last_daily_report_local_date = models.DateField(null=True, blank=True)
 
 
 class RetentionPolicy(DomainScopedModel):
@@ -552,14 +550,6 @@ class Conversation(DomainScopedModel):
     starred_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
     trashed_at = models.DateTimeField(null=True, blank=True)
-    snoozed_until = models.DateTimeField(null=True, blank=True)
-    merge_suggestion = models.ForeignKey(
-        "self",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="suggested_duplicates",
-    )
 
     class Meta:
         ordering = ("-last_message_at",)
@@ -738,85 +728,6 @@ class Attachment(DomainScopedModel):
         indexes = [models.Index(fields=("domain", "scan_status", "purge_at"))]
 
 
-class Classification(DomainScopedModel):
-    class Source(models.TextChoices):
-        AGENT = "AGENT", "Agent"
-        OWNER = "OWNER", "Owner override"
-
-    class Category(models.TextChoices):
-        ACTIONABLE = "ACTIONABLE", "Actionable"
-        INFORMATIONAL = "INFORMATIONAL", "Informational"
-        SUSPICIOUS = "SUSPICIOUS", "Suspicious"
-        UNCERTAIN = "UNCERTAIN", "Uncertain"
-
-    class Urgency(models.TextChoices):
-        LOW = "LOW", "Low"
-        NORMAL = "NORMAL", "Normal"
-        HIGH = "HIGH", "High"
-        CRITICAL = "CRITICAL", "Critical"
-
-    message = models.ForeignKey(Message, on_delete=models.CASCADE, related_name="classifications")
-    source = models.CharField(max_length=10, choices=Source.choices)
-    category = models.CharField(max_length=20, choices=Category.choices)
-    urgency = models.CharField(max_length=10, choices=Urgency.choices, default=Urgency.NORMAL)
-    topic = models.CharField(max_length=120, blank=True)
-    confidence = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
-    summary = models.TextField(blank=True)
-    recommended_action = models.TextField(blank=True)
-    requires_reply = models.BooleanField(default=False)
-    prompt_injection_suspected = models.BooleanField(default=False)
-    is_current = models.BooleanField(default=True)
-    supersedes = models.ForeignKey(
-        "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="superseded_by"
-    )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("message",),
-                condition=Q(is_current=True),
-                name="uniq_current_message_classification",
-            )
-        ]
-        indexes = [models.Index(fields=("domain", "category", "urgency", "-created_at"))]
-
-
-class AgentRun(DomainScopedModel):
-    class Kind(models.TextChoices):
-        TRIAGE = "TRIAGE", "Triage"
-        DRAFT = "DRAFT", "Draft"
-        REPORT = "REPORT", "Report"
-
-    class Status(models.TextChoices):
-        QUEUED = "QUEUED", "Queued"
-        RUNNING = "RUNNING", "Running"
-        SUCCEEDED = "SUCCEEDED", "Succeeded"
-        FAILED = "FAILED", "Failed"
-        REFUSED = "REFUSED", "Refused"
-
-    kind = models.CharField(max_length=10, choices=Kind.choices)
-    status = models.CharField(max_length=12, choices=Status.choices, default=Status.QUEUED)
-    model_name = models.CharField(max_length=120)
-    reasoning_effort = models.CharField(max_length=16)
-    prompt_version = models.CharField(max_length=32)
-    schema_version = models.CharField(max_length=32)
-    schedule_key = models.CharField(max_length=160, blank=True)
-    input_tokens = models.PositiveIntegerField(default=0)
-    output_tokens = models.PositiveIntegerField(default=0)
-    error_code = models.CharField(max_length=64, blank=True)
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("domain", "kind", "schedule_key"),
-                condition=~Q(schedule_key=""),
-                name="uniq_agent_schedule_key",
-            )
-        ]
-
-
 class DurableJob(UUIDTimeStampedModel):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -862,7 +773,6 @@ class ReplyDraft(DomainScopedModel):
         related_name="current_for_drafts",
     )
     is_stale = models.BooleanField(default=False)
-    rejected_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [
@@ -1064,75 +974,14 @@ class OutboundMessage(DomainScopedModel):
                 )
 
 
-class Report(DomainScopedModel):
-    class Kind(models.TextChoices):
-        HOURLY = "HOURLY", "Hourly review"
-        DAILY = "DAILY", "Daily report"
-
-    class Status(models.TextChoices):
-        GENERATING = "GENERATING", "Generating"
-        READY = "READY", "Ready"
-        FAILED = "FAILED", "Failed"
-
-    class GenerationMode(models.TextChoices):
-        AI = "AI", "AI generated"
-        DETERMINISTIC = "DETERMINISTIC", "Deterministic fallback"
-
-    kind = models.CharField(max_length=10, choices=Kind.choices)
-    schedule_key = models.CharField(max_length=160)
-    period_start = models.DateTimeField()
-    period_end = models.DateTimeField()
-    status = models.CharField(max_length=12, choices=Status.choices, default=Status.GENERATING)
-    generation_mode = models.CharField(
-        max_length=16, choices=GenerationMode.choices, default=GenerationMode.DETERMINISTIC
-    )
-    title = models.CharField(max_length=200)
-    content = models.TextField(blank=True)
-    agent_run = models.ForeignKey(
-        AgentRun, on_delete=models.SET_NULL, null=True, blank=True, related_name="reports"
-    )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("domain", "kind", "schedule_key"), name="uniq_report_schedule_key"
-            )
-        ]
-        ordering = ("-period_end",)
-
-
-class ReportItem(DomainScopedModel):
-    report = models.ForeignKey(Report, on_delete=models.CASCADE, related_name="items")
-    conversation = models.ForeignKey(
-        Conversation, on_delete=models.SET_NULL, null=True, blank=True, related_name="report_items"
-    )
-    classification = models.ForeignKey(
-        Classification,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="report_items",
-    )
-    rank = models.PositiveSmallIntegerField()
-    summary = models.TextField()
-
-    class Meta:
-        ordering = ("rank",)
-        constraints = [
-            models.UniqueConstraint(fields=("report", "rank"), name="uniq_report_item_rank")
-        ]
-
-
 class Notification(DomainScopedModel):
     class Channel(models.TextChoices):
-        IN_APP = "IN_APP", "In application"
         EMAIL = "EMAIL", "Email"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         SENT = "SENT", "Sent"
         FAILED = "FAILED", "Failed"
-        READ = "READ", "Read"
 
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications"
@@ -1144,7 +993,6 @@ class Notification(DomainScopedModel):
     title = models.CharField(max_length=200)
     body = models.TextField()
     sent_at = models.DateTimeField(null=True, blank=True)
-    read_at = models.DateTimeField(null=True, blank=True)
     error_code = models.CharField(max_length=64, blank=True)
 
     class Meta:

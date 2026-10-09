@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Conversations · Operational Inbox</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              paper: '#F7F7F5',
+              surface: '#FFFFFF',
+              ink: '#18211C',
+              muted: '#68726C',
+              forest: '#1A3C2B',
+              'forest-strong': '#11291D',
+              line: '#D9DEDA',
+              'line-strong': '#AEB8B1',
+              mint: '#DDF6E5',
+              'mint-ink': '#23643B',
+              gold: '#FFF2C2',
+              'gold-ink': '#715700',
+              coral: '#FFE0D5',
+              'coral-ink': '#8B3420',
+              blue: '#E5EEF9',
+              'blue-ink': '#244E7B',
+              quarantine: '#EEE7F4',
+              'quarantine-ink': '#5C3B70',
+            },
+            fontFamily: {
+              heading: ['Space Grotesk', 'Inter', 'sans-serif'],
+              sans: ['Inter', 'sans-serif'],
+              mono: ['JetBrains Mono', 'monospace'],
+            },
+          }
+        }
+      }
+    </script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600&family=JetBrains+Mono&display=swap');
+      .oi-status-badge {
+        display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; font-family: 'JetBrains Mono'; font-size: 10px; font-weight: 600; text-transform: uppercase; border: 1px solid currentColor;
+      }
+      .oi-status-dot { width: 6px; height: 6px; background: currentColor; }
+      .sidebar-link-active, .sidebar-link-active:hover { background-color: #1A3C2B; color: white; font-weight: 600; }
+      .mobile-only { display: none; }
+      @media (max-width: 1023px) {
+        .mobile-only { display: block; }
+        .desktop-sidebar { display: none !important; }
+        .main-content { margin-left: 0 !important; }
+      }
+      [x-cloak] { display: none !important; }
+      button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid #1A3C2B; outline-offset: 2px; }
+      main, #view-conversations, #list-panel, #detail-panel { min-height: 0; min-width: 0; }
+      [id^="modal-"] > div { max-height: calc(100dvh - 32px); overflow-y: auto; }
+      #modal-navigation > div { max-height: 100dvh; }
+      @media (max-width: 1023px) {
+        #view-conversations > header { height: auto; min-height: 112px; flex-wrap: wrap; align-content: center; gap: 12px; padding: 12px 16px; }
+        #view-conversations > header > div:first-child { display: contents; }
+        #view-conversations h1 { flex: 1; font-size: 17px; }
+        #view-conversations header .relative { order: 5; flex-basis: calc(100% - 140px); }
+        #view-conversations header .relative + div { order: 6; max-width: 115px; }
+        #domain-filter { width: 115px; }
+        #cta-new-email { padding: 0 10px; }
+        #cta-new-email span { display: inline; font-size: 12px; }
+        #detail-panel { width: 100%; }
+        #thread-content { padding: 20px; }
+        #active-subject { font-size: 22px; }
+        .domain-card { align-items: flex-start !important; flex-direction: column; gap: 16px; }
+        .domain-card > div { align-items: flex-start; flex-direction: column; gap: 12px; }
+        .domain-card .w-px { display: none; }
+        .domain-card .flex.gap-4 { flex-direction: column; gap: 8px; }
+        #view-domains .domain-header { align-items: flex-start; gap: 16px; flex-direction: column; }
+        #view-domains { padding: 20px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="h-screen overflow-hidden bg-paper text-ink font-sans flex">
+      
+      <!-- Desktop Sidebar -->
+      <aside class="desktop-sidebar w-[224px] border-r border-line bg-white flex flex-col fixed inset-y-0 z-40">
+        <div class="h-14 flex items-center px-4 border-b border-line">
+          <img src="https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/04a87f91-aea0-4c8f-b358-afc8e0bbf553/brand-assets/inbox-static-img-logo.svg/logo.svg" alt="Operational Inbox" class="size-7">
+          <span class="ml-3 font-heading text-[17px] font-semibold tracking-tight">Operational Inbox</span>
+        </div>
+        
+        <nav class="flex-1 py-4">
+          <button id="nav-conversations-btn" class="w-full flex items-center h-10 px-4 gap-3 sidebar-link-active">
+            <iconify-icon icon="lucide:message-square" class="text-lg"></iconify-icon>
+            <span class="text-sm">Conversations</span>
+          </button>
+          <button id="nav-domains-btn" class="w-full flex items-center h-10 px-4 gap-3 text-muted hover:bg-paper hover:text-ink transition-colors">
+            <iconify-icon icon="lucide:globe" class="text-lg"></iconify-icon>
+            <span class="text-sm">Domains</span>
+          </button>
+        </nav>
+
+        <div class="p-4 border-t border-line space-y-1">
+          <button id="nav-agent-btn" class="w-full flex items-center h-10 px-4 gap-3 text-muted hover:bg-paper hover:text-ink transition-colors text-sm">
+            <iconify-icon icon="lucide:bot" class="text-lg"></iconify-icon>
+            <span>Connect agent</span>
+          </button>
+          <button id="nav-settings-btn" class="w-full flex items-center h-10 px-4 gap-3 text-muted hover:bg-paper hover:text-ink transition-colors text-sm">
+            <iconify-icon icon="lucide:settings" class="text-lg"></iconify-icon>
+            <span>Settings</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Main Content Area -->
+      <main class="main-content flex-1 ml-[224px] flex flex-col h-screen relative">
+        
+        <!-- Global View: Conversations -->
+        <div id="view-conversations" class="flex flex-col flex-1">
+          <!-- Top Toolbar -->
+          <header class="h-14 border-b border-line bg-white flex items-center justify-between px-4 lg:px-6 sticky top-0 z-30">
+            <div class="flex items-center gap-4 lg:gap-6 flex-1">
+              <button class="mobile-only text-xl" id="mobile-menu-trigger" aria-label="Open navigation">
+                <iconify-icon icon="lucide:menu"></iconify-icon>
+              </button>
+              <h1 class="font-heading text-lg font-semibold whitespace-nowrap">Conversations</h1>
+              <div class="relative flex-1 max-w-md">
+                <iconify-icon icon="lucide:search" class="absolute left-3 top-1/2 -translate-y-1/2 text-muted"></iconify-icon>
+                <input type="text" id="global-search" placeholder="Search messages..." class="w-full h-9 bg-paper border border-line pl-10 pr-4 text-sm focus:outline-none focus:border-line-strong transition-colors rounded-sm" aria-label="Search conversations">
+              </div>
+              <div class="flex items-center gap-2">
+                <select id="domain-filter" aria-label="Filter by domain" class="h-9 px-3 text-xs font-semibold border border-line bg-white">
+                  <option value="">All domains</option>
+                  <option value="acme.example">acme.example</option>
+                  <option value="studio.example">studio.example</option>
+                </select>
+              </div>
+            </div>
+            <div class="flex items-center gap-4">
+              <button id="cta-new-email" aria-label="New email" class="h-9 px-4 bg-forest text-white text-sm font-semibold hover:bg-forest-strong transition-colors rounded-sm flex items-center gap-2">
+                <iconify-icon icon="lucide:plus"></iconify-icon>
+                <span class="hidden sm:inline">New email</span>
+              </button>
+            </div>
+          </header>
+
+          <!-- Sub-Nav Views -->
+          <div class="h-11 border-b border-line bg-white px-4 lg:px-6 flex items-center gap-6 relative z-30">
+            <button class="view-tab-btn text-xs font-semibold uppercase tracking-widest text-forest border-b-2 border-forest h-full flex items-center" data-view="inbox">Inbox</button>
+            <button class="view-tab-btn text-xs font-semibold uppercase tracking-widest text-muted hover:text-ink h-full flex items-center transition-colors" data-view="sent">Sent</button>
+            <button class="view-tab-btn text-xs font-semibold uppercase tracking-widest text-muted hover:text-ink h-full flex items-center transition-colors" data-view="archive">Archive</button>
+            <div id="more-views" class="relative h-full">
+              <button id="more-views-trigger" class="text-xs font-semibold uppercase tracking-widest text-muted h-full" aria-expanded="false" aria-controls="more-views-menu">More <iconify-icon icon="lucide:chevron-down"></iconify-icon></button>
+              <div id="more-views-menu" class="hidden absolute top-full left-0 bg-white border border-line z-40 min-w-[120px] p-1">
+                <button class="view-tab-btn w-full text-left p-3 text-xs text-muted" data-view="starred">Starred</button>
+                <button class="view-tab-btn w-full text-left p-3 text-xs text-muted" data-view="trash">Trash</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Workspace Split -->
+          <div class="flex-1 flex overflow-hidden">
+            <!-- List Container -->
+            <div id="list-panel" class="w-full lg:w-[400px] border-r border-line bg-white flex flex-col">
+               <div class="flex-1 overflow-y-auto" id="conversation-list">
+                 <!-- Dynamic Content Injection -->
+               </div>
+            </div>
+
+            <!-- Detail Panel -->
+            <div id="detail-panel" class="hidden lg:flex flex-1 bg-surface flex-col overflow-y-auto relative">
+              <div id="thread-content" class="p-6 lg:p-12 max-w-[800px] mx-auto w-full">
+                <div class="mobile-only mb-6">
+                   <button id="back-to-list" class="text-sm text-forest font-semibold flex items-center gap-2">
+                     <iconify-icon icon="lucide:arrow-left"></iconify-icon>
+                     Back to list
+                   </button>
+                </div>
+                <div id="thread-placeholder" class="h-full flex flex-col items-center justify-center text-muted py-24">
+                  <iconify-icon icon="lucide:mail-open" class="text-4xl mb-4"></iconify-icon>
+                  <p>Select a conversation to read</p>
+                </div>
+                <div id="thread-actual" class="hidden">
+                   <div class="border-b border-line pb-6 mb-8">
+                    <div class="flex justify-between items-start">
+                      <h2 id="active-subject" class="text-2xl font-heading font-semibold tracking-tight"></h2>
+                      <div class="flex gap-2 shrink-0 ml-3">
+                        <button class="size-8 border border-line flex items-center justify-center hover:bg-paper transition-colors" id="star-thread" title="Star" aria-label="Star conversation">
+                          <iconify-icon icon="lucide:star" class="text-muted"></iconify-icon>
+                        </button>
+                        <button class="size-8 border border-line flex items-center justify-center hover:bg-paper transition-colors" id="archive-thread" title="Archive" aria-label="Archive conversation">
+                          <iconify-icon icon="lucide:archive" class="text-muted"></iconify-icon>
+                        </button>
+                      </div>
+                    </div>
+                    <div class="mt-4 text-xs space-y-1">
+                      <div><span class="font-semibold">From:</span> <span id="active-from"></span></div>
+                      <div><span class="font-semibold">To:</span> <span id="active-to"></span></div>
+                    </div>
+                  </div>
+                  <div id="active-body" class="text-[16px] leading-[26px] text-ink whitespace-pre-line"></div>
+                  <div class="mt-8">
+                     <div id="active-delivery" class="hidden text-xs text-muted border-t border-line pt-4 mb-6"></div>
+                     <details id="agent-draft" class="hidden border border-line bg-paper p-4 mb-6"><summary class="text-sm font-semibold cursor-pointer">Agent draft · Review</summary><p class="text-sm leading-6 mt-3">Hi Alex, thanks for getting in touch. We can help with your subscription change. Please confirm which plan you want to move to.</p><button id="review-draft" class="mt-3 h-9 px-4 bg-forest text-white text-xs font-semibold">Approve and send</button><p class="text-xs text-muted mt-2">Preview action. No real email will be sent.</p></details>
+                     <div id="quarantine-lock" class="hidden p-4 bg-coral/20 border border-coral text-coral-ink mb-6">
+                        <div class="flex items-center gap-3">
+                           <iconify-icon icon="lucide:shield-alert" class="text-xl"></iconify-icon>
+                           <div>
+                             <p class="font-bold">Quarantined Content</p>
+                             <p class="text-sm">This message contains potentially harmful attachments and is locked.</p>
+                           </div>
+                        </div>
+                     </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Global View: Domains -->
+        <div id="view-domains" class="hidden flex-1 flex flex-col bg-paper overflow-y-auto p-6 lg:p-12">
+          <div class="max-w-4xl mx-auto w-full"><button id="domains-mobile-menu" class="mobile-only mb-4 text-sm font-semibold">Menu</button>
+            <div class="domain-header flex justify-between items-end mb-8">
+              <div>
+                <h1 class="font-heading text-[30px] font-semibold tracking-tight">Domains</h1>
+                <p class="text-muted">Receive and send email using your project domains.</p>
+              </div>
+              <button id="add-domain-btn" class="h-10 px-4 bg-forest text-white text-sm font-semibold rounded-sm">Add domain</button>
+            </div>
+
+            <div class="space-y-4">
+               <!-- Domain Card -->
+               <div class="domain-card bg-white border border-line p-6 flex justify-between items-center">
+                  <div class="flex items-center gap-6">
+                     <div>
+                        <p class="font-mono font-semibold text-sm">acme.example</p>
+                        <p class="text-[10px] text-muted uppercase tracking-widest mt-1">Receiving and sending</p>
+                     </div>
+                     <div class="h-8 w-px bg-line"></div>
+                     <div class="flex gap-4">
+                        <div class="flex items-center gap-2">
+                           <div class="size-2 rounded-full bg-mint-ink"></div>
+                           <span class="text-xs font-semibold">Receiving Active</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                           <div class="size-2 rounded-full bg-mint-ink"></div>
+                           <span class="text-xs font-semibold">Sending Verified</span>
+                        </div>
+                     </div>
+                  </div>
+                  <button data-domain="acme.example" class="domain-details text-muted hover:text-ink text-sm font-semibold">Manage</button>
+               </div>
+               <div class="domain-card bg-white border border-line p-6 flex justify-between items-center">
+                  <div class="flex items-center gap-6">
+                     <div>
+                        <p class="font-mono font-semibold text-sm">studio.example</p>
+                        <p class="text-[10px] text-muted uppercase tracking-widest mt-1">Receiving enabled</p>
+                     </div>
+                     <div class="h-8 w-px bg-line"></div>
+                     <div class="flex gap-4">
+                        <div class="flex items-center gap-2">
+                           <div class="size-2 rounded-full bg-mint-ink"></div>
+                           <span class="text-xs font-semibold">Receiving Active</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                           <div class="size-2 rounded-full bg-gold-ink"></div>
+                           <span class="text-xs font-semibold">Sending Pending</span>
+                        </div>
+                     </div>
+                  </div>
+                  <button data-domain="studio.example" class="domain-details text-forest text-sm font-semibold">Verify sending DNS</button>
+               </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Full Screen Overlays -->
+      
+      <!-- Modal: New Email -->
+      <div id="modal-compose" class="fixed inset-0 z-[60] bg-ink/20 flex items-center justify-center p-4 hidden">
+        <div class="bg-white border border-line w-full max-w-[640px] shadow-sm">
+           <div class="h-12 border-b border-line bg-paper flex items-center justify-between px-4">
+              <span class="text-xs font-bold uppercase tracking-widest">New email</span>
+              <button class="close-modal text-xl size-9" aria-label="Close dialog">&times;</button>
+           </div>
+           <form id="compose-form" class="p-6 space-y-4"><p class="text-xs text-muted">Design preview. Uses example data; sends no real email.</p>
+              <div>
+                 <label for="compose-from" class="block text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">From</label>
+                 <input id="compose-from" name="from" type="email" value="support@acme.example" required class="w-full h-10 border border-line px-3 text-sm focus:outline-none focus:border-line-strong">
+              </div>
+              <div>
+                 <p class="text-xs text-muted mt-1">Use any address on a domain verified for sending.</p><label for="compose-to" class="block text-[11px] font-semibold uppercase tracking-widest text-muted mb-1 mt-4">To</label>
+                 <input id="compose-to" name="to" type="email" required class="w-full h-10 border border-line px-3 text-sm focus:outline-none focus:border-line-strong">
+              </div>
+              <div>
+                 <label for="compose-subject" class="block text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Subject</label>
+                 <input id="compose-subject" name="subject" type="text" required class="w-full h-10 border border-line px-3 text-sm focus:outline-none focus:border-line-strong">
+              </div>
+              <div>
+                 <label for="compose-message" class="block text-[11px] font-semibold uppercase tracking-widest text-muted mb-1">Message</label>
+                 <textarea id="compose-message" name="message" required class="w-full h-40 border border-line p-3 text-sm focus:outline-none focus:border-line-strong resize-none"></textarea>
+              </div>
+              <div class="flex justify-end gap-3 pt-2">
+                 <button type="button" class="close-modal h-10 px-6 border border-line text-sm font-semibold hover:bg-paper transition-colors">Cancel</button>
+                 <button id="preview-send" class="h-10 px-8 bg-forest text-white text-sm font-semibold hover:bg-forest-strong transition-colors">Send email</button>
+              </div>
+           </form>
+        </div>
+      </div>
+
+      <!-- Modal: Agent Connect -->
+      <div id="modal-agent" class="fixed inset-0 z-[60] bg-ink/20 flex items-center justify-center p-4 hidden">
+         <div class="bg-white border border-line w-full max-w-md shadow-sm">
+            <div class="h-12 border-b border-line bg-paper flex items-center justify-between px-4">
+               <span class="text-xs font-bold uppercase tracking-widest">Agent Connection</span>
+               <button class="close-modal text-xl size-9" aria-label="Close dialog">&times;</button>
+            </div>
+            <div class="p-6 text-center">
+               <div class="size-12 bg-forest/10 flex items-center justify-center mx-auto mb-4">
+                  <iconify-icon icon="lucide:bot" class="text-2xl text-forest"></iconify-icon>
+               </div>
+               <h3 class="font-heading text-lg font-semibold mb-2">Connect your agent</h3>
+               <p class="text-sm text-muted mb-6">Paste this prompt into your agent. It will guide you through installation and authorization.</p>
+               <div id="agent-prompt" class="bg-paper border border-line p-4 text-xs font-mono text-left break-words mb-6 select-all cursor-text">
+                  Help me manage my operational inboxes using the Operational Inbox skill. Read https://operationalinbox.com/INSTALL.md and follow every step.
+               </div>
+               <button id="copy-agent-prompt" class="w-full h-10 bg-forest text-white text-sm font-semibold rounded-sm mb-3">Copy prompt</button>
+               <a href="https://operationalinbox.com/INSTALL.md" target="_blank" rel="noopener" id="install-link" class="text-xs text-forest underline font-semibold">Documentation &rarr;</a>
+            </div>
+         </div>
+      </div>
+
+      <!-- Modal: Domain Setup -->
+      <div id="modal-add-domain" class="fixed inset-0 z-[60] bg-ink/20 flex items-center justify-center p-4 hidden">
+         <div class="bg-white border border-line w-full max-w-[500px] shadow-sm">
+            <div class="h-12 border-b border-line bg-paper flex items-center justify-between px-4">
+               <span class="text-xs font-bold uppercase tracking-widest">New Domain</span>
+               <button class="close-modal text-xl size-9" aria-label="Close dialog">&times;</button>
+            </div>
+            <form id="domain-setup-form" class="p-6">
+               <h3 class="font-heading text-xl font-semibold mb-2">Add your domain</h3>
+               <p class="text-xs text-muted mb-5">Design preview. No domain or DNS changes are made.</p>
+               <label for="domain-hostname" class="block text-sm font-semibold mb-1">Domain</label>
+               <input id="domain-hostname" placeholder="your-project.example" required class="w-full border border-line h-10 px-3 text-sm mb-5">
+               <fieldset><legend class="text-sm font-semibold mb-2">What do you want to do?</legend><div class="space-y-2">
+                 <label class="goal-option flex items-start gap-3 p-3 border border-line cursor-pointer"><input type="radio" name="domain-goal" value="receive" class="mt-1"><span><span class="block text-sm font-semibold">Receive email</span><span class="text-xs text-muted">Support, contact and other project mailboxes.</span></span></label>
+                 <label class="goal-option flex items-start gap-3 p-3 border border-line cursor-pointer"><input type="radio" name="domain-goal" value="send" class="mt-1"><span><span class="block text-sm font-semibold">Send email</span><span class="text-xs text-muted">Customer messages. Keep your current receiving setup.</span></span></label>
+                 <label class="goal-option flex items-start gap-3 p-3 border border-line cursor-pointer"><input type="radio" name="domain-goal" value="both" checked class="mt-1"><span><span class="block text-sm font-semibold">Both</span><span class="text-xs text-muted">Receive and send from the same domain.</span></span></label>
+               </div></fieldset>
+               <button type="submit" class="mt-5 h-10 px-5 bg-forest text-white text-sm font-semibold">Continue</button>
+            </form>
+            <div id="domain-next-step" class="hidden p-6"><h3 id="domain-step-title" class="font-heading text-xl font-semibold mb-3"></h3><p id="domain-step-copy" class="text-sm leading-6 text-muted"></p><div id="domain-requirements" class="mt-4 border border-line bg-paper p-4 text-sm leading-7"></div><p class="text-xs text-muted mt-4">Exact DNS records are supplied by the mail provider when you connect the domain in the application.</p><button id="domain-setup-back" class="mt-5 h-9 px-4 border border-line text-sm">Back</button></div>
+         </div>
+      </div>
+
+      <!-- Modal: Settings -->
+      <div id="modal-settings" class="fixed inset-0 z-[60] bg-ink/20 flex items-center justify-center p-4 hidden">
+        <div class="bg-white border border-line w-full max-w-[600px] shadow-sm">
+           <div class="h-12 border-b border-line bg-paper flex items-center justify-between px-4">
+              <span class="text-xs font-bold uppercase tracking-widest">Account Settings</span>
+              <button class="close-modal text-xl size-9" aria-label="Close dialog">&times;</button>
+           </div>
+           <div class="settings-layout grid grid-cols-3 divide-x divide-line">
+              <nav class="col-span-1 p-4 space-y-1" aria-label="Settings sections">
+                 <button data-settings="account" class="settings-tab w-full text-left text-xs font-semibold p-2 bg-paper">Account</button>
+                 <button data-settings="access" class="settings-tab w-full text-left text-xs p-2 text-muted hover:bg-paper">Access</button>
+                 <button data-settings="retention" class="settings-tab w-full text-left text-xs p-2 text-muted hover:bg-paper">Retention</button>
+                 <button data-settings="audit" class="settings-tab w-full text-left text-xs p-2 text-muted hover:bg-paper">Audit log</button>
+              </nav>
+              <div id="settings-content" class="col-span-2 p-6 space-y-4 text-sm"></div>
+           </div>
+        </div>
+      </div>
+
+      <div id="modal-navigation" class="fixed inset-0 z-[60] bg-ink/20 flex items-start justify-start hidden"><div class="bg-white border-r border-line w-[260px] h-full p-5"><div class="flex items-center justify-between mb-6"><span class="font-heading font-semibold">Operational Inbox</span><button class="close-modal size-9" aria-label="Close navigation">&times;</button></div><nav class="space-y-2" aria-label="Mobile navigation"><button data-mobile-nav="conversations" class="w-full text-left p-3 font-semibold">Conversations</button><button data-mobile-nav="domains" class="w-full text-left p-3 font-semibold">Domains</button><button data-mobile-nav="agent" class="w-full text-left p-3 text-muted">Connect agent</button><button data-mobile-nav="settings" class="w-full text-left p-3 text-muted">Settings</button></nav></div></div>
+      <div id="preview-notice" role="status" aria-live="polite" class="hidden fixed bottom-4 left-4 right-4 lg:left-auto lg:max-w-md z-[80] p-4 border border-forest bg-mint text-mint-ink text-sm"></div>
+    </div>
+
+    <script>
+      const MOCK_DATA = [
+        { id: 1, domain: 'acme.example', time: '14:22', subject: 'Can I change my subscription?', sender: 'Alex <alex@example.net>', to: 'support@acme.example', snippet: 'Can you help me change my subscription? Thanks...', body: 'Hi team,\n\nI\'ve been using the app for a few months now and I\'m really happy with it.\n\nI\'m currently on the Basic plan but I\'d like to upgrade to the Pro plan to take advantage of the agent automation features. \n\nCould you please let me know how I can make this change? I couldn\'t find an obvious button in the dashboard.\n\nThanks,\nAlex', tag: '#support', view: 'inbox', status: 'New', statusColor: 'mint', hasDraft: true },
+        { id: 2, domain: 'acme.example', time: '10:15', subject: 'Following up on your trial', sender: 'hello@acme.example', to: 'customer@example.net', snippet: 'Checking in to see if you had any questions about...', body: 'Hello Taylor,\n\nJust checking in to see if you had a chance to look at the enterprise features we discussed last week.\n\nLet me know if you need another demo extension.\n\nBest,\nOI Team', view: 'sent', delivery: 'Delivered · Oct 9, 10:16', status: 'Delivered', statusColor: 'blue' },
+        { id: 3, domain: 'studio.example', time: 'Yesterday', subject: 'Partnership enquiry', sender: 'Sam <sam@example.net>', to: 'contact@studio.example', snippet: 'I\'d like to discuss a potential partnership for...', body: 'Dear Studio Lab,\n\nWe are reaching out regarding a potential collaboration on the upcoming project series.\n\nRegards,\nSam', tag: '#contact', view: 'inbox' },
+        { id: 4, domain: 'studio.example', time: 'Oct 7', subject: 'Blocked attachment', sender: 'Unknown <unknown@example.net>', to: 'admin@studio.example', snippet: 'Content locked by malware quarantine.', body: '[CONTENT UNAVAILABLE]', view: 'inbox', status: 'Quarantined', statusColor: 'coral', isQuarantined: true },
+        { id: 5, domain: 'acme.example', time: 'Oct 6', subject: 'Account access restored', sender: 'Lee <lee@example.net>', to: 'support@acme.example', snippet: 'Your account access has been fully restored.', body: 'This confirms that your access request has been finalized.', view: 'archive' }
+      ];
+
+      let currentView = 'inbox';
+      let activeId = null;
+      let modalTrigger = null;
+      let noticeTimer;
+      let outboundPaused = false;
+      const listContainer = document.getElementById('conversation-list');
+      const byId = id => document.getElementById(id);
+      const escapeHtml = text => String(text).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      function notice(text) {
+        byId('preview-notice').textContent = text;
+        byId('preview-notice').classList.remove('hidden');
+        clearTimeout(noticeTimer);
+        noticeTimer = setTimeout(() => byId('preview-notice').classList.add('hidden'), 7000);
+      }
+      function visibleItems() {
+        const domain = byId('domain-filter').value;
+        const search = byId('global-search').value.trim().toLowerCase();
+        return MOCK_DATA.filter(item => {
+          const inFolder = currentView === 'starred' ? item.starred && item.view !== 'trash' : currentView === 'sent' ? !!item.delivery && item.view !== 'trash' : item.view === currentView;
+          return inFolder && (!domain || item.domain === domain) && (!search || [item.subject,item.sender,item.to,item.snippet,item.body].join(' ').toLowerCase().includes(search));
+        });
+      }
+      function renderList() {
+        listContainer.innerHTML = '';
+        const filtered = visibleItems();
+        if (!filtered.length) listContainer.innerHTML = '<div class="p-10 text-center text-muted text-sm">No conversations found.</div>';
+        filtered.forEach(item => {
+          const row = document.createElement('button');
+          row.className = `w-full text-left p-4 border-b border-line hover:bg-paper group relative ${activeId === item.id ? 'bg-paper border-l-4 border-l-forest pl-[12px]' : ''}`;
+          const color = item.statusColor === 'mint' ? 'bg-mint text-mint-ink' : item.statusColor === 'blue' ? 'bg-blue text-blue-ink' : 'bg-coral text-coral-ink';
+          row.innerHTML = `<div class="flex justify-between items-start mb-1"><span class="text-[10px] font-mono text-muted uppercase tracking-wider">${escapeHtml(item.domain)}</span><span class="text-[10px] font-mono text-muted">${escapeHtml(item.time)}</span></div><h3 class="text-sm font-semibold truncate">${escapeHtml(item.subject)}</h3><p class="text-xs text-muted truncate">${escapeHtml(item.sender.split(' <')[0])} · ${escapeHtml(item.snippet)}</p><div class="mt-3 flex gap-2">${item.status ? `<span class="oi-status-badge ${color}"><span class="oi-status-dot"></span>${escapeHtml(item.status)}</span>` : ''}${item.tag ? `<span class="text-[10px] font-mono text-muted">${escapeHtml(item.tag)}</span>` : ''}${item.starred ? '<span aria-label="Starred">★</span>' : ''}</div>`;
+          row.onclick = () => selectThread(item.id);
+          listContainer.appendChild(row);
+        });
+      }
+      function clearThread() {
+        activeId = null;
+        byId('thread-placeholder').classList.remove('hidden');
+        byId('thread-actual').classList.add('hidden');
+        showList();
+      }
+      function selectThread(id) {
+        activeId = id;
+        const item = MOCK_DATA.find(i => i.id === id);
+        byId('thread-placeholder').classList.add('hidden');
+        byId('thread-actual').classList.remove('hidden');
+        byId('active-subject').textContent = item.subject;
+        byId('active-from').textContent = item.sender;
+        byId('active-to').textContent = item.to;
+        byId('active-body').textContent = item.isQuarantined ? '' : item.body;
+        byId('quarantine-lock').classList.toggle('hidden', !item.isQuarantined);
+        byId('agent-draft').classList.toggle('hidden', !item.hasDraft || item.isQuarantined);
+        byId('agent-draft').open = false;
+        byId('active-delivery').classList.toggle('hidden', !item.delivery);
+        byId('active-delivery').textContent = item.delivery || '';
+        byId('star-thread').setAttribute('aria-label', item.starred ? 'Unstar conversation' : 'Star conversation');
+        byId('star-thread').title = item.starred ? 'Unstar' : 'Star';
+        byId('star-thread').classList.toggle('bg-gold', !!item.starred);
+        byId('archive-thread').setAttribute('aria-label', item.view === 'archive' ? 'Restore conversation' : 'Archive conversation');
+        byId('archive-thread').title = item.view === 'archive' ? 'Restore conversation' : 'Archive';
+        if (window.innerWidth < 1024) {
+          byId('list-panel').classList.add('hidden');
+          byId('detail-panel').classList.remove('hidden');
+          byId('detail-panel').classList.add('flex');
+        }
+        renderList();
+      }
+      function showList() {
+        byId('list-panel').classList.remove('hidden');
+        byId('detail-panel').classList.add('hidden');
+        byId('detail-panel').classList.remove('flex');
+      }
+      function changeFolder(folder) {
+        currentView = folder;
+        document.querySelectorAll('.view-tab-btn').forEach(btn => {
+          const selected = btn.dataset.view === folder;
+          btn.classList.toggle('text-forest', selected);
+          btn.classList.toggle('text-muted', !selected);
+          btn.classList.toggle('border-b-2', selected);
+          btn.classList.toggle('border-forest', selected);
+          btn.setAttribute('aria-current', selected ? 'page' : 'false');
+        });
+        byId('more-views-trigger').innerHTML = ['starred','trash'].includes(folder) ? `${folder === 'starred' ? 'Starred' : 'Trash'} <iconify-icon icon="lucide:chevron-down"></iconify-icon>` : 'More <iconify-icon icon="lucide:chevron-down"></iconify-icon>';
+        byId('more-views-menu').classList.add('hidden');
+        byId('more-views-trigger').setAttribute('aria-expanded','false');
+        clearThread();
+        renderList();
+      }
+      document.querySelectorAll('.view-tab-btn').forEach(btn => btn.onclick = () => changeFolder(btn.dataset.view));
+      byId('more-views-trigger').onclick = () => {
+        const open = byId('more-views-menu').classList.toggle('hidden') === false;
+        byId('more-views-trigger').setAttribute('aria-expanded', String(open));
+      };
+      byId('global-search').oninput = () => { clearThread(); renderList(); };
+      byId('domain-filter').onchange = () => { clearThread(); renderList(); };
+      byId('back-to-list').onclick = showList;
+      byId('star-thread').onclick = () => {
+        const item = MOCK_DATA.find(i => i.id === activeId);
+        item.starred = !item.starred;
+        selectThread(item.id);
+      };
+      byId('archive-thread').onclick = () => {
+        const item = MOCK_DATA.find(i => i.id === activeId);
+        item.view = item.view === 'archive' ? (item.delivery ? 'sent' : 'inbox') : 'archive';
+        notice(item.view === 'archive' ? 'Archived in this preview.' : 'Restored in this preview.');
+        clearThread(); renderList();
+      };
+      byId('review-draft').onclick = () => notice('Preview only: this exact agent draft would be approved and queued. No real email was sent.');
+      function toggleAppView(viewId) {
+        ['conversations','domains'].forEach(id => byId('view-'+id).classList.toggle('hidden', id !== viewId));
+        ['conversations','domains'].forEach(id => {
+          byId('nav-'+id+'-btn').classList.toggle('sidebar-link-active', id === viewId);
+          byId('nav-'+id+'-btn').classList.toggle('text-muted', id !== viewId);
+        });
+      }
+      byId('nav-conversations-btn').onclick = () => toggleAppView('conversations');
+      byId('nav-domains-btn').onclick = () => toggleAppView('domains');
+      function closeModals() {
+        document.querySelectorAll('[id^="modal-"]').forEach(modal => modal.classList.add('hidden'));
+        if (modalTrigger) modalTrigger.focus();
+      }
+      function openModal(id, trigger=document.activeElement) {
+        closeModals();
+        modalTrigger = trigger;
+        const modal = byId(id);
+        modal.classList.remove('hidden');
+        modal.querySelector('input,button,a,textarea,select')?.focus();
+      }
+      document.querySelectorAll('.close-modal').forEach(button => button.onclick = closeModals);
+      document.querySelectorAll('[id^="modal-"]').forEach(modal => {
+        modal.setAttribute('role','dialog'); modal.setAttribute('aria-modal','true');
+        modal.setAttribute('aria-label', {'modal-compose':'New email','modal-agent':'Connect your agent','modal-settings':'Settings','modal-add-domain':'Domain setup','modal-navigation':'Navigation'}[modal.id]);
+        modal.onclick = e => { if (e.target === modal) closeModals(); };
+      });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { closeModals(); byId('more-views-menu').classList.add('hidden'); byId('more-views-trigger').setAttribute('aria-expanded','false'); }
+        if (e.key === 'Tab') {
+          const modal = [...document.querySelectorAll('[id^="modal-"]')].find(x => !x.classList.contains('hidden'));
+          if (!modal) return;
+          const controls = [...modal.querySelectorAll('input,button,a,textarea,select,summary')].filter(x => !x.disabled && x.getClientRects().length);
+          const first = controls[0], last = controls[controls.length-1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      });
+      byId('cta-new-email').onclick = () => openModal('modal-compose', byId('cta-new-email'));
+      byId('nav-agent-btn').onclick = () => openModal('modal-agent', byId('nav-agent-btn'));
+      byId('nav-settings-btn').onclick = () => { renderSettings('account'); openModal('modal-settings', byId('nav-settings-btn')); };
+      function startDomainSetup(trigger) {
+        byId('domain-setup-form').classList.remove('hidden');
+        byId('domain-next-step').classList.add('hidden');
+        openModal('modal-add-domain',trigger);
+      }
+      byId('add-domain-btn').onclick = () => startDomainSetup(byId('add-domain-btn'));
+      byId('mobile-menu-trigger').onclick = () => openModal('modal-navigation', byId('mobile-menu-trigger'));
+      byId('domains-mobile-menu').onclick = () => openModal('modal-navigation',byId('domains-mobile-menu'));
+      document.querySelectorAll('[data-mobile-nav]').forEach(btn => btn.onclick = () => {
+        const target = btn.dataset.mobileNav;
+        closeModals();
+        if (target === 'agent') openModal('modal-agent',byId('mobile-menu-trigger'));
+        else if (target === 'settings') { renderSettings('account'); openModal('modal-settings',byId('mobile-menu-trigger')); }
+        else toggleAppView(target);
+      });
+      byId('copy-agent-prompt').onclick = async () => {
+        try { await navigator.clipboard.writeText(byId('agent-prompt').textContent.trim()); byId('copy-agent-prompt').textContent = 'Copied'; }
+        catch { notice('Select the prompt and copy it with your keyboard.'); }
+      };
+      byId('compose-form').onsubmit = e => {
+        e.preventDefault();
+        const from = byId('compose-from');
+        if (!/^[^@\s]+@acme\.example$/i.test(from.value.trim())) { from.setCustomValidity('Use any address at acme.example, the sending-ready domain in this preview.'); from.reportValidity(); return; }
+        from.setCustomValidity('');
+        closeModals();
+        notice('Preview only: the message would be queued for sending. No real email was sent.');
+      };
+      byId('compose-from').oninput = () => byId('compose-from').setCustomValidity('');
+      function showDomainRequirements(domain, goal, existing=false) {
+        byId('domain-setup-form').classList.add('hidden');
+        byId('domain-next-step').classList.remove('hidden');
+        byId('domain-step-title').textContent = domain;
+        byId('domain-setup-back').focus();
+        byId('domain-step-copy').textContent = goal === 'send' ? 'Verify sending without changing your existing MX records or receiving setup.' : 'Verify ownership, then choose how you want to receive email: direct MX or catch-all forwarding.';
+        byId('domain-requirements').innerHTML = `<p>1. Verify domain ownership</p>${goal !== 'send' ? '<p>2. Configure receiving · MX or forwarding</p><p>3. Send a test email to confirm receiving</p>' : ''}${goal !== 'receive' ? `<p>${goal === 'send' ? '2' : '4'}. Verify the required sending DNS records</p>` : ''}`;
+        if (existing && domain === 'acme.example') { byId('domain-step-copy').textContent = 'Receiving and sending are ready for this example domain.'; byId('domain-requirements').innerHTML = '<p>Receiving · Ready</p><p>Sending · Ready</p>'; }
+      }
+      byId('domain-setup-form').onsubmit = e => {
+        e.preventDefault();
+        const domain = byId('domain-hostname').value.trim().toLowerCase();
+        if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(domain)) { byId('domain-hostname').setCustomValidity('Enter a domain such as project.example.'); byId('domain-hostname').reportValidity(); return; }
+        showDomainRequirements(domain,document.querySelector('[name="domain-goal"]:checked').value);
+      };
+      byId('domain-hostname').oninput = () => byId('domain-hostname').setCustomValidity('');
+      byId('domain-setup-back').onclick = () => { byId('domain-setup-form').classList.remove('hidden'); byId('domain-next-step').classList.add('hidden'); byId('domain-hostname').focus(); };
+      document.querySelectorAll('.domain-details').forEach(btn => btn.onclick = () => { openModal('modal-add-domain',btn); showDomainRequirements(btn.dataset.domain,btn.dataset.domain === 'studio.example' ? 'send' : 'both',true); });
+      function renderSettings(section) {
+        document.querySelectorAll('.settings-tab').forEach(btn => { btn.classList.toggle('bg-paper',btn.dataset.settings === section); btn.classList.toggle('font-semibold',btn.dataset.settings === section); });
+        const sections = {
+          account: `<p class="font-semibold">owner@example.com</p><p class="text-muted text-xs">Pro plan · Example account</p><div class="border-t border-line pt-4"><p class="font-semibold mb-1">Account sending</p><p class="text-xs text-muted mb-3">${outboundPaused ? 'Paused in this preview.' : 'Active. Messages can be queued.'}</p><button id="preview-pause" class="h-9 px-3 border border-line text-xs font-semibold">${outboundPaused ? 'Resume sending' : 'Pause sending'}</button></div>`,
+          access: '<h3 class="font-semibold">Agent access</h3><p class="text-xs text-muted leading-6">Manage authorized agents and API tokens here. No credentials are generated in this design preview.</p><button id="settings-connect" class="h-9 px-3 border border-line text-xs font-semibold">Connect your agent</button>',
+          retention: '<h3 class="font-semibold">Mail retention</h3><p class="text-xs text-muted leading-6">Your account retention policy controls how long messages, attachments and audit data are kept. This preview does not change or delete stored data.</p>',
+          audit: '<h3 class="font-semibold">Audit log</h3><p class="text-xs text-muted leading-6">Account access, domain configuration and send actions appear here. This preview uses example data.</p>'
+        };
+        byId('settings-content').innerHTML = sections[section];
+        if (section === 'account') byId('preview-pause').onclick = () => { outboundPaused = !outboundPaused; renderSettings('account'); notice('Preview only: account sending state updated locally.'); };
+        if (section === 'access') byId('settings-connect').onclick = () => openModal('modal-agent',byId('nav-settings-btn'));
+      }
+      document.querySelectorAll('.settings-tab').forEach(btn => btn.onclick = () => renderSettings(btn.dataset.settings));
+      renderList();
+      renderSettings('account');
+    </script>
+  </body>
+</html>

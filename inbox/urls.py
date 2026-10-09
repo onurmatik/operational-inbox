@@ -3,6 +3,11 @@ from django.urls import path
 from inbox import views
 
 urlpatterns = [
+    path(
+        "app/domains/<uuid:domain_id>/receiving/enable/",
+        views.domain_enable_receiving,
+        name="domain_enable_receiving",
+    ),
     path("", views.home, name="home"),
     path("start/", views.start_onboarding, name="start_onboarding"),
     path("signup/", views.signup, name="signup"),
@@ -90,6 +95,7 @@ urlpatterns = [
         views.domain_disable,
         name="domain_disable",
     ),
+    path("app/settings/", views.settings_view, name="settings"),
     path("app/settings/retention/", views.retention_settings, name="retention_settings"),
     path("app/settings/api-tokens/", views.api_tokens, name="api_tokens"),
     path(

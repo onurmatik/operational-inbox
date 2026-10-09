@@ -75,7 +75,9 @@ pause, and safety limits checked on each send.
 
 ### Connect or inspect a domain
 
-Start with `inspect_domain_dns`. Never replace existing MX records implicitly. Use `start_domain_onboarding`, return the generation-fenced plan from `get_domain_setup_plan`, and verify with `request_domain_dns_check`. Operational Inbox never writes customer DNS; use a separately authorized DNS-provider tool or return the exact plan for manual application.
+Choose the goal from the user’s request: `receive`, `send`, or `both`. For sending-only, call `start_domain_onboarding` with `goal: "send"` without a receiving route. Verify ownership and DKIM; never edit MX or require an inbound test. For receiving, start with `inspect_domain_dns`. Never replace existing MX records implicitly. Use `start_domain_onboarding`, return the generation-fenced plan from `get_domain_setup_plan`, and verify with `request_domain_dns_check`. Operational Inbox never writes customer DNS; use a separately authorized DNS-provider tool or return the exact plan for manual application.
+
+For an existing sending-only domain, use `enable_domain_receiving` with an explicitly selected route. Sending remains independent. Report `inbound_ready` and `outbound_ready` separately; `status: READY` does not imply both capabilities.
 
 ### Triage inboxes
 

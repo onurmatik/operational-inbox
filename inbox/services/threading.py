@@ -15,7 +15,6 @@ from inbox.models import (
     Notification,
     OutboundMessage,
     ReplyDraft,
-    ReportItem,
 )
 from inbox.services.mime import ParsedMIME
 
@@ -221,7 +220,7 @@ def reconcile_outbound_replies(outbound: OutboundMessage) -> int:
         if source is None:
             continue
         moved += Message.objects.filter(conversation=source).update(conversation=target)
-        for model in (OutboundMessage, ReplyDraft, ReportItem, Notification):
+        for model in (OutboundMessage, ReplyDraft, Notification):
             model.objects.filter(domain=outbound.domain, conversation=source).update(
                 conversation=target
             )
@@ -232,9 +231,6 @@ def reconcile_outbound_replies(outbound: OutboundMessage) -> int:
                 normalized_name=tag.normalized_name,
                 defaults={"name": tag.name},
             )
-        Conversation.objects.filter(merge_suggestion=source).exclude(id=target.id).update(
-            merge_suggestion=target
-        )
         target.first_message_at = min(target.first_message_at, source.first_message_at)
         target.last_message_at = max(target.last_message_at, source.last_message_at)
         for name in ("last_inbound_at", "last_outbound_at"):
@@ -242,22 +238,8 @@ def reconcile_outbound_replies(outbound: OutboundMessage) -> int:
             if at is not None:
                 setattr(target, name, max(getattr(target, name) or at, at))
         target.starred_at = target.starred_at or source.starred_at
-        if target.merge_suggestion_id == source.id:
-            target.merge_suggestion = None
         source.delete()
     target.archived_at = None
     target.trashed_at = None
     target.save()
     return moved
-
-
-def merge_suggestion(domain: Domain, subject: str, exclude: Conversation) -> Conversation | None:
-    normalized = normalize_subject(subject)
-    if not normalized:
-        return None
-    return (
-        Conversation.objects.filter(domain=domain, normalized_subject=normalized)
-        .exclude(id=exclude.id)
-        .order_by("-last_message_at")
-        .first()
-    )

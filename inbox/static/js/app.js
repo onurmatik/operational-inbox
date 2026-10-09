@@ -28,6 +28,27 @@
     },
   };
 
+  document.addEventListener("click", (event) => {
+    const opener = event.target.closest("[data-open-dialog]");
+    if (opener) {
+      const dialog = document.getElementById(opener.dataset.openDialog);
+      if (dialog?.showModal) { event.preventDefault(); dialog.showModal(); }
+    }
+    const closer = event.target.closest("[data-close-dialog]");
+    if (closer?.closest("dialog")) { event.preventDefault(); closer.closest("dialog").close(); }
+  });
+  document.addEventListener("change", (event) => {
+    if (event.target.matches("[data-submit-change]")) event.target.form.requestSubmit();
+  });
+  document.addEventListener("submit", (event) => {
+    if (!event.target.matches("[data-send-form]")) return;
+    if (event.target.dataset.sending) { event.preventDefault(); return; }
+    event.target.dataset.sending = "true";
+    const button = event.target.querySelector("[data-send-button]");
+    button.disabled = true;
+    button.textContent = "Queuing email…";
+  });
+
   const initAppShell = () => {
     const dropdowns = [...document.querySelectorAll("[data-dropdown]")];
 
@@ -203,6 +224,7 @@
     let requestSequence = 0;
     let controller = null;
 
+    const sendOnly = () => form.querySelector("input[name=goal]:checked")?.value === "send";
     const inputValue = () => hostnameInput.value.trim().replace(/\.$/, "");
 
     const updateExamples = () => {
@@ -455,15 +477,25 @@
 
     radios.forEach((radio) => radio.addEventListener("change", updateOverrideWarning));
     checkButton.addEventListener("click", checkMx);
+    const updateGoal = () => {
+      resetInspection();
+      if (sendOnly()) {
+        checkButton.classList.add("hidden");
+        submitButton.classList.remove("hidden");
+        submitButton.textContent = "Connect domain";
+      }
+    };
+    form.querySelectorAll("input[name=goal]").forEach((radio) => radio.addEventListener("change", updateGoal));
     hostnameInput.addEventListener("input", () => {
       updateExamples();
-      resetInspection();
+      updateGoal();
     });
     form.addEventListener("submit", (event) => {
       if (form.getAttribute("aria-busy") === "true") {
         event.preventDefault();
         return;
       }
+      if (sendOnly()) return;
       if (!inspectedInputValue || inspectedInputValue !== inputValue()) {
         event.preventDefault();
         checkMx();
@@ -482,8 +514,8 @@
     });
 
     updateExamples();
-    resetInspection();
-    if (inputValue()) checkMx();
+    updateGoal();
+    if (inputValue() && !sendOnly()) checkMx();
   };
 
   const initCopyControls = () => {

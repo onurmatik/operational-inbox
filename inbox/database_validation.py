@@ -36,8 +36,7 @@ def build_database_manifest() -> dict[str, Any]:
         else:
             pk_name = model._meta.pk.name
             identities = [
-                str(value)
-                for value in queryset.order_by(pk_name).values_list(pk_name, flat=True)
+                str(value) for value in queryset.order_by(pk_name).values_list(pk_name, flat=True)
             ]
         manifest["models"][model._meta.label_lower] = {
             "count": len(identities),
@@ -55,11 +54,7 @@ def postgresql_sequence_status() -> list[dict[str, Any]]:
         current_user = cursor.fetchone()[0]
         for model in sorted(apps.get_models(), key=lambda item: item._meta.label_lower):
             pk = model._meta.pk
-            if (
-                model._meta.proxy
-                or not model._meta.managed
-                or not isinstance(pk, models.AutoField)
-            ):
+            if model._meta.proxy or not model._meta.managed or not isinstance(pk, models.AutoField):
                 continue
             table = model._meta.db_table
             column = pk.column
@@ -69,8 +64,7 @@ def postgresql_sequence_status() -> list[dict[str, Any]]:
                 raise RuntimeError(f"No PostgreSQL sequence found for {table}.{column}.")
             schema_name, sequence_name = sequence.split(".", 1)
             quoted_sequence = ".".join(
-                connection.ops.quote_name(part.strip('"'))
-                for part in (schema_name, sequence_name)
+                connection.ops.quote_name(part.strip('"')) for part in (schema_name, sequence_name)
             )
             quoted_table = connection.ops.quote_name(table)
             quoted_column = connection.ops.quote_name(column)

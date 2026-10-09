@@ -1,138 +1,29 @@
 {% extends "base.html" %}
 {% load static %}
 {% block body %}
-  <div class="min-h-screen lg:grid lg:grid-cols-[224px_minmax(0,1fr)]">
-    <button id="sidebar-backdrop" type="button" class="fixed inset-0 z-40 hidden bg-ink/20 lg:hidden" aria-label="Close navigation"></button>
-    <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-50 hidden w-56 flex-col border-r border-line bg-white lg:flex">
-      <a href="{% url 'dashboard' %}" class="flex h-14 items-center gap-3 border-b border-line px-4 font-heading text-[17px] font-semibold tracking-tight">
-        <img src="{% static 'img/logo.svg' %}" alt="" class="size-7">
-        <span>Operational Inbox</span>
-      </a>
-      <nav class="flex-1 overflow-y-auto py-4 text-sm" aria-label="Primary navigation">
-        <a href="{% url 'dashboard' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'overview' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}"><span aria-hidden="true">▦</span>Overview</a>
-        {% if current_domain %}
-          <a href="{{ nav_current_inbox_url }}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'inbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
-            <span aria-hidden="true">▤</span>
-            Inbox
-            {% if nav_quarantine_count %}<span class="ml-auto bg-quarantine-soft px-1.5 font-mono text-[10px] text-quarantine-strong">{{ nav_quarantine_count }}</span>{% endif %}
-          </a>
-          <a href="{% url 'outbox' %}" class="flex min-h-10 items-center gap-3 px-4 {% if active_nav == 'outbox' %}bg-forest font-semibold text-white{% else %}text-muted hover:bg-paper hover:text-ink{% endif %}">
-            <span aria-hidden="true">⇥</span>
-            Outbox
-            {% if nav_outbound_problem_count %}<span class="ml-auto bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong">{{ nav_outbound_problem_count }}</span>{% endif %}
-          </a>
-        {% else %}
-          <span class="flex min-h-10 cursor-not-allowed items-center gap-3 px-4 text-muted opacity-50" aria-disabled="true" title="Connect a domain to use Inbox"><span aria-hidden="true">▤</span>Inbox</span>
-          <span class="flex min-h-10 cursor-not-allowed items-center gap-3 px-4 text-muted opacity-50" aria-disabled="true" title="Connect a domain to use Outbox"><span aria-hidden="true">⇥</span>Outbox</span>
-        {% endif %}
-        {% if nav_inbox_tree %}
-          <div class="border-b border-line bg-paper/30 px-2 pb-3 pt-2">
-            <p class="mb-1 px-2 font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Domains</p>
-            <div class="grid gap-1">
-              {% for item in nav_inbox_tree %}
-                <div>
-                  <a href="{{ item.url }}" class="flex min-h-9 items-center gap-1 px-2 text-xs font-semibold {% if active_nav == 'inbox' and current_domain.id == item.id %}bg-white text-forest{% else %}text-ink hover:bg-white{% endif %}">
-                    <span aria-hidden="true" class="w-3 text-muted">{% if item.open %}⌄{% else %}›{% endif %}</span>
-                    <span class="min-w-0 flex-1 truncate">{{ item.hostname }}</span>
-                    {% if item.new_count %}<span class="bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong" aria-label="{{ item.new_count }} new message{{ item.new_count|pluralize }}">{{ item.new_count }}</span>{% endif %}
-                  </a>
-                  {% if item.open %}<div class="ml-3 border-l border-line pl-2">
-                    <a href="{{ item.url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'inbox' and not nav_recipient and current_domain.id == item.id %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">All messages</a>
-                    {% for mailbox in item.addresses %}
-                      <a href="{{ mailbox.url }}" title="{{ mailbox.address }}" aria-label="{{ mailbox.address }}{% if mailbox.new_count %}, {{ mailbox.new_count }} new message{{ mailbox.new_count|pluralize }}{% endif %}" class="flex min-h-8 items-center gap-1 px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'inbox' and nav_recipient == mailbox.normalized_address and current_domain.id == item.id %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">
-                        <span class="min-w-0 flex-1 truncate">{{ mailbox.local_part }}</span>
-                        {% if mailbox.new_count %}<span class="bg-coral-soft px-1.5 font-mono text-[10px] text-coral-strong" aria-hidden="true">{{ mailbox.new_count }}</span>{% endif %}
-                      </a>
-                    {% endfor %}
-                    {% if current_domain.id == item.id %}
-                      <div class="my-1 border-t border-line"></div>
-                      <a href="{{ item.starred_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'starred' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Starred</a>
-                      <a href="{{ item.archive_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'archive' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Archive</a>
-                      <a href="{{ item.trash_url }}" class="flex min-h-8 items-center px-2 text-xs {% if active_nav == 'inbox' and nav_folder == 'trash' %}font-semibold text-forest{% else %}text-muted hover:bg-white hover:text-ink{% endif %}">Trash</a>
-                    {% endif %}
-                  </div>{% endif %}
-                </div>
-              {% endfor %}
-            </div>
-          </div>
-        {% endif %}
-      </nav>
-    </aside>
-
-    <div class="min-w-0 lg:col-start-2">
-      <header class="sticky top-0 z-40 flex h-14 items-center justify-between border-b border-line bg-white px-4 sm:px-6 lg:px-8">
-        <div class="flex min-w-0 items-center gap-3">
-          <button id="sidebar-toggle" type="button" class="oi-button-secondary min-h-9 px-3 lg:hidden" aria-controls="app-sidebar" aria-expanded="false">
-            <span aria-hidden="true">☰</span><span class="sr-only">Open navigation</span>
-          </button>
-          <div class="hidden min-w-0 items-center gap-3 sm:flex">
-            <span class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">{% if current_domain %}Active domain{% else %}Domain{% endif %}</span>
-            <span class="h-4 w-px bg-line" aria-hidden="true"></span>
-            <span class="truncate text-sm font-semibold">{{ current_domain.hostname|default:"No domain connected" }}</span>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2 sm:gap-3">
-          <a href="https://github.com/onurmatik/operational-inbox" class="oi-button-secondary size-9 min-h-9 p-0" target="_blank" rel="noopener noreferrer" aria-label="View Operational Inbox on GitHub" title="GitHub repository">
-            <svg class="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.4-1.26.74-1.55-2.57-.29-5.27-1.28-5.27-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.16 1.18a10.98 10.98 0 0 1 5.75 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.71 5.38-5.29 5.67.42.36.79 1.07.79 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"></path></svg>
-          </a>
-          <a href="{% url 'agents' %}" class="oi-button-secondary min-h-9 px-3 {% if active_nav == 'agents' %}border-forest bg-forest text-white hover:bg-forest-strong hover:text-white{% endif %}" {% if active_nav == 'agents' %}aria-current="page"{% endif %}>Agents</a>
-          <div class="relative" data-dropdown>
-            <button id="settings-menu-button" type="button" class="oi-button-secondary min-h-9 px-3 {% if active_nav == 'domains' or active_nav == 'retention' or active_nav == 'api_tokens' or active_nav == 'audit' %}border-forest text-forest{% endif %}" aria-label="Settings" title="Settings" aria-haspopup="menu" aria-expanded="false" aria-controls="settings-menu" data-dropdown-button>
-              <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.5 19.3a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.7 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.5 4.7a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.08.37.3.72.6 1 .3.28.7.42 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"></path></svg>
-              <span class="hidden sm:inline">Settings</span>
-              <span class="text-xs text-muted" aria-hidden="true">⌄</span>
-            </button>
-            <div id="settings-menu" class="absolute right-0 top-[calc(100%+8px)] z-[60] hidden w-72 border border-line-strong bg-white p-1 shadow-[0_12px_32px_rgba(17,41,29,0.12)]" role="menu" aria-labelledby="settings-menu-button" data-dropdown-panel>
-              <a href="{% url 'domains' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'domains' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">◎</span><span>Domains</span></a>
-              <div class="my-1 border-t border-line" role="separator"></div>
-              {% if current_domain %}
-                <a href="{% url 'retention_settings' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'retention' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">◷</span><span>Retention</span></a>
-              {% else %}
-                <span class="flex cursor-not-allowed items-start gap-3 px-3 py-2 text-sm text-muted opacity-50" role="menuitem" aria-disabled="true"><span class="mt-0.5 w-4 text-center" aria-hidden="true">◷</span><span><span class="block">Retention</span><span class="font-mono text-[10px] uppercase tracking-[0.06em]">Requires a domain</span></span></span>
-              {% endif %}
-              <a href="{% url 'api_tokens' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'api_tokens' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">⌁</span><span>API token</span></a>
-              {% if current_domain %}
-                <a href="{% url 'audit' %}" class="flex min-h-10 items-center gap-3 px-3 py-2 text-sm {% if active_nav == 'audit' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem"><span class="w-4 text-center text-muted" aria-hidden="true">≡</span><span>Audit</span></a>
-              {% else %}
-                <span class="flex cursor-not-allowed items-start gap-3 px-3 py-2 text-sm text-muted opacity-50" role="menuitem" aria-disabled="true"><span class="mt-0.5 w-4 text-center" aria-hidden="true">≡</span><span><span class="block">Audit</span><span class="font-mono text-[10px] uppercase tracking-[0.06em]">Requires a domain</span></span></span>
-                <div class="mt-1 border-t border-line bg-paper/50 p-3">
-                  <p class="text-xs leading-5 text-muted">Connect a domain to unlock domain-scoped settings.</p>
-                  <a href="{% url 'domain_create' %}" class="mt-2 inline-flex min-h-8 items-center text-xs font-semibold text-forest hover:underline" role="menuitem">Connect domain →</a>
-                </div>
-              {% endif %}
-            </div>
-          </div>
-
-          <div class="relative" data-dropdown>
-            <button id="profile-menu-button" type="button" class="flex min-h-9 items-center gap-2 border border-line bg-paper px-2 transition-colors hover:border-line-strong" aria-haspopup="menu" aria-expanded="false" aria-controls="profile-menu" aria-label="Open account menu" data-dropdown-button>
-              <span class="flex size-6 items-center justify-center bg-forest font-mono text-[10px] font-semibold text-white" aria-hidden="true">{{ request.user.email|first|upper }}</span>
-              <span class="text-xs text-muted" aria-hidden="true">⌄</span>
-            </button>
-            <div id="profile-menu" class="absolute right-0 top-[calc(100%+8px)] z-[60] hidden w-64 border border-line-strong bg-white p-1 shadow-[0_12px_32px_rgba(17,41,29,0.12)]" role="menu" aria-labelledby="profile-menu-button" data-dropdown-panel>
-              <div class="mb-1 border-b border-line px-3 py-2">
-                <p class="font-mono text-[10px] uppercase tracking-[0.08em] text-muted">Signed in as</p>
-                <p class="mt-1 truncate text-xs font-semibold">{{ request.user.email }}</p>
-              </div>
-              <a href="{% url 'billing' %}" class="flex min-h-11 items-center justify-between gap-3 px-3 py-2 text-sm {% if active_nav == 'billing' %}bg-paper font-semibold text-forest{% else %}text-ink hover:bg-paper{% endif %}" role="menuitem">
-                <span>{% if plan_entitlements.is_pro %}Manage plan{% elif active_nav == 'billing' and not billing_configured %}Plan &amp; billing{% else %}Upgrade to Pro{% endif %}</span>
-                <span class="oi-status {% if plan_entitlements.is_pro %}oi-status-ready{% else %}oi-status-pending{% endif %}">{{ plan_entitlements.plan|upper }}</span>
-              </a>
-              <div class="my-1 border-t border-line" role="separator"></div>
-              <form method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit" class="flex min-h-10 w-full items-center gap-3 px-3 py-2 text-left text-sm font-semibold text-coral-strong hover:bg-coral-soft" role="menuitem"><span aria-hidden="true">↪</span>Sign out</button></form>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main id="main-content" class="mx-auto max-w-[1440px] p-4 sm:p-6 lg:p-8">
-        {% if active_nav != 'overview' and active_nav != 'agents' and current_domain and not current_domain_writable %}
-          <div class="mb-6 border border-gold-strong/40 bg-gold-soft p-4 text-sm text-gold-strong">
-            <strong>This domain is read-only on Free.</strong> New mail continues to arrive, but changes require <a href="{% url 'billing' %}" class="underline">Operational Inbox Pro</a>.
-          </div>
-        {% endif %}
-        {% block content %}{% endblock %}
-      </main>
+<div class="app-shell">
+  <button id="sidebar-backdrop" type="button" class="fixed inset-0 z-40 hidden bg-ink/20 lg:hidden" aria-label="Close navigation"></button>
+  <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-50 hidden w-56 flex-col border-r border-line bg-white lg:flex">
+    <a href="{% url 'inbox' %}" class="flex h-14 shrink-0 items-center gap-3 border-b border-line px-4 font-heading text-[17px] font-semibold tracking-tight"><img src="{% static 'img/logo.svg' %}" alt="" class="size-7"><span>Operational Inbox</span></a>
+    <nav class="flex-1 py-4 text-sm" aria-label="Primary navigation">
+      <a href="{% url 'inbox' %}" class="app-nav {% if active_nav == 'inbox' %}app-nav-active{% endif %}" {% if active_nav == 'inbox' %}aria-current="page"{% endif %}><span class="oi-icon">{% include "icons/message-square.svg" %}</span>Conversations</a>
+      <a href="{% url 'domains' %}" class="app-nav {% if active_nav == 'domains' %}app-nav-active{% endif %}" {% if active_nav == 'domains' %}aria-current="page"{% endif %}><span class="oi-icon">{% include "icons/globe.svg" %}</span>Domains</a>
+    </nav>
+    <div class="border-t border-line p-4 text-sm">
+      <a href="{% url 'agents' %}" class="app-nav" data-open-dialog="agent-dialog"><span class="oi-icon">{% include "icons/bot.svg" %}</span>Connect agent</a>
+      <a href="{% url 'settings' %}" class="app-nav {% if active_nav == 'settings' or active_nav == 'retention' or active_nav == 'audit' or active_nav == 'api_tokens' or active_nav == 'billing' %}font-semibold text-forest{% endif %}"><span class="oi-icon">{% include "icons/settings.svg" %}</span>Settings</a>
     </div>
+  </aside>
+  <div class="app-main">
+    <header class="app-toolbar">
+      <button id="sidebar-toggle" type="button" class="icon-button lg:hidden" aria-label="Open navigation" aria-controls="app-sidebar" aria-expanded="false"><span class="oi-icon">{% include "icons/menu.svg" %}</span></button>
+      {% block toolbar %}<span class="font-heading text-lg font-semibold">{% if active_nav == 'domains' %}Domains{% else %}Settings{% endif %}</span>{% endblock %}
+    </header>
+    <main id="main-content" class="{% block main_class %}app-page{% endblock %}">{% block content %}{% endblock %}</main>
   </div>
+</div>
+<dialog id="agent-dialog" class="oi-dialog" aria-labelledby="agent-title">
+  <div class="dialog-header"><h2 id="agent-title" class="font-heading text-xl font-semibold">Connect your agent</h2><button type="button" class="icon-button" data-close-dialog aria-label="Close"><span class="oi-icon">{% include "icons/x.svg" %}</span></button></div>
+  <div class="space-y-4 p-6"><p class="text-sm leading-6 text-muted">Use your agent to set up domains, handle incoming mail, and write to customers.</p>{% include "inbox/partials/agent_prompt.html" %}<a href="{% url 'api_tokens' %}" class="block text-sm font-semibold text-forest hover:underline">Manage access</a></div>
+</dialog>
 {% endblock %}

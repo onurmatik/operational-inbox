@@ -37,11 +37,11 @@ reports, and permanent deletion are not exposed through MCP.
 - [ ] Verify the production MCP endpoint, OAuth metadata, DCR/PKCE flow, protected resource
   metadata, and all public/legal URLs.
 - [ ] Complete the tool annotation review and generate `chatgpt-app-submission.json` with exactly
-  six positive and three negative reviewer tests.
+  seven positive and three negative reviewer tests.
 - [ ] Create a dedicated, already-verified reviewer account with sample inbox data and sufficient
   plan access. It must not require MFA, SMS, email confirmation, a private network, or payment.
 - [ ] Record a public HTTPS demo video covering read, reversible write, agent-authored send,
-  Outbox monitoring/pause, and explicit resend behavior on supported OpenAI surfaces.
+  Sent monitoring and account pause, and explicit resend behavior on supported OpenAI surfaces.
 - [ ] Confirm the OpenAI organization owner has **Apps Management: Write**, the selected project
   uses **Global** data residency, and developer/business verification is complete.
 - [ ] Choose the initial listing countries and regions.
@@ -84,8 +84,8 @@ code + PKCE, and returned only after explicit user consent.
    - Triage new mail across all my domains.
    - Draft and send a reply for the conversation I select.
    - Show outbound replies that need attention.
-7. Import the six positive and three negative tests from `chatgpt-app-submission.json` and run all
-   nine with the reviewer account.
+7. Import the seven positive and three negative tests from `chatgpt-app-submission.json` and run all
+   ten with the reviewer account.
 8. Add reviewer login details, demo video, countries and regions, and release notes.
 9. Complete only attestations that are true for the scanned production release, submit for
    review, and record the date and portal status below.

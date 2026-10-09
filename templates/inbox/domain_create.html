@@ -2,11 +2,8 @@
 {% block title %}Connect domain · Operational Inbox{% endblock %}
 {% block content %}
   <div class="max-w-2xl">
-    <p class="font-mono text-[10px] uppercase tracking-[0.1em] text-muted">Step 01 / Check existing mail service</p>
-    <h1 class="mt-2 font-heading text-3xl font-semibold">Connect a domain</h1>
-    <p class="mt-2 max-w-[68ch] text-sm leading-6 text-muted">
-      We check public MX records first and recommend the safest setup. This inspection is read-only; we never change DNS for you.
-    </p>
+    <h1 class="font-heading text-3xl font-semibold">Connect a domain</h1>
+    <p class="mt-2 text-sm text-muted">Give your projects email addresses and write to customers.</p>
 
     {% with example_domain=form.hostname.value|default:"yourcompany.com" %}
       <form
@@ -22,11 +19,12 @@
           <div class="mb-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>
         {% endif %}
 
+        <fieldset class="mb-6"><legend class="oi-label">What do you need?</legend><div class="grid gap-2 sm:grid-cols-3">{% for choice in form.goal %}<label class="oi-choice-card"><span class="oi-choice-control">{{ choice.tag }}</span><span class="text-sm font-semibold">{% if choice.data.value == 'receive' %}Receive email{% elif choice.data.value == 'send' %}Send email{% else %}Both{% endif %}</span></label>{% endfor %}</div><p class="mt-2 text-xs text-muted">Send-only setup leaves your existing mail provider and MX records in place.</p>{% for error in form.goal.errors %}<p class="text-xs text-coral-strong">{{ error }}</p>{% endfor %}</fieldset>
         <div>
-          <label class="oi-label" for="{{ form.hostname.id_for_label }}">Domain to receive email at</label>
+          <label class="oi-label" for="{{ form.hostname.id_for_label }}">Domain</label>
           {{ form.hostname }}
           <p class="mt-2 text-xs leading-5 text-muted">
-            Email will look like <code class="font-mono text-ink" data-domain-example>requests@{{ example_domain }}</code>. Use a dedicated subdomain if you want to keep this inbox separate from your main company email.
+            Addresses will look like <code class="font-mono text-ink" data-domain-example>support@{{ example_domain }}</code>. Use a dedicated subdomain if you want to keep this inbox separate from your main company email.
           </p>
           {% for error in form.hostname.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}
         </div>
@@ -71,9 +69,9 @@
                   <span class="mt-2 block border-l-2 border-line pl-2 text-xs leading-5 text-ink">
                     <span class="font-semibold">Example:</span>
                     {% if choice.data.value == 'PROVIDER_FORWARD' %}
-                      Existing mailboxes stay with your provider; an unmatched address such as <code class="font-mono" data-domain-example>requests@{{ example_domain }}</code> is forwarded here.
+                      Existing mailboxes stay with your provider; an unmatched address such as <code class="font-mono" data-domain-example>support@{{ example_domain }}</code> is forwarded here.
                     {% else %}
-                      <code class="font-mono" data-domain-example>requests@{{ example_domain }}</code> arrives here directly. Existing mailboxes at this domain would no longer receive mail through their old provider.
+                      <code class="font-mono" data-domain-example>support@{{ example_domain }}</code> arrives here directly. Existing mailboxes at this domain would no longer receive mail through their old provider.
                     {% endif %}
                   </span>
                 </span>

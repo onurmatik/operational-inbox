@@ -82,6 +82,72 @@
         }
       },
       "updatedAt": "2026-10-09T07:53:14.487299+00:00"
+    },
+    "/app/inbox/": {
+      "targetKind": "existing-ui",
+      "projectId": "04a87f91-aea0-4c8f-b358-afc8e0bbf553",
+      "baselineDraftId": "e21c2fe9-0642-4f5c-8ed6-629c410e7aac",
+      "activeDraftId": "e21c2fe9-0642-4f5c-8ed6-629c410e7aac",
+      "designSystemPath": ".superdesign/simplify/design-system.md",
+      "contextFiles": [
+        ".superdesign/simplify/design-system.md",
+        ".superdesign/simplify/brief.md"
+      ],
+      "fingerprints": {
+        ".superdesign/simplify/design-system.md": "33b1b90f63df2b8e332897f800611ba490098d316a79585dafece96ce932d58e",
+        ".superdesign/simplify/brief.md": "8fa7ebaef78bf8f6c6d8e834f756e1fd01ded7d47b25620dbf132a0f0af4b8b9"
+      },
+      "referenceIds": [
+        "inbox-static-img-logo.svg"
+      ],
+      "brandAssets": {
+        "logo": {
+          "assetKey": "inbox-static-img-logo.svg",
+          "url": "https://vgbujcuwptvheqijyjbe.supabase.co/storage/v1/object/public/hmac-uploads/projects/04a87f91-aea0-4c8f-b358-afc8e0bbf553/brand-assets/inbox-static-img-logo.svg/logo.svg",
+          "sourcePath": "inbox/static/img/logo.svg"
+        }
+      },
+      "components": [
+        {
+          "name": "AppShell",
+          "id": "8d5e52a3-a977-47e9-b153-2ba0adec5000",
+          "sourcePath": "templates/app_base.html",
+          "logoAssetKey": "inbox-static-img-logo.svg"
+        }
+      ],
+      "drafts": {
+        "e21c2fe9-0642-4f5c-8ed6-629c410e7aac": {
+          "title": "Refined Operational Inbox Preview",
+          "visualDirection": "Conversations-first list and readable thread; two main destinations; secondary agent setup",
+          "currentVersion": 9
+        }
+      },
+      "updatedAt": "2026-10-09T12:28:09.834136+00:00",
+      "baselineVersion": 3,
+      "baselineContextFiles": [
+        ".superdesign/simplify/design-system.md",
+        ".superdesign/simplify/brief.md",
+        "templates/base.html",
+        "templates/app_base.html",
+        "templates/inbox/inbox_list.html",
+        "templates/inbox/_action_icon.html",
+        "assets/css/app.css"
+      ],
+      "baselineFingerprints": {
+        ".superdesign/simplify/design-system.md": "33b1b90f63df2b8e332897f800611ba490098d316a79585dafece96ce932d58e",
+        ".superdesign/simplify/brief.md": "8fa7ebaef78bf8f6c6d8e834f756e1fd01ded7d47b25620dbf132a0f0af4b8b9",
+        "templates/base.html": "a58cec166266ec6a33765ba1d1052b69605d51e9bf65c32881d5d55a070ef154",
+        "templates/app_base.html": "edcd832ff7bd5232f63a25dba1f00f416ae4c787e51312d6025dbda667c88de4",
+        "templates/inbox/inbox_list.html": "81c124e6ebf9ea3b0cb3b2e4d77410dc7eb65774b6f2f586c3720e85c63330ad",
+        "templates/inbox/_action_icon.html": "628825ec423881ebef26d5b628f2391c120d8a40dbe137527a58151604dcc968",
+        "assets/css/app.css": "d3846413f3fe1af64a7ffc7e15c82072e5bd150a77fa0f7b5b32352470a1aa6f"
+      },
+      "baselineReferenceIds": [
+        "f5ba3c14-de77-4531-871a-97a8debddebb",
+        "inbox-static-img-logo.svg"
+      ],
+      "proposalPath": ".superdesign/simplify/proposal.html",
+      "assessmentPath": ".superdesign/simplify/assessment.md"
     }
   }
 }

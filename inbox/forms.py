@@ -69,7 +69,10 @@ class VerificationResendForm(StyledFormMixin, forms.Form):
 
 class DomainForm(StyledFormMixin, forms.Form):
     hostname = forms.CharField(max_length=253)
-    setup_mode = forms.ChoiceField(choices=Domain.SetupMode.choices, widget=forms.RadioSelect)
+    goal = forms.ChoiceField(choices=Domain.Goal.choices, widget=forms.RadioSelect, required=False)
+    setup_mode = forms.ChoiceField(
+        choices=Domain.SetupMode.choices, widget=forms.RadioSelect, required=False
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -80,6 +83,15 @@ class DomainForm(StyledFormMixin, forms.Form):
 
     def clean_hostname(self) -> str:
         return normalize_hostname(self.cleaned_data["hostname"])
+
+    def clean(self):
+        cleaned = super().clean()
+        cleaned["goal"] = cleaned.get("goal") or Domain.Goal.RECEIVE
+        if cleaned["goal"] == Domain.Goal.SEND:
+            cleaned["setup_mode"] = Domain.SetupMode.DIRECT_MX
+        elif not cleaned.get("setup_mode"):
+            self.add_error("setup_mode", "Choose direct MX or forwarding to receive email.")
+        return cleaned
 
 
 class RetentionForm(StyledFormMixin, forms.ModelForm):
@@ -108,8 +120,20 @@ class DraftRevisionForm(StyledFormMixin, forms.Form):
 
 
 class ComposeForm(StyledFormMixin, forms.Form):
-    domain = forms.ModelChoiceField(queryset=Domain.objects.none(), empty_label="Select a domain")
-    from_local_part = forms.CharField(max_length=64, label="From", strip=False)
+    from_address = forms.CharField(
+        max_length=320,
+        label="From",
+        required=False,
+        strip=False,
+        validators=[validate_email],
+        widget=forms.EmailInput,
+    )
+    domain = forms.ModelChoiceField(
+        queryset=Domain.objects.none(), required=False, widget=forms.HiddenInput
+    )
+    from_local_part = forms.CharField(
+        max_length=64, strip=False, required=False, widget=forms.HiddenInput
+    )
     to_address = forms.CharField(
         max_length=320,
         label="To",
@@ -119,10 +143,7 @@ class ComposeForm(StyledFormMixin, forms.Form):
     )
     subject = forms.CharField(max_length=998, strip=False)
     body_text = forms.CharField(
-        max_length=20000,
-        label="Body",
-        strip=False,
-        widget=forms.Textarea(attrs={"rows": 12}),
+        max_length=20000, label="Message", strip=False, widget=forms.Textarea(attrs={"rows": 10})
     )
     idempotency_key = forms.UUIDField(widget=forms.HiddenInput)
 
@@ -130,26 +151,40 @@ class ComposeForm(StyledFormMixin, forms.Form):
         super().__init__(*args, **kwargs)
         self.fields["domain"].queryset = domains
         self._style_fields()
-        for name, field in self.fields.items():
-            if name != "idempotency_key":
-                field.widget.attrs["class"] += " min-h-11"
-                field.widget.attrs["aria-describedby"] = f"{name}-errors"
-        self.fields["from_local_part"].widget.attrs.update(
-            {
-                "autocomplete": "off",
-                "autocapitalize": "none",
-                "spellcheck": "false",
-                "class": "oi-input min-h-11 min-w-0 flex-1 rounded-r-none border-r-0",
-                "aria-describedby": "from-suffix from_local_part-errors",
-            }
+        for name in ("from_address", "to_address"):
+            self.fields[name].widget.attrs.update(
+                autocomplete="email", autocapitalize="none", spellcheck="false"
+            )
+        self.fields["from_address"].widget.attrs.update(
+            placeholder="hello@yourdomain.com", list="sender-addresses"
         )
-        self.fields["to_address"].widget.attrs.update(
-            autocomplete="email", autocapitalize="none", spellcheck="false"
-        )
-        self.fields["body_text"].widget.attrs["class"] += " min-h-[280px] resize-y py-3 leading-6"
+        self.fields["body_text"].widget.attrs["class"] += " py-3 leading-6 resize-y"
 
-    def clean_from_local_part(self) -> str:
-        local_part = self.cleaned_data["from_local_part"]
-        if "@" in local_part:
-            raise forms.ValidationError("Enter only the part before @.")
-        return local_part
+    def clean(self):
+        cleaned = super().clean()
+        address = cleaned.get("from_address", "")
+        domain = cleaned.get("domain")
+        local = cleaned.get("from_local_part", "")
+        if not address and domain and local:
+            address = f"{local}@{domain.hostname}"
+            try:
+                validate_email(address)
+            except forms.ValidationError:
+                self.add_error("from_address", "Enter a valid From address.")
+                return cleaned
+        if not address:
+            if "from_address" not in self.errors:
+                self.add_error("from_address", "Enter a full From address.")
+            return cleaned
+        hostname = address.rsplit("@", 1)[1].casefold()
+        selected = self.fields["domain"].queryset.filter(hostname=hostname).first()
+        if (
+            selected is None
+            or (domain and selected.id != domain.id)
+            or (local and address != f"{local}@{hostname}")
+        ):
+            self.add_error("from_address", "Use an address on one of your connected domains.")
+        else:
+            cleaned["domain"] = selected
+            cleaned["from_address"] = address
+        return cleaned

@@ -1,0 +1,1 @@
+<span class="delivery-badge {% if outbound.status == 'DELIVERED' %}text-mint-strong{% elif outbound.status == 'UNKNOWN' or outbound.status == 'FAILED' or outbound.status == 'BOUNCED' or outbound.status == 'COMPLAINED' %}text-coral-strong{% else %}text-muted{% endif %}">{{ outbound.get_status_display }}</span>

@@ -16,6 +16,7 @@ from inbox.models import (
     BillingProfile,
     Conversation,
     Domain,
+    DomainDNSRecord,
     StripeWebhookEvent,
     User,
 )
@@ -35,14 +36,25 @@ def free_owner(db) -> User:
 
 
 def make_domain(owner: User, hostname: str) -> Domain:
-    return Domain.objects.create(
+    domain = Domain.objects.create(
         owner=owner,
         hostname=hostname,
         setup_mode=Domain.SetupMode.PROVIDER_FORWARD,
         status=Domain.Status.READY,
         inbound_ready=True,
+        ownership_verified=True,
         claim_expires_at=timezone.now() + timedelta(days=3),
     )
+
+    DomainDNSRecord.objects.create(
+        domain=domain,
+        purpose="OWNERSHIP",
+        record_type="TXT",
+        name=f"_operational-inbox.{hostname}",
+        value="proof",
+        status="VALID",
+    )
+    return domain
 
 
 @pytest.mark.django_db
@@ -231,8 +243,8 @@ def test_over_capacity_domain_is_readable_but_mutations_are_guarded_and_disable_
         "reset_at": None,
         "retryable": False,
     }
-    assert primary_check.status_code == 409
-    assert primary_check.json()["code"] == "dns_instructions_not_ready"
+    assert primary_check.status_code == 202
+    assert primary_check.json()["job_id"]
     assert disabled.status_code == 202
     read_only.refresh_from_db()
     assert read_only.status == Domain.Status.DISABLED
@@ -269,7 +281,7 @@ def test_free_conversation_has_no_server_side_draft_action(client, free_owner):
     assert response.status_code == 200
     assert b"Free inbox mode" not in response.content
     assert b"AI drafts and outbound sending require" not in response.content
-    assert b"No agent-authored reply yet" in response.content
+    assert b"Review reply draft" not in response.content
     assert b"Generate review draft" not in response.content
 
 
@@ -277,7 +289,7 @@ def test_free_conversation_has_no_server_side_draft_action(client, free_owner):
 @pytest.mark.parametrize(
     ("domain_status", "inbound_ready", "outbound_status", "expected_action"),
     [
-        (Domain.Status.PENDING_TEST, False, Domain.OutboundStatus.DISABLED, None),
+        (Domain.Status.PENDING_TEST, False, Domain.OutboundStatus.DISABLED, b"Enable sending"),
         (Domain.Status.READY, True, Domain.OutboundStatus.DISABLED, b"Enable sending"),
         (Domain.Status.READY, True, Domain.OutboundStatus.ERROR, b"Retry sending setup"),
     ],
@@ -367,7 +379,7 @@ def test_free_billing_page_renders_limited_time_pro_offer(client, free_owner):
     assert b"USD 4.99" in response.content
     assert b"Up to 20 managed domains" in response.content
     assert b"5,000 user-requested emails" in response.content
-    assert b"Custom retention &amp; server-side AI classification" in response.content
+    assert b"Custom retention &amp; more domains" in response.content
     assert b"API &amp; MCP access</span><span>Yes</span><span>Yes" in response.content
     assert b"Agent-authored drafts</span><span>Yes</span><span>Yes" in response.content
     assert f'method="post" action="{reverse("billing_checkout")}"'.encode() in response.content
@@ -468,7 +480,7 @@ def test_extra_free_domain_is_read_only_but_preserved(client, free_owner):
 
     conversation.refresh_from_db()
     assert detail.status_code == 200
-    assert b"This domain is read-only during the account's capacity grace period." in detail.content
+    assert b"Read-only" in detail.content
     assert response.status_code == 302
     assert response.url == reverse("domains")
     assert not conversation.tags.exists()

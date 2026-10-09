@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
@@ -16,27 +16,19 @@ from inbox.models import (
     DurableJob,
     InboundRoute,
     InboundRoutingTransition,
-    Message,
     Notification,
     OutboundControl,
     OutboundMessage,
-    Report,
 )
-from inbox.services.ai import classify_message
 from inbox.services.domain_entitlements import reconcile_all_domain_capacities
 from inbox.services.domains import (
     expire_unverified_claims,
     provision_inbound,
     provision_outbound_identity,
 )
-from inbox.services.entitlements import for_user
 from inbox.services.notifications import send_pending_email_notification
 from inbox.services.outbound import recover_stale_submissions, submit_outbound
 from inbox.services.receipt_rules import reconcile_receipt_rule
-from inbox.services.reports import (
-    domain_zone,
-    generate_report,
-)
 from inbox.services.routing_transitions import (
     complete_expired_routing_transition,
     provision_routing_transition,
@@ -240,17 +232,14 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
         generation = locked_domain.updated_at.strftime("%Y%m%d%H%M%S%f")
-        if (
-            locked_domain.status
-            in {
-                Domain.Status.PROVISIONING,
-                Domain.Status.ERROR,
-                Domain.Status.DISABLED,
-            }
-            or not locked_domain.inbound_ready
-        ):
+        if locked_domain.status == Domain.Status.DISABLED or not locked_domain.ownership_verified:
+            raise ValidationError("Verify domain ownership before enabling sending.")
+        if not locked_domain.dns_records.filter(
+            purpose="OWNERSHIP",
+            status="VALID",
+        ).exists():
             raise ValidationError(
-                "Verify receiving with a real test email before enabling sending for this domain."
+                "Verify the required ownership DNS record before enabling sending."
             )
         if locked_domain.outbound_status == Domain.OutboundStatus.PROVISIONING:
             active_job = (
@@ -274,12 +263,14 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
         }:
             raise ValidationError("Sending is already enabled for this domain.")
 
+        locked_domain.sending_requested = True
         locked_domain.outbound_status = Domain.OutboundStatus.PROVISIONING
         locked_domain.outbound_ready = False
         locked_domain.outbound_error_code = ""
         locked_domain.outbound_error_message = ""
         locked_domain.save(
             update_fields=(
+                "sending_requested",
                 "outbound_status",
                 "outbound_ready",
                 "outbound_error_code",
@@ -302,6 +293,14 @@ def schedule_work(now=None) -> int:
     count += reconcile_all_domain_capacities(now=now)
     expire_unverified_claims()
     recover_stale_submissions(now=now)
+    for domain in Domain.objects.filter(
+        sending_requested=True,
+        ownership_verified=True,
+        outbound_status=Domain.OutboundStatus.DISABLED,
+    ).exclude(status=Domain.Status.DISABLED):
+        if domain.dns_records.filter(purpose="OWNERSHIP", status="VALID").exists():
+            _, _, started = request_outbound_provisioning(domain)
+            count += int(started)
     # Repair the small commit/enqueue crash window in domain creation. Existing
     # active jobs are returned unchanged, so this scan is idempotent.
     for domain in Domain.objects.filter(status=Domain.Status.PROVISIONING):
@@ -357,34 +356,7 @@ def schedule_work(now=None) -> int:
 
 
 def _handle(job: DurableJob) -> None:
-    if job.kind == "classify_message":
-        message = Message.objects.select_related("domain__owner").get(id=job.payload["message_id"])
-        if not for_user(message.domain.owner).ai:
-            return
-        classification = classify_message(message)
-        if classification is None:
-            raise RuntimeError("Classification remains unavailable.")
-    elif job.kind == "generate_report":
-        domain = Domain.objects.select_related("owner").get(id=job.payload["domain_id"])
-        if not for_user(domain.owner).ai:
-            return
-        scheduled_for = datetime.fromisoformat(job.payload["scheduled_for"])
-        report = generate_report(
-            domain=domain,
-            kind=job.payload["kind"],
-            now=scheduled_for,
-        )
-        schedule = domain.report_schedule
-        if schedule.last_review_at is None or report.period_end > schedule.last_review_at:
-            schedule.last_review_at = report.period_end
-        if report.kind == Report.Kind.DAILY:
-            schedule.last_daily_report_local_date = report.period_end.astimezone(
-                domain_zone(domain)
-            ).date()
-        schedule.save(
-            update_fields=("last_review_at", "last_daily_report_local_date", "updated_at")
-        )
-    elif job.kind == "send_outbound":
+    if job.kind == "send_outbound":
         submit_outbound(OutboundMessage.objects.get(id=job.payload["outbound_id"]))
     elif job.kind == "send_notification":
         if not send_pending_email_notification(

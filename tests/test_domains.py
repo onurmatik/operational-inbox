@@ -280,6 +280,7 @@ def test_dns_drift_retries_receipt_rule_after_transient_failure(project):
     )
     ses = Mock()
     ses.get_identity_verification_attributes.return_value = {"VerificationAttributes": {}}
+    ses.get_identity_dkim_attributes.return_value = {"DkimAttributes": {}}
     with (
         patch(
             "inbox.management.commands.check_domain_drift.reconcile_receipt_rule",

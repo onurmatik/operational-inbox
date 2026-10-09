@@ -265,11 +265,19 @@ def _assert_limits(owner: User) -> None:
         )
 
 
-def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:
+def create_domain(
+    *,
+    owner: User,
+    hostname: str,
+    setup_mode: str = Domain.SetupMode.DIRECT_MX,
+    goal: str = Domain.Goal.RECEIVE,
+) -> Domain:
     if setup_mode not in Domain.SetupMode.values:
         raise ValidationError({"setup_mode": "Select a supported setup mode."})
+    if goal not in Domain.Goal.values:
+        raise ValidationError({"goal": "Select Receive email, Send email or Both."})
     normalized = normalize_hostname(hostname)
-    mx = inspect_mx(normalized)
+    mx = inspect_mx(normalized) if goal != Domain.Goal.SEND else []
     # DNS may take several seconds on a degraded nameserver. Keep it outside the
     # write transaction so one lookup cannot hold SQLite's immediate write lock.
     existing = (
@@ -286,23 +294,26 @@ def create_domain(*, owner: User, hostname: str, setup_mode: str) -> Domain:
                 owner=owner,
                 hostname=normalized,
                 setup_mode=setup_mode,
+                receiving_enabled=goal != Domain.Goal.SEND,
+                sending_requested=goal != Domain.Goal.RECEIVE,
                 status=Domain.Status.PROVISIONING,
                 existing_mx=[
                     {"preference": item.preference, "exchange": item.exchange} for item in mx
                 ],
                 claim_expires_at=timezone.now() + timedelta(hours=settings.DOMAIN_CLAIM_TTL_HOURS),
             )
-            local_part = f"route-{secrets.token_urlsafe(24).lower()}"
-            InboundRoute.objects.create(
-                domain=domain,
-                kind=(
-                    InboundRoute.Kind.FORWARDING_ALIAS
-                    if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
-                    else InboundRoute.Kind.DIRECT_DOMAIN
-                ),
-                local_part=local_part,
-                address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
-            )
+            if domain.receiving_enabled:
+                local_part = f"route-{secrets.token_urlsafe(24).lower()}"
+                InboundRoute.objects.create(
+                    domain=domain,
+                    kind=(
+                        InboundRoute.Kind.FORWARDING_ALIAS
+                        if setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+                        else InboundRoute.Kind.DIRECT_DOMAIN
+                    ),
+                    local_part=local_part,
+                    address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
+                )
     except IntegrityError as exc:
         # Resolve the check/insert race against the database's global active
         # hostname constraint. Do not turn an unrelated integrity failure into
@@ -393,6 +404,8 @@ def build_inbound_dns_instructions(
         value=ownership_token,
         is_required=True,
     )
+    if not domain.receiving_enabled:
+        return
     if verification_token:
         _upsert_dns_instruction(
             domain,
@@ -400,7 +413,8 @@ def build_inbound_dns_instructions(
             record_type="TXT",
             name=f"_amazonses.{domain.hostname}",
             value=verification_token,
-            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+            is_required=domain.receiving_enabled
+            and domain.setup_mode == Domain.SetupMode.DIRECT_MX,
         )
     if domain.setup_mode == Domain.SetupMode.DIRECT_MX:
         _upsert_dns_instruction(
@@ -427,7 +441,8 @@ def build_outbound_dns_instructions(
             record_type="TXT",
             name=f"_amazonses.{domain.hostname}",
             value=verification_token,
-            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+            is_required=domain.receiving_enabled
+            and domain.setup_mode == Domain.SetupMode.DIRECT_MX,
         )
     for token in dkim_tokens:
         _upsert_dns_instruction(
@@ -567,7 +582,7 @@ def provision_inbound(
     ):
         return domain
 
-    if expected_setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+    if not domain.receiving_enabled or expected_setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
         with transaction.atomic():
             locked_domain = Domain.objects.select_for_update().get(id=domain.id)
             if not _matches_inbound_provisioning_attempt(
@@ -846,7 +861,9 @@ def reconcile_ses_identity_adoption(
         ),
     ).exists()
     needs_ses_verification = (
-        domain.setup_mode == Domain.SetupMode.DIRECT_MX or outbound_enabled or has_direct_transition
+        (domain.receiving_enabled and domain.setup_mode == Domain.SetupMode.DIRECT_MX)
+        or outbound_enabled
+        or has_direct_transition
     )
     has_verification_instruction = domain.dns_records.filter(
         purpose=DomainDNSRecord.Purpose.SES_VERIFICATION
@@ -872,7 +889,8 @@ def reconcile_ses_identity_adoption(
             record_type="TXT",
             name=f"_amazonses.{domain.hostname}",
             value=str(verification["VerificationToken"]),
-            is_required=domain.setup_mode == Domain.SetupMode.DIRECT_MX,
+            is_required=domain.receiving_enabled
+            and domain.setup_mode == Domain.SetupMode.DIRECT_MX,
         )
         verification_status = "PENDING"
     if restart_dkim:
@@ -922,7 +940,8 @@ def _assert_domain_test_ready(domain: Domain) -> None:
         else InboundRoute.Kind.FORWARDING_ALIAS
     )
     if (
-        domain.status != Domain.Status.PENDING_TEST
+        not domain.receiving_enabled
+        or domain.status != Domain.Status.PENDING_TEST
         or not domain.ownership_verified
         or (
             domain.setup_mode == Domain.SetupMode.DIRECT_MX
@@ -1189,13 +1208,18 @@ def apply_domain_readiness(
         domain.outbound_ready = False
 
     domain.inbound_ready = (
-        ownership_dns
+        domain.receiving_enabled
+        and ownership_dns
         and required_valid
         and ses_receiving_ready
         and active_route_ready
         and test_received
     )
-    if not ownership_dns or not required_valid:
+    if not domain.receiving_enabled:
+        domain.status = Domain.Status.READY if ownership_dns else Domain.Status.PENDING_DNS
+        domain.error_code = ""
+        domain.error_message = ""
+    elif not ownership_dns or not required_valid:
         if domain.status in {Domain.Status.READY, Domain.Status.DEGRADED}:
             domain.status = Domain.Status.DEGRADED
             domain.error_code = "dns_drift"
@@ -1263,3 +1287,67 @@ def apply_domain_readiness(
             defaults={"metadata": {"ownership_record": application_ownership_record_name(domain)}},
         )
     return previous_ownership != domain.ownership_verified
+
+
+def enable_receiving(domain: Domain, *, setup_mode: str) -> tuple[Domain, bool]:
+    """Add receiving to a sending-only domain with an explicit routing choice."""
+    if setup_mode not in Domain.SetupMode.values:
+        raise ValidationError("Choose direct MX or provider forwarding.")
+    # DNS inspection can block; keep it outside the account/domain row lock.
+    mx = [] if domain.receiving_enabled else inspect_domain_routing(domain.hostname).mx_records
+    with transaction.atomic():
+        locked = Domain.objects.select_for_update().get(id=domain.id)
+        if locked.status == Domain.Status.DISABLED:
+            raise ValidationError("This domain is disabled.")
+        if locked.receiving_enabled:
+            if locked.setup_mode != setup_mode:
+                raise ValidationError(
+                    "Use a tested routing transition to change the existing route."
+                )
+            return locked, False
+        locked.receiving_enabled = True
+        locked.setup_mode = setup_mode
+        locked.inbound_setup_generation += 1
+        locked.status = Domain.Status.PROVISIONING
+        locked.inbound_ready = False
+        locked.error_code = ""
+        locked.error_message = ""
+        locked.existing_mx = [
+            {"preference": item.preference, "exchange": item.exchange} for item in mx
+        ]
+        locked.save(
+            update_fields=(
+                "receiving_enabled",
+                "setup_mode",
+                "inbound_setup_generation",
+                "status",
+                "inbound_ready",
+                "error_code",
+                "error_message",
+                "existing_mx",
+                "updated_at",
+            )
+        )
+        local_part = f"route-{secrets.token_urlsafe(24).lower()}"
+        InboundRoute.objects.create(
+            domain=locked,
+            setup_generation=locked.inbound_setup_generation,
+            kind=InboundRoute.Kind.DIRECT_DOMAIN
+            if setup_mode == Domain.SetupMode.DIRECT_MX
+            else InboundRoute.Kind.FORWARDING_ALIAS,
+            local_part=local_part,
+            address=f"{local_part}@{settings.INBOUND_SERVICE_DOMAIN}",
+        )
+        from inbox.services.jobs import enqueue_job
+
+        enqueue_job(
+            kind="provision_domain",
+            idempotency_key=f"provision-domain:{locked.id}:{locked.inbound_setup_generation}",
+            domain=locked,
+            payload={
+                "domain_id": str(locked.id),
+                "setup_generation": locked.inbound_setup_generation,
+                "setup_mode": locked.setup_mode,
+            },
+        )
+        return locked, True

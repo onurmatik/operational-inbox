@@ -91,6 +91,8 @@ def begin_routing_transition(
 
     with transaction.atomic():
         locked_domain = Domain.objects.select_for_update().get(id=domain.id)
+        if not locked_domain.receiving_enabled:
+            raise ValidationError("Enable receiving before changing its route.")
         if locked_domain.status == Domain.Status.DISABLED:
             raise ValidationError("A disabled domain cannot change its receiving route.")
 
@@ -627,9 +629,7 @@ def finalize_routing_transition_test(
     now = timezone.now()
     with transaction.atomic():
         locked_test = (
-            DomainTest.objects.select_for_update()
-            .select_related("domain")
-            .get(id=test.id)
+            DomainTest.objects.select_for_update().select_related("domain").get(id=test.id)
         )
         if (
             locked_test.routing_transition_id is None

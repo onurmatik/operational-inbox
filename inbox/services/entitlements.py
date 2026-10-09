@@ -22,7 +22,6 @@ class Entitlements:
     plan: str
     is_pro: bool
     domain_limit: int
-    ai: bool
     outbound: bool
     custom_settings: bool
 
@@ -31,7 +30,6 @@ FREE_ENTITLEMENTS = Entitlements(
     plan="free",
     is_pro=False,
     domain_limit=FREE_DOMAIN_LIMIT,
-    ai=False,
     # Free is a complete inbox workflow. Paid plans increase capacity instead of
     # unlocking the ability to draft, send, or use the Outbox safety controls.
     outbound=True,
@@ -41,7 +39,6 @@ PRO_ENTITLEMENTS = Entitlements(
     plan="pro",
     is_pro=True,
     domain_limit=PRO_DOMAIN_LIMIT,
-    ai=True,
     outbound=True,
     custom_settings=True,
 )
@@ -60,7 +57,6 @@ def for_user(user: User | AnonymousUser) -> Entitlements:
         plan=PRO_ENTITLEMENTS.plan,
         is_pro=True,
         domain_limit=settings.MAX_DOMAINS_PER_USER,
-        ai=True,
         outbound=True,
         custom_settings=True,
     )

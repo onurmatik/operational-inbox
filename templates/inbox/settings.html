@@ -1,0 +1,8 @@
+{% extends "app_base.html" %}
+{% block title %}Settings · Operational Inbox{% endblock %}
+{% block content %}
+{% include "inbox/partials/settings_tabs.html" %}
+<div class="max-w-2xl"><h1 class="font-heading text-3xl font-semibold">Account</h1><p class="mt-3 break-all text-sm text-muted">{{ request.user.email }}</p>
+<section class="mt-8 oi-panel p-6"><div class="flex justify-between gap-4"><h2 class="font-heading text-lg font-semibold">Sending</h2><span class="text-sm {% if control.is_paused %}text-gold-strong{% else %}text-mint-strong{% endif %}">{% if control.is_paused %}Paused{% else %}Active{% endif %}</span></div><p class="mt-3 text-sm leading-6 text-muted">{{ usage.month }} of {{ usage.limits.month }} emails used this month. New emails and replies share the allowance.</p><form method="post" action="{% url 'outbox_control' %}" class="mt-4">{% csrf_token %}<input type="hidden" name="paused" value="{% if control.is_paused %}false{% else %}true{% endif %}"><button class="oi-button-secondary">{% if control.is_paused %}Resume sending{% else %}Pause sending{% endif %}</button></form></section>
+<section class="mt-6 oi-panel p-6"><h2 class="font-heading text-lg font-semibold">{{ plan_entitlements.plan|title }} plan</h2><p class="mt-2 text-sm text-muted">Up to {{ plan_entitlements.domain_limit }} domain{{ plan_entitlements.domain_limit|pluralize }}.</p><a href="{% url 'billing' %}" class="mt-4 inline-block text-sm font-semibold text-forest">Manage plan</a></section><form method="post" action="{% url 'logout' %}" class="mt-8">{% csrf_token %}<button class="oi-button-secondary">Sign out</button></form></div>
+{% endblock %}

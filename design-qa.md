@@ -1,139 +1,95 @@
-# Design QA
+# Operational Inbox implementation QA
 
-## Agent copy/paste onboarding refinement · 2026-08-11
+9 October 2026 · local `main` · approved Superdesign v9
 
-### Comparison target
+**Findings**
 
-- Source visual truth: the user-provided `Screenshot 2026-08-11 at 13.50.17.png`, preserved as `.superdesign/qa/agents-bootstrap-reference.png`.
-- Browser-rendered implementation: `.superdesign/qa/agents-bootstrap-implementation-1440x900.jpg`.
-- Combined comparison input: `.superdesign/qa/agents-bootstrap-comparison.jpg` (reference left, implementation right).
-- Responsive evidence: `.superdesign/qa/agents-bootstrap-implementation-780x900.jpg`.
-- Comparison normalization: the 2048 × 1157 reference was proportionally resized to 1440 × 814; the implementation remains a 1:1 1440 × 900 browser capture. Both are shown without cropping in one labeled comparison image.
-- State: authenticated Pro owner with one ready domain; Agents is active; menus are closed; the page is at its top position.
+No actionable P0, P1, or P2 findings remain. The comparison history below records the issues fixed before acceptance. This is a production implementation of the approved information architecture; expected differences from the fixture-only prototype are explicit below.
 
-### Findings
+**Comparison target and evidence**
 
-- No actionable P0, P1, or P2 mismatch remains for the referenced copy/paste onboarding pattern.
-- The primary experience now mirrors the reference's two-step hierarchy: open an agent, send one instruction, then use a high-contrast full-width Copy action.
-- [Intentional product adaptation] The reference's marketing hero, video, and agent-logo strip are omitted. Operational Inbox keeps its authenticated product shell and replaces decorative content with official install, plugin-manifest, and MCP documentation links.
-- [Intentional content correction] The prompt explains that copy/paste cannot create an unconfigured MCP connection by itself. It directs the agent to the canonical install contract, requests browser OAuth authorization without asking for secrets, verifies authorized domains, and limits the initial smoke test to read-only work.
+Source visual truth: [approved proposal](/Users/onurmatik/Projects/OperationalInbox/.superdesign/simplify/proposal.html), [saved Superdesign v9](https://p.superdesign.dev/draft/e21c2fe9-0642-4f5c-8ed6-629c410e7aac), and these source captures:
 
-### Required fidelity surfaces
+| State | Source capture | Rendered Django capture | Combined comparison |
+| --- | --- | --- | --- |
+| Desktop Inbox, Alex selected, draft collapsed | [14](/Users/onurmatik/Projects/OperationalInbox/.superdesign/audit/2026-10-09/14-proposed-conversations.png) | [07](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/07-desktop-final.png) | [23](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/23-desktop-comparison.png) |
+| Mobile Inbox list | [20](/Users/onurmatik/Projects/OperationalInbox/.superdesign/audit/2026-10-09/20-proposed-mobile-list.png) | [29](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/29-mobile-list-final.png) | [36](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/36-mobile-list-comparison-final.png) |
+| Mobile Alex thread, draft collapsed | [21](/Users/onurmatik/Projects/OperationalInbox/.superdesign/audit/2026-10-09/21-proposed-mobile-thread.png) | [45](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/45-mobile-thread-final-valid.png) | [46](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/46-mobile-thread-comparison-final.png) |
+| Desktop Domains | [18](/Users/onurmatik/Projects/OperationalInbox/.superdesign/audit/2026-10-09/18-proposed-domains.png) | [42](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/42-desktop-domains-final.png) | [48](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/48-desktop-domains-comparison-final.png) |
+| Mobile Domains | [22](/Users/onurmatik/Projects/OperationalInbox/.superdesign/audit/2026-10-09/22-proposed-mobile-domains.png) | [43](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/43-mobile-domains-final.png) | [47](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/47-mobile-domains-comparison-final.png) |
 
-- Hierarchy and layout: the two numbered steps stay adjacent to a bordered instruction card at 1440px. At 780px they stack, the prompt becomes an internal scroll area, and the primary Copy button remains fully visible in the initial 900px viewport.
-- Typography and color: the existing Space Grotesk, Inter, and JetBrains Mono stacks and paper, surface, ink, forest, muted, and line tokens are preserved. The prompt action uses the same high-contrast black/forest treatment as the reference without introducing a second visual system.
-- Copy and content: the visible prompt contains the canonical `INSTALL.md`, plugin manifest, MCP endpoint and documentation URLs; OAuth 2.1 with PKCE; a no-secrets boundary; a connection verification step; and read-only initial behavior.
-- Accessibility: the setup is a labeled semantic section with an ordered list, real links, a real button, `aria-live` status feedback, keyboard focus styling, and scroll-contained long prompt text.
+Desktop CSS viewport and both source/implementation captures are 1440 × 900; mobile is 390 × 844. Device pixel ratio is 1. No density resizing was used. Each combined image places equal-size captures side by side and adds a 32px caption strip. The viewer reduced some 2880px full comparisons for display; focused comparisons were opened separately to inspect readable detail.
 
-### Behavior and validation
+Focused evidence: [navigation and list](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/24-desktop-navigation.png), [thread typography and controls](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/25-desktop-thread.png), [domain header and rows](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/49-desktop-domains-focused-final.png), and [mobile domain header/card](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/50-mobile-domains-focused-final.png). The 780px mobile comparisons are readable at native size and serve as both full-view and detail evidence.
 
-- Copy behavior: browser testing showed `Copied`, reset to `Copy agent prompt` after 1.6 seconds, and macOS clipboard verification confirmed all 1,364 prompt characters, the canonical install URL, and the no-secrets instruction were copied.
-- Responsive behavior: the 780 × 900 render measured `clientWidth: 780` and `scrollWidth: 780`; no horizontal document overflow is present.
-- Browser console: no errors after the final desktop interaction pass.
-- Automated validation: Django checks, Tailwind production CSS, JavaScript syntax, and `git diff --check` pass. The full suite passes with `290 passed` and 79.22% coverage.
+Implementation routes were `/app/inbox/`, `/app/inbox/?conversation=…`, `/app/domains/`, `/app/domains/new/`, domain detail, and `/app/settings/` on `http://127.0.0.1:57496/`. Authenticated synthetic owner on Pro; light theme; separate disposable SQLite database; no worker. The Alex subject and full message body match the source. Dynamic dates, sender display names, unread state, recipient addresses, and domain readiness differ. Opening a thread marks it read. The source has two example domains; the runtime fixture has four, including the send-only domain created during QA. Domain-state comparisons judge the structure and controls, not identical fixture contents.
 
-### Comparison history
+An IAB repeated-capture artifact omitted the sticky toolbar in some intermediate thread PNGs although the DOM remained visible and hit testing found the toolbar. Those frames are not final evidence. Capture 45 was taken as one complete frame with its toolbar visible and was opened again in comparison 46. Capture 03 also used the wrong viewport and was excluded.
 
-- Pass 1: translated the reference's prominent agent-instruction card into the Operational Inbox design system and kept the existing task prompts as secondary post-setup examples.
-- Pass 2: constrained the stacked prompt panel so the primary Copy action is visible at 780 × 900 while retaining the full prompt in an internal scroll area.
-- Pass 3: combined the attached reference and final browser render in one comparison image, verified the system clipboard contents, and found no remaining P0/P1/P2 issue.
+**Comparison history**
 
-## Agents integration guide · 2026-08-11
+| Finding and initial result | Impact | Fix | Post-fix evidence |
+| --- | --- | --- | --- |
+| P2: extra thread header/list summary, different list density and mail typography. Initial comparison blocked. | Reduced reading space and shifted the message below the source position. | Removed redundant header, made list summary screen-reader-only, restored 400px list, 48px desktop reading padding, 24/32 heading and 16/26 body, compact rows. | [Initial comparison 02](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/02-initial-comparison.png), then final 23, 24, 25. |
+| P2: draft and compose forms reused subject/body input IDs. Interaction QA blocked. | Compose labels could resolve to the hidden draft form. | Separate Django form `auto_id` prefixes; POST field names preserved. | [Filled compose 10](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/10-compose-filled.png); Subject/Message labels filled the correct form; final DOM had no duplicate IDs. |
+| P1: send-only domain detail returned 500. Flow QA blocked. | A newly connected send-only domain could not show its next step. | Added missing receiving-enable URL; added web create → detail → enable-receiving regression coverage. | [Failure 18](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/18-send-only-provisioning.png), [corrected detail 20](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/20-send-only-corrected.png); test passes. |
+| P2: mobile Connect domain wrapped into two lines; primary mail controls were below the specified 44px touch size. Responsive QA blocked. | Cramped CTA and small controls on touch devices. | Stacked mobile heading/CTA, prevented label wrapping; set primary buttons, search/domain controls and thread actions to 44px. | Final 36, 46, 47; DOM measured all four thread actions at 44 × 44 and search/New email at 44px tall. |
+| P2: Domains used an overly wide contiguous list instead of the source's centered cards. Visual QA blocked. | Changed the major-region proportions and mobile scanning rhythm. | Centered 896px desktop content, separate 88px rows with 16px gaps, stacked mobile capability lines and next action; removed redundant eyebrow/divider. | Earlier [39](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/39-desktop-domains-comparison.png), then final 47, 48, 49, 50. |
 
-### Comparison target
+**Required fidelity surfaces**
 
-- Selected visual: `https://p.superdesign.dev/draft/2a62f557-452f-4658-9290-fe5ec789c5a2`
-- Source visual truth: `.superdesign/qa/agents-task-oriented-reference-1440x900.png`
-- Browser-rendered implementation: `.superdesign/qa/agents-implementation-1440x900.png`
-- Full-view comparison evidence: `.superdesign/qa/agents-desktop-comparison.png` (source left, implementation right)
-- Focused content comparison: `.superdesign/qa/agents-content-comparison.png` (page header, integration cards, and prompt gallery at 1:1 scale)
-- Responsive evidence: `.superdesign/qa/agents-implementation-780x900.png`
-- Viewport and density: source and implementation are both 1440 × 900 pixels at a 1440 × 900 CSS viewport and DPR 1. No density normalization or resizing was applied before comparison.
-- State: authenticated Pro owner with one ready domain; Agents is the active top-bar destination; Settings and profile menus are closed.
+| Surface | Final evaluation |
+| --- | --- |
+| Fonts and typography | Self-hosted Inter for interface/body, Space Grotesk 600 for headings, JetBrains Mono for hostnames/technical values. Desktop message heading, body size, line height, paragraph spacing and wrapping match the source in 25. Small list metadata remains readable; full sender address substitutes for unavailable display names. Mobile subject uses the full line beneath actions. |
+| Spacing and layout rhythm | Sidebar 224px, desktop list 400px, toolbar 56px, tabs 44px. Final desktop message aligns with the source. Domain content width/cards restored. Mobile list → detail uses the full 350px reading width; no horizontal overflow at 390px or 768px. Mobile toolbar is taller to accommodate 44px controls. |
+| Colors and tokens | Paper, white surfaces, forest action/navigation, ink, muted text and flat dividers follow the approved palette. Quarantine uses the design system's purple semantic token rather than the prototype's coral badge. Status is stated in text as well as color. No decorative gradients/shadows. |
+| Image quality and assets | Exact existing logo reused. Official Lucide SVG assets and licenses included; consistent stroke/size, no handmade icon substitutions. WOFF2 fonts are local and licensed. No raster product imagery or illustrations were required by the source. |
+| Copy and content | Main navigation, folder names and email fields follow the brief. Production controls use “Connect domain”, “Review reply draft”, explicit Receiving/Sending state and actual delivery facts. No audit/design prompt text appears in product copy. Message prose is synthetic fixture content, not a server-side AI feature promise. |
 
-### Findings
+**Intentional implementation differences / open questions**
 
-- No actionable P0, P1, or P2 visual mismatch remains.
-- [Intentional shell difference] The implementation preserves the production active-domain label and profile menu. The selected mock replaces that live context with static “Agent Center / Integration Guide” copy and omits the profile control.
-- [Intentional active-state difference] The implementation fills the Agents tab with the existing forest active-navigation treatment instead of using the mock's weaker outlined state. `aria-current="page"` communicates the same state semantically.
-- [P3] The generated mock's decorative card and prompt icons are omitted. The production app has no shared icon-library runtime for these symbols; the implementation uses numbered mono labels and avoids fake glyphs or handcrafted SVGs.
-- [Intentional content correction] Prompt and skill text follows the checked-in plugin and skill contracts. Unsupported audit notification behavior and ambiguous conditional-send copy from the generated mock were not reproduced.
+No unresolved question blocks acceptance. The following differences are classified as intentional product constraints:
 
-### Required fidelity surfaces
+- Domains retains the reusable app toolbar/navigation rather than the prototype's bare Menu label. Its desktop content starts lower; content width and card rhythm match the intended design.
+- Mobile thread moves actions to a separate row for 44px touch targets, gives the subject full width, and hides folder tabs while reading. The labeled Back action returns to the current list. This changes subject wrapping and above-fold density without hiding mail controls.
+- A small Filters disclosure, Trash action, RFC Details, tags disclosure, timestamps and actual mailbox addresses retain existing mail-management functions through progressive disclosure. The source omitted some of these functional states.
+- Hostname text uses a stronger weight for scanning. Redundant setup-goal labels are omitted from domain cards; explicit Receiving/Sending capabilities state whether each is Ready, Not enabled or Setup needed.
+- Relative mock timestamps, decorative unread flags and static domain status labels are replaced by server facts. A just-opened thread is read; quarantined content remains locked.
 
-- Fonts and typography: the implementation uses the product's Space Grotesk heading, Inter body, and JetBrains Mono technical stacks with the same 30px title, 18px section heading, 14px body, and compact uppercase-label hierarchy. System fallbacks remain intentional because production loads no remote fonts.
-- Spacing and layout rhythm: the 224px rail, 56px top bar, 1440px content maximum, three equal integration cards, two-column prompt grid, hairline section dividers, and 4px-based spacing match the source composition. The 780px capture stacks cards and retains every top-bar control without clipping.
-- Colors and visual tokens: paper, surface, ink, muted, forest, and line tokens are used directly. Panels stay flat and square; no new gradient, glass effect, shadow, or radius language was introduced.
-- Image quality and assets: the only visible branded image is the existing canonical vector logo. The view adds no decorative raster imagery or placeholder assets.
-- Copy and content: Plugin, Skill, and Prompt are distinguished accurately; all four bundled skill names are exact; example prompts state send/resend boundaries; OAuth 2.1 with PKCE, personal API tokens, and the `read`, `write`, `manage_domains`, and `send` scopes reflect repository source-of-truth documentation.
-- Accessibility: one page-level heading, semantic section labels, real buttons, visible focus styles, `aria-current`, `aria-live` copy feedback, a scroll-safe scope table, and a keyboard-operable responsive navigation are present.
+**Browser interactions and supporting evidence**
 
-### Behavior and validation
+- Desktop list/thread and native compose; filled From with an arbitrary local part, To, Subject, Message; submitted synthetic mail to the isolated queue. [Queued Sent state](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/11-queued-sent.png). No provider worker ran.
+- Collapsed draft → exact-revision review dialog → Close. [Review](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/08-draft-review.png). Approval/send was not clicked.
+- Mobile list → thread → Back; Archive → Restore returned the fixture conversation to Inbox.
+- Explicit domain filter, search and empty result retained URL scope. [Empty state](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/15-mobile-empty-search.png).
+- Mobile compose fit the viewport; Escape closed the dialog and restored focus to New email. [Compose](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/14-mobile-compose.png).
+- Mobile menu, Domains, send-only choice/create/detail; receiving was not required. Existing-provider forwarding DNS instructions and Copy host worked. [DNS](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/21-mobile-dns-setup.png).
+- Quarantine body/attachments stayed unavailable. [Locked thread](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/32-mobile-quarantine.png).
+- Agent connection dialog and Settings tabs. [Agent](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/33-mobile-agent.png), [Settings](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/22-mobile-settings.png).
+- Tablet list at 768 × 900: page scroll width 768px; search and New email 44px tall. [Tablet](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/35-tablet-list.png).
+- Browser console checked after fixes: no warning/error entries in the final fresh session. [Console evidence](/Users/onurmatik/Projects/OperationalInbox/.superdesign/implementation/2026-10-09/console-errors.json). Earlier server-side 500 is recorded above, fixed and covered by a regression test.
 
-- Copy controls: browser testing confirmed prompt text reaches the clipboard, the control announces `Copied`, and its label resets to `Copy` after 1.6 seconds.
-- Navigation: Agents is present and active before Settings; Settings opens and closes with Escape; the API-token settings link resolves to `/app/settings/api-tokens/`.
-- Responsive navigation: at 780 × 900 the Agents tab remains visible, the mobile menu opens the primary rail, and the backdrop closes it.
-- Browser console: no errors after the final desktop reload.
-- Automated validation: Django system checks pass; Tailwind production CSS builds; all 36 tests in `tests/test_web_flows.py` pass.
+Preview supervisor was stopped after QA: URL `http://127.0.0.1:57496/`, port 57496, final process group 84216; `CODEX_DJANGO_STOPPED=1`, closed socket and removed heartbeat confirmed. Temporary final QA tab closed and viewport reset. The user's pre-existing server was left running.
 
-### Comparison history
+**Validation and remaining test scope**
 
-- Pass 1: compared the selected mock and first browser render at equal 1440 × 900 dimensions. The composition, panel geometry, density, typography hierarchy, and palette matched; production shell and content-truth differences were classified as intentional.
-- Pass 1 interaction finding [P1]: Clipboard API completion was not reliable in the in-app browser, so Copy controls could fail to show deterministic success.
-- Fix: replaced the permission-dependent write with a user-gesture-scoped textarea selection and `execCommand("copy")` fallback, preserving `Copied` and reset feedback.
-- Pass 2: browser verification confirmed copied text, success/reset feedback, keyboard-operable Settings, responsive rail behavior, and zero console errors. No actionable P0/P1/P2 findings remained.
+- Full suite: 417 passed, 1 skipped; coverage 80.98% against the required 70%. The skip is PostgreSQL row-lock concurrency on the SQLite test backend.
+- Latest template/CSS changes: 72 relevant web/compose/history tests pass. The focused suite runs with `--no-cov`; whole-project coverage is established by the full suite above.
+- Ruff passes; Mypy passes for 77 source files; Django system checks, migration drift check, OpenAPI export check and Git whitespace check pass.
+- Migration 0015 tested forward and reverse with populated retired models. Local main migration applied after a protected SQLite backup; retained record counts unchanged, integrity check `ok`, zero foreign-key violations, retired tables absent.
+- Real provider DNS changes, mail delivery and production deployment were outside this local QA. Full screen-reader compliance and text-zoom testing were not performed.
 
-## Billing upgrade offer · 2026-08-02
+**Implementation checklist**
 
-### Comparison target
+- [x] Apply approved Conversations/Domains information architecture.
+- [x] Preserve receiving/sending, exact revision approval, ownership and tenant boundaries.
+- [x] Fix every identified P1/P2 issue and capture post-fix evidence.
+- [x] Open final full and focused side-by-side comparisons.
+- [x] Check desktop, mobile, tablet, interactions and console.
+- [x] Stop coupled preview and save report.
 
-- Approved visual: `https://p.superdesign.dev/draft/3c832055-6edb-41b6-8a0e-2336ac62a44b`
-- Source capture: `.superdesign/qa/approved-upgrade-reference.png`
-- Implementation capture: `.superdesign/qa/implementation-upgrade-desktop-final.png`
-- Side-by-side evidence: `.superdesign/qa/upgrade-desktop-comparison.png` (source left, implementation right)
-- Compact-layout evidence: `.superdesign/qa/implementation-upgrade-compact-780.png`
-- State: authenticated Free account, one ready domain, Stripe configured, USD 9.99 comparison price, and USD 4.99 monthly promotional price.
-- Desktop normalization: both comparison captures are 1440 × 900 pixels at a 1440 × 900 CSS viewport and DPR 1. The composite preserves both images at 1:1 scale.
-- Compact normalization: full-page 780 × 1688 CSS viewport at DPR 1. A separate 390 × 844 DOM pass measured `scrollWidth: 390`, `main: 390`, page header `358`, and plan section `358`, confirming no horizontal document overflow. The browser's narrow device-scale screenshot was excluded because its capture did not preserve CSS-coordinate fidelity.
+**Follow-up polish**
 
-### Findings
-
-- No actionable P0, P1, or P2 visual mismatch remains.
-- The promotion retains the existing product's flat panels, square geometry, forest/gold palette, type hierarchy, and restrained density.
-- The price hierarchy is explicit and semantic: `USD 9.99` is rendered in `<del>`, `USD 4.99 / month` is primary, and both the badge and label describe the offer as limited-time.
-- The original comparison-table defect is resolved in the rebuilt production Tailwind CSS. Capability, Free, and Pro render as three aligned columns in the desktop and compact captures.
-- [Intentional product-truth difference] The implementation says “Receive at any address · no per-address fee” instead of promising created mailboxes or “unlimited email addresses.” The system accepts arbitrary local parts but does not provision separate mailboxes.
-- [Intentional shell difference] The implementation preserves the real active Plan & billing navigation item, Free status badge, and global “Upgrade to connect domain” action. The approved visual's detached Free badge was not copied.
-- [Intentional icon difference] Decorative check glyphs from the generated reference were omitted. The existing design system does not use them here, and no fake symbol or handcrafted asset was introduced.
-
-### Required fidelity surfaces
-
-- Typography: Space Grotesk headings, Inter body text, and JetBrains Mono labels preserve the approved hierarchy, weights, line height, and tracking.
-- Spacing: the plan panel, price block, benefit dividers, full-width CTA, and comparison panel align to the approved vertical rhythm at desktop size.
-- Color and shape: existing paper, surface, ink, forest, muted, line, and gold tokens are used directly; no new palette, radius language, shadow, or gradient was introduced.
-- Copy: the offer highlights the verified 20-domain limit, unlimited routed addresses, the all-domain agent feed, optional drafts, and approved outbound sending; personal API access is presented on both plans without overstating mailbox provisioning.
-- Accessibility: price comparison uses semantic deletion markup, highlights are a labeled list, the checkout remains a semantic POST form, and existing focus-visible behavior is preserved.
-
-### Behavior and validation
-
-- The checkout CTA was inspected without submission; automated coverage asserts the exact POST action and `Upgrade to Pro · USD 4.99/month` label.
-- Promotion display is restricted to exactly USD 4.99 with a USD 9.99 comparison price. USD 5.99, EUR 4.99, and USD 29.00 remain standard-price states.
-- Free/unconfigured, Free/promotional, non-promotional, and active Pro states are covered. The checkout price payload is asserted at 499 cents.
-- Browser console check: no warnings or errors.
-- Verification: `18 passed` in `tests/test_billing_freemium.py`; Ruff, Django system checks, Tailwind production build, and `git diff --check` pass.
-
-### Comparison history
-
-- Pass 1: rebuilt the stale Tailwind output, restoring the three-column comparison table.
-- Pass 2: implemented the approved offer, then tightened spacing to align the plan-panel bottom edge and CTA placement with the source.
-- Pass 3: compared equal-size desktop captures side by side. Remaining differences were reviewed as intentional product-shell or product-truth decisions, not fidelity defects.
-
-## Historical landing-page QA
-
-- Source capture: `.superdesign/qa/reference-desktop.png`
-- Implementation capture: `.superdesign/qa/implementation-desktop.png`
-- Side-by-side evidence: `.superdesign/qa/desktop-comparison.png`
-- Viewport/state: anonymous landing page, light theme, initial domain form, 1280 × 720 CSS viewport.
-- Result: no actionable P0, P1, or P2 mismatch remained; the canonical SVG logo and library-sourced Lucide ArrowRight were intentionally retained.
+No P3 item is required for handoff.
 
 final result: passed

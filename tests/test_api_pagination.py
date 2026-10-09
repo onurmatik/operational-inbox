@@ -6,30 +6,31 @@ import pytest
 from django.utils import timezone
 from freezegun import freeze_time
 
-from inbox.models import AuditEvent, Domain, Notification, Report, User
+from inbox.models import AuditEvent, Domain, User
+from tests.legacy_helpers import archived_record
 
 
 def _create_items(resource: str, organization: Domain, count: int) -> list[str]:
     ids: list[str] = []
     with freeze_time("2026-08-01 10:00:00"):
         for index in range(count):
-            item: Report | Notification | AuditEvent
             if resource == "reports":
-                item = Report.objects.create(
-                    domain=organization,
-                    kind=Report.Kind.HOURLY,
-                    schedule_key=f"pagination-{organization.id}-{index}",
+                item = archived_record(
+                    organization,
+                    "Report",
+                    kind="HOURLY",
                     period_start=timezone.now() - timedelta(hours=1),
                     period_end=timezone.now(),
-                    status=Report.Status.READY,
+                    status="READY",
+                    generation_mode="DETERMINISTIC",
                     title=f"Report {index}",
                 )
             elif resource == "notifications":
-                item = Notification.objects.create(
-                    domain=organization,
-                    channel=Notification.Channel.IN_APP,
+                item = archived_record(
+                    organization,
+                    "Notification",
                     kind="pagination",
-                    dedupe_key=f"pagination-{organization.id}-{index}",
+                    status="SENT",
                     title=f"Notification {index}",
                 )
             else:
@@ -40,7 +41,7 @@ def _create_items(resource: str, organization: Domain, count: int) -> list[str]:
                     object_type="PaginationTest",
                     request_id=f"pagination-{index}",
                 )
-            ids.append(str(item.id))
+            ids.append(str(item.id if resource == "audit" else item.object_id))
     return ids
 
 

@@ -89,21 +89,23 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
     assert response.status_code == 200
     assert b"Route this domain directly" in response.content
     assert b"Keep your current email provider" in response.content
-    assert b"requests@portfolio.fit" in response.content
+    assert b"support@portfolio.fit" in response.content
     assert b"Check domain and continue" in response.content
     assert b"data-mx-inspect-url" in response.content
     assert b"data-mx-check" in response.content
     assert b"Choose a different setup" not in response.content
-    assert b"We check public MX records first" in response.content
-    assert b"Direct routing to Operational Inbox" in response.content
+    assert (
+        b"Send-only setup leaves your existing mail provider and MX records in place"
+        in response.content
+    )
     assert b"Route this domain's MX records directly to Operational Inbox" in response.content
     assert b"Amazon SES" not in response.content
     assert b"Direct SES MX" not in response.content
-    assert response.content.count(b'class="oi-choice-card"') == 2
+    assert response.content.count(b'class="oi-choice-card"') == 5
 
     invalid_response = client.post(reverse("domain_create"), {"hostname": "portfolio.fit"})
     assert invalid_response.status_code == 200
-    assert b"This field is required." in invalid_response.content
+    assert b"Choose direct MX or forwarding" in invalid_response.content
 
 
 @pytest.mark.django_db
@@ -243,7 +245,7 @@ def test_domain_detail_provisioning_waits_and_auto_polls_without_actions(
 
     assert response.status_code == 200
     assert b"Preparing your DNS instructions" in response.content
-    assert b"nothing for you to change yet" in response.content
+    assert b"Preparing your DNS instructions" in response.content
     assert b'aria-live="polite"' in response.content
     assert b'aria-busy="true"' in response.content
     assert b"data-provisioning-poll" in response.content
@@ -278,12 +280,12 @@ def test_domain_detail_pending_dns_shows_exact_records_and_direct_mx_warning(
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
-    assert b"Update DNS for dns.example.org" in response.content
-    assert b"cannot change them for you" in response.content
+    assert b"DNS records" in response.content
+    assert b"at your DNS provider" in response.content
     assert b"incoming email for every address" in response.content
-    assert b"I've updated DNS" in response.content
-    assert b'id="dns-check-button-records"' in response.content
-    assert b'data-feedback-id="dns-check-feedback-records"' in response.content
+    assert b"Check DNS" in response.content
+    assert b'id="dns-check-button"' in response.content
+    assert b'data-feedback-id="dns-check-feedback"' in response.content
     assert b'event.target.closest("[data-dns-check-button]")' in response.content
     assert b"Background processing can take up to five minutes" in response.content
     assert b"attempt < 72" in response.content
@@ -326,7 +328,7 @@ def test_domain_detail_labels_an_existing_matching_dns_record_as_verified(
 
     assert response.status_code == 200
     assert b"_amazonses.existing-verification.example.org" in response.content
-    assert b"Records marked Verified already match public DNS" in response.content
+    assert b"Verified records already match" in response.content
     assert b"DNS records to add" not in response.content
     assert b"Verified" in response.content
 
@@ -402,9 +404,7 @@ def test_receiving_route_panel_starts_staged_change_without_cutting_over(
     transition = domain.routing_transitions.get()
     target_route = transition.routes.get()
     assert detail.status_code == 200
-    assert b"Receiving route" in detail.content
-    assert b"Active" in detail.content
-    assert b"Provider catch-all forwarding" in detail.content
+    assert b"Ready to receive" in detail.content
     assert b'id="forwarding-route"' in detail.content
     assert b"Change to direct MX routing" in detail.content
     assert b"current route stays active throughout preparation" in detail.content
@@ -564,7 +564,7 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
     transition.save(update_fields=("status", "updated_at"))
 
     waiting_dns = client.get(reverse("domain_detail", args=[domain.id]))
-    assert "I've updated target DNS — Check records".encode() in waiting_dns.content
+    assert b"Check DNS" in waiting_dns.content
     assert b"Current fallback alias" in waiting_dns.content
     assert b"does not update external DNS" in waiting_dns.content
     assert b"restore your mail provider's MX records" in waiting_dns.content
@@ -589,16 +589,11 @@ def test_transition_dns_and_target_test_actions_remain_visible_for_ready_domain(
     revealed_in_another_session = second_client.get(reverse("domain_detail", args=[domain.id]))
 
     assert revealed_again.status_code == 200
-    assert b"Check target DNS again" in revealed_again.content
+    assert b"Check DNS" in revealed_again.content
     assert b"Generate target-path test" not in revealed_again.content
     assert address.encode() in revealed_again.content
-    assert b"fresh message through the target route" in revealed_again.content
-    assert revealed_again.content.count(b"Confirm delivery with a real email") == 1
-    assert b"data-target-route-test-action" in revealed_again.content
-    assert revealed_again.content.index(
-        b"data-target-route-test-action"
-    ) < revealed_again.content.index(b'id="receiving-route-title"')
-    assert revealed_again.content.count(b"Open email app") == 1
+    assert b"Use the target route before cutover" in revealed_again.content
+    assert revealed_again.content.count(b"Send a test email") == 1
     assert address.encode() in revealed_in_another_session.content
     assert b"data-routing-transition-poll" in revealed_again.content
 
@@ -656,11 +651,9 @@ def test_transition_waiting_test_replaces_pending_domain_cta_with_one_top_action
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
-    assert response.content.count(b"Confirm delivery with a real email") == 1
-    assert response.content.count(b"Open email app") == 1
-    assert response.content.count(b'id="transition-test-address"') == 1
+    assert response.content.count(b"Send a test email") == 1
+    assert response.content.count(b'id="test-address"') == 1
     assert target_test.address.encode() in response.content
-    assert b"data-target-route-test-action" in response.content
     assert response.content.count(b"data-inbound-test-poll") == 1
 
 
@@ -759,7 +752,6 @@ def test_verified_direct_detail_does_not_ask_for_another_ownership_claim(
     response = client.get(reverse("domain_detail", args=[domain.id]))
 
     assert response.status_code == 200
-    assert b"this domain's ownership claim is verified" in response.content
     assert b"require a fresh ownership claim before activation" not in response.content
 
 
@@ -791,7 +783,7 @@ def test_ready_inbound_can_enable_sending_without_changing_receiving(
     assert b"Enable sending" in detail.content
     assert get_response.status_code == 405
     assert enabled.status_code == 200
-    assert b"Preparing sending DNS records" in enabled.content
+    assert b"Preparing sending DNS" in enabled.content
     assert domain.status == Domain.Status.READY
     assert domain.inbound_ready
     assert domain.outbound_status == Domain.OutboundStatus.PROVISIONING
@@ -841,17 +833,13 @@ def test_domain_detail_pending_test_enables_delivery_test(client, owner, organiz
     assert response.status_code == 200
     assert created is True
     assert pending_test.address == address
-    assert b"Confirm delivery with a real email" in response.content
+    assert b"Send a test email" in response.content
     assert b"Generate test address" not in response.content
     assert b"data-domain-test-form" not in response.content
-    assert b"Check DNS again" in response.content
+    assert b"Check DNS" in response.content
     assert b"data-inbound-test-poll" in response.content
     assert b"data-inbound-test-status" in response.content
     assert b'domain.inbound_ready || domain.status !== "PENDING_TEST"' in response.content
-    assert b"From any external email account" in response.content
-    assert b"You do not need to create a new mailbox" in response.content
-    assert b"This page updates automatically" in response.content
-    assert b"Open email app" in response.content
     assert b"Copy address" in response.content
     assert address.encode() in response.content
     assert address.encode() in second_response.content
@@ -972,8 +960,6 @@ def test_domain_detail_error_hides_inactive_forwarding_and_dns_instructions(
     assert b"Setup could not be completed." not in response.content
     assert b"Operational Inbox could not finish preparing this domain" in response.content
     assert b"existing SES identity" not in response.content
-    assert b"Receiving route" in response.content
-    assert b"Provider catch-all forwarding" in response.content
     assert route.address.encode() not in response.content
     assert b"DNS records to add" not in response.content
     assert b"ownership-proof" not in response.content
@@ -1001,9 +987,9 @@ def test_domain_collision_explains_safe_recovery_and_retry_is_idempotent(
 
     assert detail.status_code == 200
     assert b"Your DNS and mail routing were not changed" in detail.content
-    assert b"new, unique DNS ownership record" in detail.content
     assert b"Retry setup safely" in detail.content
-    assert b"Support reference" in detail.content
+    assert b"Retry setup safely" in detail.content
+    assert b"Domain reference" in detail.content
     assert b"SES identity" not in detail.content
     assert b"ses_identity_collision" not in detail.content
 
@@ -1100,26 +1086,13 @@ def test_authenticated_application_pages_render(
         reverse("audit"),
     ]
     for url in routes:
-        response = client.get(url)
+        response = client.get(url, follow=True)
         assert response.status_code == 200, url
         assert b"Operational Inbox" in response.content
 
-    dashboard = client.get(reverse("dashboard"))
-    assert b"New messages" in dashboard.content
-    assert b"Mailboxes" in dashboard.content
-    assert b"Needs attention" not in dashboard.content
-    assert b"Notifications" not in dashboard.content
-    assert b"Domain readiness" not in dashboard.content
-    assert b"Recent audited activity" not in dashboard.content
-    assert b"Audit activity needs attention" not in dashboard.content
-
-    domains = client.get(reverse("domains"))
-    assert b"Direct routing to Operational Inbox" in domains.content
-    assert b"Direct SES MX" not in domains.content
-
     detail = client.get(reverse("conversation_detail", args=[conversation.id]))
     assert b"Operational Inbox could not confirm" in detail.content
-    assert b"previous delivery outcome may be unknown" in detail.content
+    assert b"previous message may already have been sent" in detail.content
     assert b"SES acceptance" not in detail.content
     assert b"previous SES outcome" not in detail.content
 
@@ -1150,105 +1123,26 @@ def test_domain_scoped_settings_redirect_when_an_active_domain_is_required(
 
 
 @pytest.mark.django_db
-def test_focused_rail_disables_domain_dependent_navigation_without_a_domain(client, owner):
+def test_focused_rail_and_single_agent_panel_without_a_domain(client, owner):
     client.force_login(owner)
-
     response = client.get(reverse("domain_create"))
-
     assert response.status_code == 200
-    assert b'id="settings-menu-button"' in response.content
-    assert b'id="profile-menu-button"' in response.content
-    assert b"No domain connected" in response.content
-    assert response.content.count(b'aria-disabled="true"') == 4
-    assert b"Requires a domain" in response.content
-    assert reverse("domain_create").encode() in response.content
-    assert b"Connect domain" in response.content
-    assert reverse("retention_settings").encode() not in response.content
-    assert reverse("api_tokens").encode() in response.content
-    assert reverse("audit").encode() not in response.content
-    assert reverse("agents").encode() in response.content
-    assert b'href="https://github.com/onurmatik/operational-inbox"' in response.content
-    assert b'aria-label="View Operational Inbox on GitHub"' in response.content
-
+    assert b"Conversations" in response.content and b"Domains" in response.content
+    assert reverse("settings").encode() in response.content
+    assert b'id="agent-dialog"' in response.content
+    assert b"Connect your agent" in response.content
+    assert b'id="settings-menu-button"' not in response.content
+    assert b'id="profile-menu-button"' not in response.content
     agents = client.get(reverse("agents"))
-    assert agents.status_code == 200
-    assert b'aria-current="page"' in agents.content
-    assert b"Use Operational Inbox with your agent" in agents.content
-    assert b"Connect in two steps" in agents.content
-    assert b"Copy agent prompt" in agents.content
-    assert b"https://operationalinbox.com/INSTALL.md" in agents.content
-    assert (
-        b"onurmatik/operational-inbox/tree/main/.agents/skills/operational-inbox" in agents.content
-    )
-    assert (
-        b"Help me manage my operational inboxes using the Operational Inbox skill" in agents.content
-    )
-    assert b"$operational-inbox" in agents.content
-    assert b"Native MCP" in agents.content
-    assert reverse("install_instructions").encode() in agents.content
-    assert reverse("mcp_docs").encode() in agents.content
-    assert b"Standalone skill" in agents.content
-    assert b"Prompt" in agents.content
-    assert b"triage-inboxes" in agents.content
-    assert b"reply-to-conversations" in agents.content
-    assert b"setup-domain" in agents.content
-    assert b"monitor-outbound-delivery" in agents.content
-    assert agents.content.count(b"data-copy-target=") == 6
+    assert agents.status_code == 200 and b"Copy connection prompt" in agents.content
     assert reverse("api_tokens").encode() in agents.content
 
 
 @pytest.mark.django_db
-def test_dashboard_only_surfaces_readiness_and_audit_when_they_need_attention(
-    client, owner, domain
-):
+def test_dashboard_is_an_alias_for_conversations(client, owner, domain):
     client.force_login(owner)
-    AuditEvent.objects.create(
-        domain=domain,
-        actor_type=AuditEvent.ActorType.OWNER,
-        actor_id=owner.id,
-        event_type="conversation.viewed",
-        object_type="Domain",
-        object_id=domain.id,
-        request_id="dashboard-normal-audit",
-    )
-
-    healthy = client.get(reverse("dashboard"))
-
-    assert healthy.status_code == 200
-    assert b"Domain readiness" not in healthy.content
-    assert b"Recent audited activity" not in healthy.content
-    assert b"Audit activity needs attention" not in healthy.content
-
-    domain.status = Domain.Status.PENDING_DNS
-    domain.inbound_ready = False
-    domain.save(update_fields=("status", "inbound_ready", "updated_at"))
-
-    pending = client.get(reverse("dashboard"))
-
-    assert b"Domain readiness needs attention" in pending.content
-    assert b"Current domain status: Pending DNS." in pending.content
-    assert reverse("domain_detail", args=[domain.id]).encode() in pending.content
-    assert b"Audit activity needs attention" not in pending.content
-
-    domain.status = Domain.Status.READY
-    domain.inbound_ready = True
-    domain.save(update_fields=("status", "inbound_ready", "updated_at"))
-    AuditEvent.objects.create(
-        domain=domain,
-        actor_type=AuditEvent.ActorType.AGENT,
-        actor_id=owner.id,
-        event_type="agent.draft_failed",
-        object_type="AgentRun",
-        request_id="dashboard-failed-audit",
-        metadata={"error_code": "openai_error"},
-    )
-
-    failed_audit = client.get(reverse("dashboard"))
-
-    assert b"Domain readiness needs attention" not in failed_audit.content
-    assert b"Audit activity needs attention" in failed_audit.content
-    assert b"agent.draft_failed" in failed_audit.content
-    assert reverse("audit").encode() in failed_audit.content
+    response = client.get(reverse("dashboard"))
+    assert response.status_code == 302 and response.url == reverse("inbox")
 
 
 @pytest.mark.django_db
@@ -1301,38 +1195,20 @@ def test_dashboard_aggregates_all_domains_and_opens_recent_mail_in_its_domain(
     session["domain_id"] = str(domain.id)
     session.save()
 
-    response = client.get(reverse("dashboard"))
-
+    response = client.get(reverse("inbox"))
     assert response.status_code == 200
-    assert response.context["metrics"] == {
-        "new_messages": 2,
-        "quarantined": 1,
-        "mailboxes": 2,
+    assert {item.id for item in response.context["conversations"]} == {
+        inbound_message.conversation_id,
+        second_conversation.id,
     }
-    assert [item["domain"].id for item in response.context["domain_readiness_alerts"]] == [
-        second.id
-    ]
-    assert b"across all connected domains" in response.content
-    assert domain.hostname.encode() in response.content
-    assert second.hostname.encode() in response.content
-    assert b'<header class="sticky top-0' in response.content
-    assert b"Upgrade to connect domain" not in response.content
-    assert b'id="sidebar-toggle"' in response.content
-    assert b'id="settings-menu-button"' in response.content
-    assert b'id="profile-menu-button"' in response.content
-    assert b"Manage plan" in response.content
-    assert response.content.index(b'id="settings-menu-button"') > response.content.index(
-        b"</aside>"
+    assert b"Content locked" not in response.content
+    assert b"This belongs to the second domain." not in response.content
+    row = next(
+        item for item in response.context["conversations"] if item.id == second_conversation.id
     )
-    detail_url = (
-        f"{reverse('conversation_detail', args=[second_conversation.id])}?domain={second.id}"
-    )
-    assert detail_url.encode() in response.content
-
-    detail = client.get(detail_url)
-
+    detail = client.get(row.list_url)
     assert detail.status_code == 200
-    assert client.session["domain_id"] == str(second.id)
+    assert client.session["domain_id"] == str(domain.id)
 
 
 @pytest.mark.django_db
@@ -1391,8 +1267,8 @@ def test_conversation_tags_render_and_only_audit_real_changes(
     detail = client.get(detail_url)
 
     assert detail.status_code == 200
-    assert b'<label for="conversation-tag"' in detail.content
-    assert b"Add a free-form tag" in detail.content
+    assert b'for="thread-tag"' in detail.content
+    assert b"Add tag" in detail.content
     assert b"Conversation state" not in detail.content
     assert b"Start work" not in detail.content
 
@@ -1527,10 +1403,10 @@ def test_quarantined_inbox_preview_never_leaks_body(
     session.save()
     response = client.get(reverse("inbox"))
     assert b"DO-NOT-LEAK-QUARANTINED-CONTENT" not in response.content
-    assert b"Content locked by the malware quarantine" in response.content
+    assert b"Quarantined content is locked" in response.content
 
     detail = client.get(reverse("conversation_detail", args=[conversation.id]))
-    assert b"This message did not pass the malware scan" in detail.content
+    assert b"This message did not pass the malware check" in detail.content
     assert b"Quarantined content" in detail.content
     assert b"Conversation state" not in detail.content
     assert b"SES virus verdict" not in detail.content

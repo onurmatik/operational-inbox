@@ -13,10 +13,12 @@ from inbox.api import (
     ConversationActionInput,
     ConversationTagInput,
     DomainInput,
+    EnableReceivingInput,
     OutboundControlInput,
     RevisionInput,
     SendInput,
     account_limits_get,
+    api_domain,
     audit_list,
     conversations_action,
     conversations_detail,
@@ -26,6 +28,7 @@ from inbox.api import (
     domains_create,
     domains_detail,
     domains_enable_outbound,
+    domains_enable_receiving,
     domains_list,
     domains_setup_plan,
     drafts_create_authored,
@@ -142,6 +145,9 @@ DOMAIN_PROPERTIES: dict[str, Any] = {
         ],
     },
     "inbound_ready": {"type": "boolean"},
+    "receiving_enabled": {"type": "boolean"},
+    "sending_requested": {"type": "boolean"},
+    "goal": {"type": "string", "enum": ["receive", "send", "both"]},
     "outbound_ready": {"type": "boolean"},
     "outbound_status": {
         "type": "string",
@@ -781,13 +787,19 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "name": "start_domain_onboarding",
         "title": "Start domain onboarding",
         "description": (
-            "Create or reuse an Operational Inbox domain claim and queue provisioning. Use the "
+            "Create or reuse a domain claim for receive, send, or both. "
+            "Send-only setup preserves MX and needs no inbound test. For receiving, use the "
             "setup mode recommended by inspect_domain_dns. Set routing_choice_confirmed only after "
             "the user explicitly chooses an ambiguous or non-recommended route. OAuth connections "
             "and personal API tokens can create domains for their owner."
         ),
         "inputSchema": _object_schema(
             {
+                "goal": {
+                    "type": "string",
+                    "enum": ["receive", "send", "both"],
+                    "default": "receive",
+                },
                 "hostname": {"type": "string", "minLength": 3, "maxLength": 253},
                 "setup_mode": {
                     "type": "string",
@@ -795,7 +807,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
                 },
                 "routing_choice_confirmed": {"type": "boolean", "default": False},
             },
-            ["hostname", "setup_mode"],
+            ["hostname"],
         ),
         "outputSchema": DOMAIN_SCHEMA,
         "annotations": {
@@ -1037,6 +1049,30 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "enable_domain_receiving",
+        "title": "Enable domain receiving",
+        "description": (
+            "Add receiving to a sending-only domain. Inspect DNS first, obtain an "
+            "explicit routing choice for ambiguous DNS or an override, then prepare the "
+            "chosen route. Existing MX is never changed automatically."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "domain_id": UUID_SCHEMA,
+                "setup_mode": {"type": "string", "enum": ["DIRECT_MX", "PROVIDER_FORWARD"]},
+                "routing_choice_confirmed": {"type": "boolean", "default": False},
+            },
+            ["domain_id", "setup_mode"],
+        ),
+        "outputSchema": DOMAIN_SCHEMA,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    },
+    {
         "name": "enable_outbound_sending",
         "title": "Enable outbound sending",
         "description": (
@@ -1234,6 +1270,7 @@ MCP_TOOL_SCOPES = {
     "get_outbound_control": AccessScope.READ,
     "set_outbound_paused": AccessScope.SEND,
     "enable_outbound_sending": AccessScope.MANAGE_DOMAINS,
+    "enable_domain_receiving": AccessScope.MANAGE_DOMAINS,
     "list_audit_events": AccessScope.READ,
     "create_reply_draft": AccessScope.WRITE,
     "get_reply_draft": AccessScope.READ,
@@ -1356,6 +1393,12 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
         hostname = _optional_string(arguments, "hostname")
         if hostname is None:
             raise APIError("validation_error", "hostname is required.")
+        goal = cast(
+            Literal["receive", "send", "both"],
+            _choice(arguments, "goal", set(Domain.Goal.values)) or Domain.Goal.RECEIVE,
+        )
+        if goal == Domain.Goal.SEND:
+            return _unwrap(domains_create(request, DomainInput(hostname=hostname, goal=goal)))
         setup_mode = cast(
             Literal["DIRECT_MX", "PROVIDER_FORWARD"],
             _choice(
@@ -1389,7 +1432,7 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
         return _unwrap(
             domains_create(
                 request,
-                DomainInput(hostname=normalized, setup_mode=setup_mode),
+                DomainInput(hostname=normalized, setup_mode=setup_mode, goal=goal),
             )
         )
     if name == "get_domain_setup_plan":
@@ -1487,6 +1530,26 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
         return outbound_control_set(
             request,
             OutboundControlInput(paused=_boolean(arguments, "paused")),
+        )
+    if name == "enable_domain_receiving":
+        domain_id = _uuid(arguments, "domain_id")
+        domain = api_domain(request, domain_id)
+        mode = cast(
+            Literal["DIRECT_MX", "PROVIDER_FORWARD"],
+            _choice(arguments, "setup_mode", set(Domain.SetupMode.values), required=True),
+        )
+        if not domain.receiving_enabled:
+            inspection = inspect_domain_routing(domain.hostname)
+            if (
+                inspection.requires_explicit_choice or inspection.recommended_setup_mode != mode
+            ) and not arguments.get("routing_choice_confirmed"):
+                raise APIError(
+                    "routing_choice_required",
+                    "Confirm the receiving route explicitly after inspecting DNS.",
+                    status=409,
+                )
+        return _unwrap(
+            domains_enable_receiving(request, domain_id, EnableReceivingInput(setup_mode=mode))
         )
     if name == "enable_outbound_sending":
         return _unwrap(domains_enable_outbound(request, _uuid(arguments, "domain_id")))

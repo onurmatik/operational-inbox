@@ -24,7 +24,6 @@ from inbox.models import (
     APIToken,
     Attachment,
     AuditEvent,
-    Classification,
     Conversation,
     ConversationTag,
     Domain,
@@ -36,7 +35,6 @@ from inbox.models import (
     Notification,
     OutboundMessage,
     ReplyDraft,
-    Report,
 )
 from inbox.services.attachments import (
     AttachmentGoneError,
@@ -52,6 +50,7 @@ from inbox.services.domains import (
     MXLayout,
     classify_stored_mx,
     create_domain,
+    enable_receiving,
     ensure_domain_test,
 )
 from inbox.services.drafts import (
@@ -66,6 +65,7 @@ from inbox.services.jobs import (
     request_outbound_provisioning,
     retry_domain_provisioning,
 )
+from inbox.services.legacy import legacy_payload, legacy_records
 from inbox.services.outbound import (
     get_outbound_control,
     outbound_usage,
@@ -134,7 +134,8 @@ class ErrorSchema(Schema):
 
 class DomainInput(Schema):
     hostname: str = Field(min_length=3, max_length=253)
-    setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
+    setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"] = "DIRECT_MX"
+    goal: Literal["receive", "send", "both"] = "receive"
 
 
 class RoutingTransitionInput(Schema):
@@ -390,7 +391,9 @@ def record_api_audit(
     event_type: str,
     instance: Any,
     metadata: dict[str, Any] | None = None,
-) -> None:
+    *,
+    object_type: str | None = None,
+) -> AuditEvent:
     auth = request.auth
     is_token = isinstance(auth, APIToken)
     oauth_client_id = getattr(request, "mcp_oauth_client_id", None)
@@ -402,12 +405,12 @@ def record_api_audit(
         audit_metadata["api_token_prefix"] = auth.prefix
     elif oauth_client_id is not None:
         audit_metadata["oauth_client_id"] = oauth_client_id
-    AuditEvent.objects.create(
+    return AuditEvent.objects.create(
         domain=domain,
         actor_type=AuditEvent.ActorType.AGENT if is_agent else AuditEvent.ActorType.OWNER,
         actor_id=auth.id if is_token else actor.id,
         event_type=event_type,
-        object_type=instance.__class__.__name__,
+        object_type=object_type or instance.__class__.__name__,
         object_id=instance.id,
         request_id=_request_id(request),
         metadata=audit_metadata,
@@ -714,6 +717,9 @@ def _domain_dict(domain: Domain, *, details: bool = False) -> dict[str, Any]:
         "setup_mode": domain.setup_mode,
         "status": domain.status,
         "inbound_ready": domain.inbound_ready,
+        "receiving_enabled": domain.receiving_enabled,
+        "sending_requested": domain.sending_requested,
+        "goal": domain.setup_goal,
         "outbound_ready": domain.outbound_ready,
         "outbound_status": domain.outbound_status,
         "pending_setup_mode": transition.to_mode if transition is not None else None,
@@ -780,7 +786,8 @@ def _domain_setup_plan_dict(domain: Domain) -> dict[str, Any]:
 
     existing_mx_layout = classify_stored_mx(domain.existing_mx)
     requires_explicit_confirmation = (
-        domain.setup_mode == Domain.SetupMode.DIRECT_MX
+        domain.receiving_enabled
+        and domain.setup_mode == Domain.SetupMode.DIRECT_MX
         and existing_mx_layout in {MXLayout.EXTERNAL, MXLayout.MIXED}
     )
     instructions: list[str] = []
@@ -793,7 +800,11 @@ def _domain_setup_plan_dict(domain: Domain) -> dict[str, Any]:
             "Create or update only the records in records_to_upsert; preserve unrelated "
             "DNS records."
         )
-        if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
+        if not domain.receiving_enabled:
+            instructions.append(
+                "Keep every existing MX record unchanged; no receiving test is needed."
+            )
+        elif domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD:
             instructions.append("Keep every existing MX record unchanged.")
             if forwarding_target:
                 instructions.append(
@@ -814,10 +825,14 @@ def _domain_setup_plan_dict(domain: Domain) -> dict[str, Any]:
         "records_to_upsert": [_dns_record_dict(record) for record in records] if plan_ready else [],
         "existing_mx": domain.existing_mx,
         "records_to_preserve": (
-            domain.existing_mx if domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD else []
+            domain.existing_mx
+            if not domain.receiving_enabled
+            or domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD
+            else []
         ),
         "provider_forwarding_target": forwarding_target,
-        "must_preserve_existing_mx": domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD,
+        "must_preserve_existing_mx": not domain.receiving_enabled
+        or domain.setup_mode == Domain.SetupMode.PROVIDER_FORWARD,
         "requires_explicit_confirmation": requires_explicit_confirmation,
         "instructions": instructions,
     }
@@ -939,12 +954,14 @@ CURSOR_MAX_AGE_SECONDS = 86400 * 30
 MAX_PAGE_SIZE = 100
 
 
-def _encode_cursor(*, item: Any, timestamp_field: str, collection: str) -> str:
+def _encode_cursor(
+    *, item: Any, timestamp_field: str, collection: str, id_field: str = "id"
+) -> str:
     return signing.dumps(
         {
             "at": getattr(item, timestamp_field).isoformat(),
             "collection": collection,
-            "id": str(item.id),
+            "id": str(getattr(item, id_field)),
         },
         salt="operational-inbox-cursor-v1",
         compress=True,
@@ -975,13 +992,15 @@ def _paginate_queryset(
     limit: int,
     timestamp_field: str,
     collection: str,
+    id_field: str = "id",
 ) -> tuple[list[Any], str | None]:
     page_size = min(max(limit, 1), MAX_PAGE_SIZE)
-    queryset = queryset.order_by(f"-{timestamp_field}", "-id")
+    queryset = queryset.order_by(f"-{timestamp_field}", f"-{id_field}")
     if cursor:
         at, object_id = _decode_cursor(cursor, collection=collection)
         queryset = queryset.filter(
-            Q(**{f"{timestamp_field}__lt": at}) | Q(**{timestamp_field: at, "id__lt": object_id})
+            Q(**{f"{timestamp_field}__lt": at})
+            | Q(**{timestamp_field: at, f"{id_field}__lt": object_id})
         )
     items = list(queryset[: page_size + 1])
     has_more = len(items) > page_size
@@ -991,6 +1010,7 @@ def _paginate_queryset(
             item=items[-1],
             timestamp_field=timestamp_field,
             collection=collection,
+            id_field=id_field,
         )
         if items and has_more
         else None
@@ -1029,6 +1049,7 @@ def domains_create(request: HttpRequest, payload: DomainInput):
             owner=_api_owner(request),
             hostname=payload.hostname,
             setup_mode=payload.setup_mode,
+            goal=payload.goal,
         )
     except DomainClaimConflict as exc:
         if exc.existing_domain is not None:
@@ -1252,6 +1273,32 @@ def domains_cancel_routing_transition(request: HttpRequest, domain_id: uuid.UUID
             {"generation": transition.generation},
         )
     return {"id": str(transition.id), "status": "CANCELLED", "cancelled": cancelled}
+
+
+class EnableReceivingInput(Schema):
+    setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"]
+
+
+@api.post(
+    "/domains/{domain_id}/receiving/enable",
+    auth=authenticated,
+    response={202: dict},
+    tags=["Domains"],
+)
+def domains_enable_receiving(
+    request: HttpRequest, domain_id: uuid.UUID, payload: EnableReceivingInput
+):
+    require_scope(request, AccessScope.MANAGE_DOMAINS)
+    domain = api_writable_domain(request, domain_id)
+    try:
+        domain, started = enable_receiving(domain, setup_mode=payload.setup_mode)
+    except DjangoValidationError as exc:
+        raise APIError("receiving_enable_not_allowed", "; ".join(exc.messages), status=409) from exc
+    if started:
+        record_api_audit(
+            request, domain, "domain.receiving_requested", domain, {"setup_mode": domain.setup_mode}
+        )
+    return Status(202, _domain_dict(domain))
 
 
 @api.post(
@@ -1759,6 +1806,7 @@ def conversations_tags_remove(
     auth=authenticated,
     response={201: dict},
     tags=["Classifications"],
+    deprecated=True,
 )
 def classifications_override(
     request: HttpRequest,
@@ -1770,34 +1818,42 @@ def classifications_override(
     domain = api_writable_domain(request, domain_id)
     message = scoped_object(Message, domain, message_id)
     with transaction.atomic():
+        Conversation.objects.select_for_update().get(id=message.conversation_id, domain=domain)
         previous = (
-            Classification.objects.select_for_update()
-            .filter(message=message, is_current=True)
+            legacy_records(domain, "Classification")
+            .filter(metadata__record__message_id=str(message.id))
             .first()
         )
+        record_id = uuid.uuid4()
+        record = {
+            "id": str(record_id),
+            "domain_id": str(domain.id),
+            "message_id": str(message.id),
+            "source": "OWNER",
+            **payload.model_dump(),
+            "is_current": True,
+            "supersedes_id": str(previous.object_id) if previous else None,
+            "created_at": timezone.now().isoformat(),
+        }
         if previous:
-            previous.is_current = False
-            previous.save(update_fields=("is_current", "updated_at"))
-        classification = Classification.objects.create(
-            domain=domain,
-            message=message,
-            source=Classification.Source.OWNER,
-            category=payload.category,
-            urgency=payload.urgency,
-            topic=payload.topic,
-            summary=payload.summary,
-            recommended_action=payload.recommended_action,
-            requires_reply=payload.requires_reply,
-            supersedes=previous,
+            old = legacy_payload(previous)
+            remove_conversation_tag(
+                message.conversation, f"category:{old.get('category', '').lower()}"
+            )
+            remove_conversation_tag(
+                message.conversation, f"urgency:{old.get('urgency', '').lower()}"
+            )
+        add_conversation_tag(message.conversation, f"category:{payload.category.lower()}")
+        add_conversation_tag(message.conversation, f"urgency:{payload.urgency.lower()}")
+        record_api_audit(
+            request,
+            domain,
+            "classification.overridden",
+            AuditEvent(id=record_id),
+            {"record": record, "content_created_at": message.received_at.isoformat()},
+            object_type="Classification",
         )
-    record_api_audit(
-        request,
-        domain,
-        "classification.overridden",
-        classification,
-        {"category": classification.category, "urgency": classification.urgency},
-    )
-    return Status(201, {"id": str(classification.id), "category": classification.category})
+    return Status(201, {"id": str(record_id), "category": payload.category})
 
 
 @api.post(
@@ -2108,7 +2164,7 @@ def outbound_resend(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
     return Status(202, {"outbound_id": resend.id, "status": resend.status})
 
 
-@api.get("/domains/{domain_id}/reports", auth=authenticated, tags=["Reports"])
+@api.get("/domains/{domain_id}/reports", auth=authenticated, tags=["Reports"], deprecated=True)
 def reports_list(
     request: HttpRequest,
     domain_id: uuid.UUID,
@@ -2118,24 +2174,28 @@ def reports_list(
     require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
     reports, next_cursor = _paginate_queryset(
-        Report.objects.filter(domain=domain),
+        legacy_records(domain, "Report"),
         cursor=cursor,
         limit=limit,
         timestamp_field="created_at",
         collection="reports",
+        id_field="object_id",
     )
     return {
         "items": [
             {
-                "id": str(report.id),
-                "kind": report.kind,
-                "status": report.status,
-                "generation_mode": report.generation_mode,
-                "title": report.title,
-                "content": report.content,
-                "period_start": report.period_start,
-                "period_end": report.period_end,
-                "created_at": report.created_at,
+                key: legacy_payload(report).get(key)
+                for key in (
+                    "id",
+                    "kind",
+                    "status",
+                    "generation_mode",
+                    "title",
+                    "content",
+                    "period_start",
+                    "period_end",
+                    "created_at",
+                )
             }
             for report in reports
         ],
@@ -2143,7 +2203,12 @@ def reports_list(
     }
 
 
-@api.get("/domains/{domain_id}/notifications", auth=authenticated, tags=["Notifications"])
+@api.get(
+    "/domains/{domain_id}/notifications",
+    auth=authenticated,
+    tags=["Notifications"],
+    deprecated=True,
+)
 def notifications_list(
     request: HttpRequest,
     domain_id: uuid.UUID,
@@ -2152,24 +2217,75 @@ def notifications_list(
 ):
     require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
-    notifications, next_cursor = _paginate_queryset(
-        Notification.objects.filter(domain=domain, channel=Notification.Channel.IN_APP),
-        cursor=cursor,
-        limit=limit,
-        timestamp_field="created_at",
-        collection="notifications",
+    # Each source is bounded before merging. Both use the original record ID,
+    # so existing cursors keep their ordering across the retirement migration.
+    page_size = min(max(limit, 1), MAX_PAGE_SIZE)
+    archived = legacy_records(domain, "Notification")
+    current = Notification.objects.filter(domain=domain)
+    if cursor:
+        at, object_id = _decode_cursor(cursor, collection="notifications")
+        archived = archived.filter(Q(created_at__lt=at) | Q(created_at=at, object_id__lt=object_id))
+        current = current.filter(Q(created_at__lt=at) | Q(created_at=at, id__lt=object_id))
+    notifications = sorted(
+        [
+            *archived.order_by("-created_at", "-object_id")[: page_size + 1],
+            *current.order_by("-created_at", "-id")[: page_size + 1],
+        ],
+        key=lambda item: (
+            item.created_at,
+            item.object_id if isinstance(item, AuditEvent) else item.id,
+        ),
+        reverse=True,
+    )
+    has_more = len(notifications) > page_size
+    notifications = notifications[:page_size]
+    next_cursor = (
+        _encode_cursor(
+            item=notifications[-1],
+            timestamp_field="created_at",
+            collection="notifications",
+            id_field="object_id" if isinstance(notifications[-1], AuditEvent) else "id",
+        )
+        if notifications and has_more
+        else None
+    )
+    payloads = [
+        legacy_payload(item)
+        if isinstance(item, AuditEvent)
+        else {
+            "id": str(item.id),
+            "kind": item.kind,
+            "status": item.status,
+            "title": item.title,
+            "body": item.body,
+            "created_at": item.created_at,
+        }
+        for item in notifications
+    ]
+    read_ids = set(
+        AuditEvent.objects.filter(
+            domain=domain,
+            event_type="notification.read",
+            object_id__in=[item["id"] for item in payloads],
+        ).values_list("object_id", flat=True)
     )
     return {
         "items": [
             {
-                "id": str(item.id),
-                "kind": item.kind,
-                "status": item.status,
-                "title": item.title,
-                "body": item.body,
-                "created_at": item.created_at,
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "id",
+                        "kind",
+                        "status",
+                        "title",
+                        "body",
+                        "created_at",
+                    )
+                },
+                "status": "READ" if uuid.UUID(str(item["id"])) in read_ids else item.get("status"),
             }
-            for item in notifications
+            for item in payloads
         ],
         "next_cursor": next_cursor,
     }
@@ -2179,15 +2295,23 @@ def notifications_list(
     "/domains/{domain_id}/notifications/{notification_id}/read",
     auth=authenticated,
     tags=["Notifications"],
+    deprecated=True,
 )
 def notifications_read(request: HttpRequest, domain_id: uuid.UUID, notification_id: uuid.UUID):
     require_scope(request, AccessScope.WRITE)
     domain = api_writable_domain(request, domain_id)
-    notification = scoped_object(Notification, domain, notification_id)
-    notification.status = Notification.Status.READ
-    notification.read_at = timezone.now()
-    notification.save(update_fields=("status", "read_at", "updated_at"))
-    record_api_audit(request, domain, "notification.read", notification)
+    if not (
+        legacy_records(domain, "Notification").filter(object_id=notification_id).exists()
+        or Notification.objects.filter(domain=domain, id=notification_id).exists()
+    ):
+        raise Http404
+    record_api_audit(
+        request,
+        domain,
+        "notification.read",
+        AuditEvent(id=notification_id),
+        object_type="Notification",
+    )
     return {"status": "read"}
 
 
@@ -2216,7 +2340,11 @@ def audit_list(
                 "object_type": event.object_type,
                 "object_id": str(event.object_id) if event.object_id else None,
                 "request_id": event.request_id,
-                "metadata": event.metadata,
+                "metadata": {
+                    key: value
+                    for key, value in event.metadata.items()
+                    if key not in {"record", "content_created_at"}
+                },
                 "created_at": event.created_at,
             }
             for event in events

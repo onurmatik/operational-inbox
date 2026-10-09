@@ -49,14 +49,14 @@ def test_compose_get_uses_selected_domain_without_persisting_a_draft(client, own
     second = client.get(reverse("compose"))
 
     assert response.status_code == 200
-    assert response.context["form"]["domain"].value() == domain.id
+    assert response.context["form"]["from_address"].value() == f"hello@{domain.hostname}"
     assert uuid.UUID(response.context["form"]["idempotency_key"].value()).version == 4
     assert (
         response.context["form"]["idempotency_key"].value()
         != second.context["form"]["idempotency_key"].value()
     )
     assert b"@example.com" in response.content
-    assert b">Send</button>" in response.content
+    assert b"Send email</button>" in response.content
     assert b">Cancel</a>" in response.content
     assert b"Save draft" not in response.content
     assert not Conversation.objects.exists()
@@ -64,12 +64,13 @@ def test_compose_get_uses_selected_domain_without_persisting_a_draft(client, own
 
 
 @pytest.mark.django_db
-def test_inbox_and_outbox_compose_links_keep_the_domain(client, owner, domain, inbound_message):
+def test_inbox_and_sent_expose_new_email(client, owner, domain, inbound_message):
     _login_domain(client, owner, domain)
-    link = f"{reverse('compose')}?domain={domain.id}".encode()
-
-    assert link in client.get(reverse("inbox")).content
-    assert link in client.get(f"{reverse('outbox')}?domain={domain.id}").content
+    assert b"New email" in client.get(reverse("inbox")).content
+    assert (
+        client.get(f"{reverse('outbox')}?domain={domain.id}").url
+        == f"{reverse('inbox')}?domain={domain.id}&folder=sent"
+    )
 
 
 @pytest.mark.django_db
@@ -80,8 +81,8 @@ def test_compose_post_queues_owner_send_and_redirects_to_domain_outbox(client, o
     response = client.post(reverse("compose"), data)
 
     assert response.status_code == 302
-    assert response.url == f"{reverse('outbox')}?domain={domain.id}"
     outbound = OutboundMessage.objects.get()
+    assert response.url == f"{reverse('inbox')}?folder=sent&conversation={outbound.conversation_id}"
     assert outbound.from_address == "onur@example.com"
     assert outbound.to_address == data["to_address"]
     assert outbound.body_text == data["body_text"]
@@ -98,10 +99,10 @@ def test_compose_post_queues_owner_send_and_redirects_to_domain_outbox(client, o
 @pytest.mark.parametrize(
     ("field", "value", "error_field"),
     [
-        ("domain", "", "domain"),
-        ("from_local_part", "", "from_local_part"),
-        ("from_local_part", "onur@elsewhere.example", "from_local_part"),
-        ("from_local_part", "onur\r\n", "from_local_part"),
+        ("domain", "", "from_address"),
+        ("from_local_part", "", "from_address"),
+        ("from_local_part", "onur@elsewhere.example", "from_address"),
+        ("from_local_part", "onur\r\n", "from_address"),
         ("to_address", "One <one@example.net>", "to_address"),
         ("to_address", "one@example.net,two@example.net", "to_address"),
         ("to_address", "one@example.net\r\n", "to_address"),

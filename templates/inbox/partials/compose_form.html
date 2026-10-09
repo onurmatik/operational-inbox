@@ -1,0 +1,8 @@
+<form method="post" action="{% url 'compose' %}" class="space-y-4" data-send-form>
+  {% csrf_token %}{{ form.idempotency_key }}
+  {% if form.non_field_errors %}<div class="border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>{% endif %}
+  {% for field in form.visible_fields %}<div><label class="oi-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% for error in field.errors %}<p class="mt-1 text-xs text-coral-strong">{{ error }}</p>{% endfor %}</div>{% endfor %}
+  <datalist id="sender-addresses">{% for sender_domain in nav_domains %}<option value="hello@{{ sender_domain.hostname }}"></option><option value="support@{{ sender_domain.hostname }}"></option>{% endfor %}</datalist>
+  <p class="text-xs leading-5 text-muted">Use any address on a domain verified for sending. Delivery status appears in the conversation.</p>
+  <div class="flex justify-end gap-2 border-t border-line pt-4"><a href="{% url 'inbox' %}" class="oi-button-secondary" data-close-dialog>Cancel</a><button class="oi-button-primary" data-send-button><span class="oi-icon">{% include "icons/send.svg" %}</span>Send email</button></div>
+</form>

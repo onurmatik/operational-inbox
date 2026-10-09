@@ -21,9 +21,7 @@ def test_mcp_runtime_contract_uses_a_dedicated_port_and_entrypoint():
 
 def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
     fabfile = (PROJECT_ROOT / ".deploy" / "fabfile.py").read_text()
-    migration = (
-        PROJECT_ROOT / ".deploy" / "scripts" / "postgresql_migration.py"
-    ).read_text()
+    migration = (PROJECT_ROOT / ".deploy" / "scripts" / "postgresql_migration.py").read_text()
 
     runtime_keys = fabfile.split("RUNTIME_ENV_KEYS = (", 1)[1].split(")", 1)[0]
     assert "DJANGO_DATABASE_URL" not in runtime_keys
@@ -32,8 +30,7 @@ def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():
     assert "result.exited == 20" in fabfile
     assert "roll-forward" in fabfile
     assert (
-        'for suffix in ("deploy", "ingest", "scheduler", "dns", "retention", "backup")'
-        in migration
+        'for suffix in ("deploy", "ingest", "scheduler", "dns", "retention", "backup")' in migration
     )
     assert "descriptor = os.open(path, os.O_RDWR)" in migration
     assert "lock_handles = []" in migration

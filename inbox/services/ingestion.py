@@ -46,7 +46,6 @@ from inbox.services.outbound_records import record_outbound_message
 from inbox.services.routing_transitions import finalize_routing_transition_test
 from inbox.services.threading import (
     match_conversation,
-    merge_suggestion,
     normalize_subject,
     record_ses_reference,
     reference_hash,
@@ -149,6 +148,7 @@ def _route_domains(recipients: list[str]) -> list[RoutedDomain]:
             address__in=normalized,
             is_active=True,
             kind=InboundRoute.Kind.FORWARDING_ALIAS,
+            domain__receiving_enabled=True,
         )
         .exclude(domain__status=Domain.Status.DISABLED)
         .filter(
@@ -195,6 +195,7 @@ def _route_domains(recipients: list[str]) -> list[RoutedDomain]:
         Domain.objects.filter(
             hostname__in=recipient_domains,
             ownership_verified=True,
+            receiving_enabled=True,
         )
         .exclude(status=Domain.Status.DISABLED)
         .filter(
@@ -317,10 +318,6 @@ def _store_domain_message(
             last_message_at=received_at,
             last_inbound_at=received_at,
         )
-        suggestion = merge_suggestion(domain, parsed.subject, conversation)
-        if suggestion:
-            conversation.merge_suggestion = suggestion
-            conversation.save(update_fields=("merge_suggestion", "updated_at"))
     else:
         conversation.last_message_at = max(conversation.last_message_at, received_at)
         conversation.last_inbound_at = received_at

@@ -3,12 +3,12 @@
 **Agent-first operational email for every project address.**
 
 Operational Inbox brings `support@`, `contact@`, `privacy@`, and other project addresses across
-multiple domains into one secure inbox. It is built for people to delegate email operations to
+multiple domains into one conversation history. It also sends individual customer emails from a verified domain. It is built for people to delegate email operations to
 their own agents without turning the inbox into a CRM or task-management system.
 
 Agents are the primary interface for setup, triage, replies, and delivery monitoring. The web
 application remains the owner’s control surface for oversight, consent, billing, and account
-settings.
+settings. Conversations combines Inbox, Sent, and Archive across domains. Domain setup asks for receiving, sending, or both; sending-only setup keeps existing MX.
 
 ## Connect your agent
 
@@ -63,7 +63,7 @@ plan-volume quota. Technical and abuse-prevention safety limits still apply.
 - **Free Core:** one active domain, 30 user-requested one-to-one outbound emails per UTC calendar month,
   and fixed retention.
 - **Pro Scale:** up to 20 active domains, 5,000 user-requested one-to-one outbound emails per UTC calendar
-  month, custom retention, and server-side AI classification.
+  month, custom retention.
 
 New emails and replies share this allowance, which resets at 00:00 UTC on the first day of each
 month. Reply drafting and Outbox safety remain available when it is exhausted.

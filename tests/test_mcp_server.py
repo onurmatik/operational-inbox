@@ -141,6 +141,55 @@ def oauth_access_token(owner, *, scope: str) -> str:
 
 
 @pytest.mark.django_db(transaction=True)
+def test_mcp_send_only_setup_and_later_receiving_keep_sending_independent(
+    mcp_client, owner, monkeypatch
+):
+    def unexpected_mx(*args, **kwargs):
+        raise AssertionError("Send-only setup must not inspect MX")
+
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", unexpected_mx)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", unexpected_mx)
+    raw = oauth_access_token(owner, scope="read manage_domains")
+    created = tool_call(
+        mcp_client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "agent-outreach.example",
+            "goal": "send",
+        },
+    )["structuredContent"]
+    domain = Domain.objects.get(pk=created["id"])
+    assert created["goal"] == "send" and not created["receiving_enabled"]
+    assert not domain.inbound_routes.exists()
+    domain.outbound_ready = True
+    domain.outbound_status = "READY"
+    domain.status = "READY"
+    domain.ownership_verified = True
+    domain.save()
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname, **kwargs: [])
+    args = {"domain_id": str(domain.id), "setup_mode": "PROVIDER_FORWARD"}
+    denied = tool_call(mcp_client, raw, "enable_domain_receiving", args)
+    assert tool_error_payload(denied)["code"] == "routing_choice_required"
+    enabled = tool_call(
+        mcp_client,
+        raw,
+        "enable_domain_receiving",
+        {
+            **args,
+            "routing_choice_confirmed": True,
+        },
+    )["structuredContent"]
+    assert enabled["receiving_enabled"] and enabled["outbound_ready"]
+    assert enabled["goal"] == "both"
+    read_only = oauth_access_token(owner, scope="read")
+    blocked = tool_call(mcp_client, read_only, "enable_domain_receiving", args)
+    assert tool_error_payload(blocked)["code"] == "insufficient_scope"
+
+
+@pytest.mark.django_db(transaction=True)
 @pytest.mark.parametrize("status", ["QUEUED", "FAILED", "UNKNOWN"])
 def test_send_email_requires_only_send_scope_and_is_idempotent(mcp_client, owner, domain, status):
     raw = oauth_access_token(owner, scope="send")
@@ -354,6 +403,7 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "get_outbound_control",
         "set_outbound_paused",
         "enable_outbound_sending",
+        "enable_domain_receiving",
         "list_audit_events",
         "create_reply_draft",
         "get_reply_draft",

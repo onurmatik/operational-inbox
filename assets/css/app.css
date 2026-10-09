@@ -4,6 +4,14 @@
 @source "../../inbox/**/*.py";
 @source "../../inbox/static/js/**/*.js";
 
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/inter-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: swap; src: url("../fonts/inter-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/inter-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 700; font-display: swap; src: url("../fonts/inter-latin-700-normal.woff2") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/space-grotesk-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("../fonts/jetbrains-mono-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("../fonts/jetbrains-mono-latin-600-normal.woff2") format("woff2"); }
+
 @theme {
   --color-paper: #f7f7f5;
   --color-surface: #ffffff;
@@ -199,4 +207,89 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
+}
+
+@layer components {
+  .oi-icon { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; }
+  .oi-icon svg { width: 18px; height: 18px; stroke-width: 1.8; }
+  .app-shell { min-height: 100dvh; }
+  .app-main { min-width: 0; }
+  .app-nav { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 16px; color: var(--color-muted); }
+  .app-nav:hover { background: var(--color-paper); color: var(--color-ink); }
+  .app-nav-active, .app-nav-active:hover { background: var(--color-forest); color: white; font-weight: 600; }
+  .app-toolbar { display: flex; align-items: center; gap: 24px; min-height: 56px; padding: 0 24px; border-bottom: 1px solid var(--color-line); background: white; position: sticky; top: 0; z-index: 30; }
+  .app-page { max-width: 1240px; margin: 0 auto; padding: 48px; }
+  .icon-button { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex-shrink: 0; color: var(--color-muted); }
+  .icon-button:hover { background: var(--color-paper); color: var(--color-forest); }
+  .icon-button:disabled { opacity: .4; cursor: not-allowed; }
+  .workspace-search { display: flex; align-items: center; gap: 24px; flex: 1; min-width: 0; }
+  .workspace-search > div { max-width: 448px; }
+  .workspace-search .oi-input { min-height: 36px; }
+  .search-icon { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); color: var(--color-muted); pointer-events: none; }
+  .domain-filter { width: 132px; flex-shrink: 0; }
+  .conversation-workspace { display: flex; flex-direction: column; height: calc(100dvh - 56px); min-height: 0; }
+  .conversation-tabs { height: 44px; display: flex; flex-shrink: 0; align-items: stretch; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--color-line); background: white; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+  .conversation-tabs > a { display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--color-muted); }
+  .conversation-tabs > a[aria-current] { border-color: var(--color-forest); color: var(--color-forest); font-weight: 600; }
+  .conversation-tabs summary { display: flex; gap: 4px; align-items: center; height: 42px; list-style: none; }
+  .conversation-tabs summary::-webkit-details-marker { display: none; }
+  .more-views, .workspace-filters { position: relative; }
+  .more-views > div, .workspace-filters > form { position: absolute; top: 44px; z-index: 35; min-width: 160px; border: 1px solid var(--color-line); background: white; padding: 8px; }
+  .more-views > div > a { display: block; padding: 10px; }
+  .workspace-filters { margin-left: auto; }
+  .workspace-filters > form { right: 0; width: 300px; padding: 16px; max-height: calc(100dvh - 180px); overflow: auto; }
+  .conversation-columns { display: flex; flex: 1; min-height: 0; }
+  .conversation-list { width: 400px; flex-shrink: 0; border-right: 1px solid var(--color-line); overflow-y: auto; background: white; }
+  .conversation-row { display: block; padding: 16px; border-bottom: 1px solid var(--color-line); border-left: 3px solid transparent; }
+  .conversation-row:hover { background: var(--color-paper); }
+  .conversation-row.selected { background: var(--color-paper); border-left-color: var(--color-forest); }
+  .conversation-detail { flex: 1; min-width: 0; overflow-y: auto; background: white; }
+  .thread-content { padding: 48px; max-width: 800px; margin: 0 auto; }
+  .thread-titlebar { display: flex; align-items: flex-start; gap: 12px; }
+  .thread-titlebar .icon-button { width: 32px; height: 32px; border: 1px solid var(--color-line); }
+  .thread-timeline { margin-top: 16px; }
+  .mail-item { padding: 24px 0; border-bottom: 1px solid var(--color-line); }
+  .mail-item:first-child { padding-top: 0; }
+  .mail-item > header { font-size: 12px; line-height: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--color-line); }
+  .mail-item:last-child { border-bottom: 0; padding-bottom: 0; }
+  .mail-body { margin-top: 32px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 26px; }
+  .agent-draft { margin-top: 32px; padding: 16px; border: 1px solid var(--color-line); background: var(--color-paper); }
+  .thread-empty { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; padding: 24px; }
+  .thread-empty > .oi-icon svg { width: 32px; height: 32px; }
+  .delivery-badge { font-size: 11px; white-space: nowrap; }
+  .oi-dialog { width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; margin: auto; border: 1px solid var(--color-line-strong); border-radius: 4px; background: white; color: var(--color-ink); padding: 0; }
+  .oi-dialog::backdrop { background: rgb(24 33 28 / 30%); }
+  .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 24px; border-bottom: 1px solid var(--color-line); }
+  .settings-tabs { display: flex; flex-wrap: wrap; gap: 24px; margin-bottom: 32px; border-bottom: 1px solid var(--color-line); }
+  .settings-tabs a { padding: 12px 0; color: var(--color-muted); font-size: 14px; }
+  .settings-tabs a[aria-current] { border-bottom: 2px solid var(--color-forest); color: var(--color-forest); }
+}
+@media (min-width: 1024px) {
+  .app-main { margin-left: 224px; }
+  .domain-page { max-width: 992px; padding-top: 32px; }
+}
+@media (max-width: 1023px) {
+  .app-toolbar { min-height: 124px; flex-wrap: wrap; gap: 12px; padding: 12px 16px; }
+  .app-toolbar:not(:has(.workspace-search)) { min-height: 56px; }
+  .workspace-title { flex: 1; font-size: 17px; }
+  .workspace-search { order: 5; flex-basis: 100%; gap: 12px; }
+  .workspace-search > div { max-width: none; }
+  .domain-filter { width: 115px; }
+  .new-email-button { min-height: 44px; padding: 0 10px; font-size: 12px; }
+  .workspace-search .oi-input { min-height: 44px; }
+  .oi-button-primary, .oi-button-secondary, .oi-input { min-height: 44px; }
+  .conversation-workspace { height: calc(100dvh - 124px); }
+  .conversation-list { width: 100%; border-right: 0; }
+  .conversation-detail { display: none; }
+  .has-selection .conversation-list { display: none; }
+  .has-selection .conversation-detail { display: block; }
+  .has-selection .conversation-tabs { display: none; }
+  .thread-content { padding: 24px 20px; }
+  .thread-titlebar { display: grid; grid-template-columns: 1fr auto; }
+  .thread-titlebar h2 { grid-row: 2; grid-column: 1 / -1; margin-top: 12px; }
+  .thread-titlebar .icon-button { width: 44px; height: 44px; border: 0; }
+  .app-page { padding: 24px 20px; }
+  .icon-button { width: 44px; height: 44px; }
+  .app-nav { min-height: 44px; }
+  .more-views a { min-height: 44px; }
 }

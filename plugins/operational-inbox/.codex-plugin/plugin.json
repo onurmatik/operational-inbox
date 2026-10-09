@@ -1,6 +1,6 @@
 {
   "name": "operational-inbox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Connect authorized domains, triage inbound mail, and operate user-requested replies within returned account limits.",
   "author": {
     "name": "Operational Inbox",

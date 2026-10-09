@@ -10,7 +10,6 @@ from inbox.models import (
     Conversation,
     Domain,
     Message,
-    ReportSchedule,
     RetentionPolicy,
     User,
 )
@@ -37,7 +36,6 @@ def domain(owner: User) -> Domain:
     domain = Domain.objects.create(
         owner=owner,
         hostname="example.com",
-        timezone="Europe/Istanbul",
         setup_mode=Domain.SetupMode.DIRECT_MX,
         status=Domain.Status.READY,
         ownership_verified=True,
@@ -46,7 +44,6 @@ def domain(owner: User) -> Domain:
         outbound_status=Domain.OutboundStatus.READY,
         claim_expires_at=timezone.now() + timedelta(days=3),
     )
-    ReportSchedule.objects.create(domain=domain)
     RetentionPolicy.objects.create(domain=domain)
     return domain
 

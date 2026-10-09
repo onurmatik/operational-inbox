@@ -3,9 +3,9 @@ from __future__ import annotations
 import uuid
 from typing import TypeVar
 
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Manager, Model, QuerySet
-from django.http import Http404, HttpRequest
+from django.http import Http404
 
 from inbox.models import Domain, User
 
@@ -19,22 +19,8 @@ def owned_domains(user: User) -> QuerySet[Domain]:
 def get_owned_domain(user: User, domain_id: uuid.UUID | str) -> Domain:
     try:
         return owned_domains(user).get(id=domain_id)
-    except (Domain.DoesNotExist, ValueError) as exc:
+    except (Domain.DoesNotExist, ValueError, ValidationError) as exc:
         raise Http404 from exc
-
-
-def current_domain(request: HttpRequest) -> Domain:
-    if not request.user.is_authenticated:
-        raise Http404
-    domains = owned_domains(request.user)
-    selected_id = request.session.get("domain_id")
-    selected = domains.filter(id=selected_id).first() if selected_id else None
-    selected = selected or domains.first()
-    if selected is None:
-        raise Http404
-    if request.session.get("domain_id") != str(selected.id):
-        request.session["domain_id"] = str(selected.id)
-    return selected
 
 
 def domain_get_or_404(queryset: Manager[T] | QuerySet[T], *, domain: Domain, **lookup: object) -> T:

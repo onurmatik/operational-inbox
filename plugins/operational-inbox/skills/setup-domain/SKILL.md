@@ -20,6 +20,12 @@ changes when one is available and the user authorized those changes.
 - Never remove unrelated DNS records. Never replace existing MX implicitly.
 - Do not claim that DNS propagated or the domain is ready until Operational Inbox reports it.
 
+## Choose the goal
+
+Use the user's request to choose `receive`, `send`, or `both`. For send-only, start onboarding with `goal: "send"`; no `setup_mode` is needed. Publish the exact ownership and sending records from the plan. Preserve existing MX and do not configure forwarding or run an inbound test. After ownership is verified, sending DNS provisioning starts automatically; read the updated plan before applying DKIM records. Report `outbound_ready` separately from domain status.
+
+For an existing sending-only domain, use `enable_domain_receiving` after the receiving route has been explicitly selected. Do not recreate the claim or reset sending.
+
 ## Inspect and choose the route
 
 1. Call `inspect_domain_dns` with the requested hostname.
@@ -39,7 +45,7 @@ report the selected `primary_domain_id` and authoritative `grace_ends_at` when p
 selection is completed in Operational Inbox domain settings; do not work around a read-only domain
 by retrying its mutations.
 
-Call `start_domain_onboarding` with the normalized hostname and selected mode. Repeated identical
+Call `start_domain_onboarding` with the normalized hostname, selected `goal`, and receiving mode when applicable. Repeated identical
 calls are safe, but do not change modes by retrying. Then call `get_domain_setup_plan` with the
 returned domain ID.
 
@@ -60,7 +66,7 @@ Immediately before an external write, read `get_domain_setup_plan` again and ret
 - Upsert only `records_to_upsert`; preserve all other DNS records.
 - Preserve every `records_to_preserve` entry. Treat `existing_mx` as observed context, not as a
   preserve instruction when it is absent from `records_to_preserve`.
-- When `must_preserve_existing_mx` is true, do not edit MX. Configure the current provider's
+- When `must_preserve_existing_mx` is true, do not edit MX. When `provider_forwarding_target` is present, configure the current provider's
   catch-all or unmatched-recipient forwarding to `provider_forwarding_target` if a capable provider
   tool is available; otherwise return that instruction to the user.
 - When `requires_explicit_confirmation` is true, show `existing_mx` and the proposed MX change and
