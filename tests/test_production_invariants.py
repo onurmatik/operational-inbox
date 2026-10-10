@@ -116,13 +116,14 @@ def test_generic_ses_email_does_not_enter_outbound_delivery_pipeline():
 
 def test_deploy_contract_uses_ephemeral_github_app_auth_and_fixed_mail_backend():
     source = (Path(__file__).parents[1] / ".deploy" / "fabfile.py").read_text()
+    release = (Path(__file__).parents[1] / ".deploy/scripts/deploy_release.py").read_text()
     assert 'REPO_URL = f"https://github.com/' in source
     assert "get_github_token()" in source
-    assert "http.extraHeader" in source
-    assert "GIT_TERMINAL_PROMPT=0" in source
+    assert "http.extraHeader" in release
+    assert 'environment["GIT_TERMINAL_PROMPT"] = "0"' in release
     assert "forward_agent=True" not in source
-    assert "safe.directory=" in source
-    assert "DJANGO_EMAIL_BACKEND=ses" in source
+    assert '"user": self.account.pw_uid' in release
+    assert '"DJANGO_EMAIL_BACKEND": "ses"' in source
     assert '"DJANGO_EMAIL_BACKEND",' not in source
     assert '"OPENAI_APPS_CHALLENGE_TOKEN",' in source
     assert '"OPERATIONAL_INBOX_OAUTH_SERVER_ENABLED",' in source

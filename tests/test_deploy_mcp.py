@@ -14,9 +14,6 @@ def test_mcp_runtime_contract_uses_a_dedicated_port_and_entrypoint():
     assert "deadline = time.monotonic() + 30" in fabfile
     assert "timeout=min(2, remaining)" in fabfile
     assert "MCP did not become ready within 30 seconds." in fabfile
-    assert "finally:\n            restart_web_runtime(connection)" in fabfile
-    assert "if not mcp_verified:" in fabfile
-    assert 'systemctl restart {quote(MCP_SERVICE)}", warn=True' in fabfile
 
 
 def test_postgresql_cutover_is_separate_from_normal_runtime_env_sync():

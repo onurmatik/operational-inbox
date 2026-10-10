@@ -42,13 +42,58 @@ cd .deploy
 python3 -m fabric deploy
 ```
 
-Deployment stops the cold Gunicorn service and the dedicated MCP Uvicorn service, acquires all
-cron locks, creates an encrypted and integrity-checked backup of the active database, runs
-migrations, collects static files, and runs `check --deploy`. It then installs the checked-in
-`operationalinbox-mcp.service`, waits up to 30 seconds for its MCP initialize response, and
-restarts both runtimes. MCP listens only on loopback port `8012`; StageOps owns the Nginx
-`/mcp` proxy route that exposes `https://operationalinbox.com/mcp`. Backups are stored under
-`/var/backups/operationalinbox` for 30 days.
+The local checkout must be clean, published as `origin/main`, and pass the read-only
+`makemigrations --check --dry-run` check using its `.venv`. Fabric pins that exact SHA, uploads
+the checked-in release helper, and runs it in one SSH operation. The deploy lock is held from
+Git fetch through source/config/dependency changes, migration, activation, and live checks.
+
+Schema-changing releases pause only `/etc/cron.d/stageops-operationalinbox`, drain every app
+cron lock, and stop the web socket, Gunicorn, and MCP before replacing checkout files. A
+persistent systemd condition prevents these units from starting while the containment marker
+exists, including after reboot. The compatible previous code creates an encrypted, verified
+database backup before checkout and migration. The release checks for model drift and pending
+migrations, reads every managed model's columns through the ORM, and runs `check --deploy`
+before opening services. Cron resumes only after three consecutive public web health checks,
+the MCP Bearer challenge, exact revision verification, and individual runtime checks pass.
+Verification does not send email or invoke scheduled workloads.
+
+Proven migrationless releases retain a short in-place path: no database backup or full
+shutdown unless shared environment, dependencies, or units change. They record the previous
+revision and restore it on failure, verify its schema and live health, then resume cron. During
+this path existing processes may briefly execute different revisions with the same schema.
+Dependencies, collected static files, and unit files are updated only when changed or missing.
+Export production dependencies from `uv.lock` before publishing:
+
+```console
+uv export --frozen --no-dev --no-hashes --no-emit-project --output-file requirements.txt
+```
+
+MCP listens only on loopback port `8012`; StageOps owns the Nginx `/mcp` proxy route.
+Backups are stored under `/var/backups/operationalinbox` for 30 days.
+
+## Release failure and recovery
+
+Release state, protected configuration snapshots, and a private diagnostic log are kept under
+`/var/lib/operationalinbox-deploy` (mode `0700`). Before migration starts, failure recovery can
+restore the previous checkout, environment, dependency requirements, unit, and static files;
+services reopen only after the previous schema and live health pass. Once migration starts,
+recovery is roll-forward: web/MCP stay stopped, the systemd containment marker persists, and
+the cron file remains outside `/etc/cron.d` after the SSH process and locks exit. No `finally`
+block restarts an unverified schema. Never print configuration snapshots or raw diagnostic logs.
+
+Inspect the recorded phase, applied migrations, and service state. Repair and publish the
+candidate using the existing workflow, then run:
+
+```console
+cd .deploy
+python3 -m fabric deploy --recover
+```
+
+Recovery reacquires the deploy lock, verifies the previous owner is absent, keeps workloads
+contained, and runs forward migrations and the same checks. It clears the failure marker and
+restores cron only after successful verification. Do not reverse migration `0015` or start the
+old revision after it has retired tables; original records are archived as audit events and the
+encrypted pre-migration backup remains available for deliberate data recovery.
 
 ## PostgreSQL 17 cutover
 

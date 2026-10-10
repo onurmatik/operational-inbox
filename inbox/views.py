@@ -970,7 +970,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
                     "body_text": draft.current_revision.body_text,
                 }
                 if draft and draft.current_revision
-                else None
+                else None,
             ),
             "filters": {
                 "q": query,

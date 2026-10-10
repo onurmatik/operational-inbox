@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import base64
+import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from io import BytesIO
@@ -92,10 +93,6 @@ RUNTIME_ENV_KEYS = (
     "AWS_SES_RECEIPT_RULE_SET",
     "AWS_SES_RECEIPT_RULE",
     "AWS_SES_SYSTEM_IDENTITY",
-    "OPENAI_API_KEY",
-    "OPENAI_TRIAGE_MODEL",
-    "OPENAI_DRAFT_MODEL",
-    "OPENAI_REPORT_MODEL",
     "STRIPE_SECRET_KEY",
     "STRIPE_WEBHOOK_SECRET",
     "STRIPE_PRO_UNIT_AMOUNT",
@@ -132,25 +129,6 @@ def get_github_token() -> str:
     return token
 
 
-def authenticated_git_command(git_arguments: str, token: str) -> str:
-    auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    header = quote(f"Authorization: Basic {auth}")
-    return (
-        "GIT_TERMINAL_PROMPT=0 git -c credential.helper= "
-        f"-c http.extraHeader={header} {git_arguments}"
-    )
-
-
-def run_authenticated_git(connection: Connection, git_arguments: str, token: str) -> None:
-    result = connection.run(
-        authenticated_git_command(git_arguments, token),
-        warn=True,
-        hide=True,
-    )
-    if result.failed:
-        raise RuntimeError("Authenticated GitHub operation failed.")
-
-
 def app_run(connection: Connection, command: str, *, warn: bool = False):
     snippet = f"cd {quote(PROJECT_DIR)} && {command}"
     return connection.sudo(
@@ -168,102 +146,13 @@ def production_connection() -> Connection:
     )
 
 
-def ensure_runtime_env(connection: Connection) -> None:
-    env_path = f"{PROJECT_DIR}/.env"
-    connection.sudo(
-        f"install -d -o {quote(APP_USER)} -g {quote(APP_USER)} -m 0700 {quote(BACKUP_DIR)}"
-    )
-    if connection.run(f"test -f {quote(env_path)}", warn=True, hide=True).failed:
-        script = f"""
-umask 077
-{{
-  printf 'DJANGO_SECRET_KEY=%s\\n' "$(openssl rand -hex 48)"
-  printf 'DJANGO_DEBUG=false\\n'
-  printf 'DJANGO_ALLOWED_HOSTS={DOMAIN}\\n'
-  printf 'DJANGO_CSRF_TRUSTED_ORIGINS=https://{DOMAIN}\\n'
-  printf 'DJANGO_SECURE_COOKIES=true\\n'
-  printf 'DJANGO_SECURE_SSL_REDIRECT=true\\n'
-  printf 'DJANGO_DATABASE_URL=sqlite:///db.sqlite3\\n'
-  printf 'DJANGO_EMAIL_BACKEND=ses\\n'
-  printf 'TRUSTED_PROXY_IPS=127.0.0.1,::1\\n'
-  printf 'PUBLIC_BASE_URL=https://{DOMAIN}\\n'
-  printf 'INBOUND_SERVICE_DOMAIN=inbound.{DOMAIN}\\n'
-  printf 'BACKUP_DIRECTORY={BACKUP_DIR}\\n'
-}} > .env
-chmod 600 .env
-""".strip()
-        app_run(connection, f"bash -lc {quote(script)}")
-    else:
-        app_run(connection, "chmod 600 .env")
-
-
-def sync_runtime_env(connection: Connection) -> None:
-    updates = {
-        key: os.environ.get(key, "").strip()
-        for key in RUNTIME_ENV_KEYS
-        if os.environ.get(key, "").strip()
-    }
-    if not updates:
-        return
-    if any("\n" in value or "\r" in value for value in updates.values()):
-        raise RuntimeError("Runtime environment values must be single-line strings.")
-
-    payload = "".join(f"{key}={quote(value)}\n" for key, value in updates.items())
-    temporary_path = connection.run("mktemp", hide=True).stdout.strip()
-    staged_path = f"{PROJECT_DIR}/.env.deploy"
-    try:
-        connection.put(BytesIO(payload.encode()), remote=temporary_path)
-        connection.sudo(
-            f"install -o {quote(APP_USER)} -g {quote(APP_USER)} -m 600 "
-            f"{quote(temporary_path)} {quote(staged_path)}"
-        )
-        app_run(connection, "python3 .deploy/sync_env.py .env .env.deploy")
-    finally:
-        connection.run(f"rm -f {quote(temporary_path)}", warn=True, hide=True)
-        app_run(connection, "rm -f .env.deploy", warn=True)
-
-
-def deploy_under_locks(connection: Connection) -> None:
-    python = quote(f"{VENV_DIR}/bin/python")
-    command = f"""
-exec 9>/run/lock/{PROJECT_NAME}-deploy.lock
-flock -w 120 9
-exec 8>/run/lock/{PROJECT_NAME}-ingest.lock
-flock -w 120 8
-exec 7>/run/lock/{PROJECT_NAME}-scheduler.lock
-flock -w 120 7
-exec 6>/run/lock/{PROJECT_NAME}-dns.lock
-flock -w 120 6
-exec 5>/run/lock/{PROJECT_NAME}-retention.lock
-flock -w 120 5
-exec 4>/run/lock/{PROJECT_NAME}-backup.lock
-flock -w 120 4
-{python} manage.py backup_database
-{python} manage.py migrate --noinput
-{python} manage.py collectstatic --noinput
-{python} manage.py check --deploy
-""".strip()
-    app_run(connection, f"bash -lc {quote(command)}")
-
-
-def install_mcp_runtime(connection: Connection) -> None:
+def rendered_mcp_unit() -> str:
     template = (DEPLOY_DIR / "systemd" / "operationalinbox-mcp.service").read_text()
-    rendered = (
+    return (
         template.replace("__APP_USER__", APP_USER)
         .replace("__PROJECT_DIR__", PROJECT_DIR)
         .replace("__VENV_DIR__", VENV_DIR)
     )
-    temporary_unit = connection.run("mktemp", hide=True).stdout.strip()
-    try:
-        connection.put(BytesIO(rendered.encode()), remote=temporary_unit)
-        connection.sudo(
-            f"install -o root -g root -m 0644 {quote(temporary_unit)} {quote(MCP_SYSTEMD_PATH)}"
-        )
-    finally:
-        connection.run(f"rm -f {quote(temporary_unit)}", warn=True, hide=True)
-
-    connection.sudo("systemctl daemon-reload")
-    connection.sudo(f"systemctl enable {quote(MCP_SERVICE)}")
 
 
 def verify_mcp_runtime(connection: Connection) -> None:
@@ -319,14 +208,6 @@ while True:
     time.sleep(min(1, remaining))
 """.strip()
     app_run(connection, f"{quote(VENV_DIR + '/bin/python')} -c {quote(script)}")
-
-
-def restart_web_runtime(connection: Connection) -> None:
-    connection.sudo(
-        f"systemctl reset-failed app@{PROJECT_NAME}.service app@{PROJECT_NAME}.socket",
-        warn=True,
-    )
-    connection.sudo(f"systemctl restart app@{PROJECT_NAME}.socket")
 
 
 def local_database_url() -> str:
@@ -483,82 +364,98 @@ def cutover_postgresql(_context) -> None:
         remove_staged_database_env(connection)
 
 
+def local_release_revision() -> str:
+    root = DEPLOY_DIR.parent
+    git = shutil.which("git")
+    if not git:
+        raise RuntimeError("Git is required for the local release check.")
+
+    def local_git(*arguments: str) -> str:
+        return subprocess.check_output(  # noqa: S603 - resolved Git, fixed read-only arguments.
+            [git, *arguments], cwd=root, text=True
+        ).strip()
+
+    if local_git("status", "--porcelain"):
+        raise RuntimeError("Commit and publish the intended release before deploying.")
+    revision = local_git("rev-parse", "HEAD")
+    upstream = local_git("rev-parse", "origin/main")
+    if revision != upstream:
+        raise RuntimeError(
+            "The local release differs from origin/main; publish it before deploying."
+        )
+    python = root / ".venv" / "bin" / "python"
+    if not python.is_file():
+        raise RuntimeError("The local project .venv is required for the read-only schema check.")
+    result = subprocess.run(  # noqa: S603 - fixed project interpreter and read-only command.
+        [str(python), "manage.py", "makemigrations", "--check", "--dry-run"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            "The local release failed the read-only model/migration consistency check."
+        )
+    return revision
+
+
 @task
-def deploy(_context) -> None:
-    """Deploy the origin/main release to the StageOps Hetzner host."""
-    github_token = get_github_token()
+def deploy(_context, recover=False) -> None:
+    """Deploy the pinned origin/main release; recover resumes a contained failure."""
+    revision = local_release_revision()
+    updates = {
+        key: os.environ[key].strip() for key in RUNTIME_ENV_KEYS if os.environ.get(key, "").strip()
+    }
+    if any("\n" in value or "\r" in value for value in updates.values()):
+        raise RuntimeError("Runtime environment values must be single-line strings.")
+    config = {
+        "revision": revision,
+        "github_token": get_github_token(),
+        "repo_url": REPO_URL,
+        "project_name": PROJECT_NAME,
+        "project_dir": PROJECT_DIR,
+        "venv_dir": VENV_DIR,
+        "backup_dir": BACKUP_DIR,
+        "app_user": APP_USER,
+        "domain": DOMAIN,
+        "mcp_service": MCP_SERVICE,
+        "mcp_systemd_path": MCP_SYSTEMD_PATH,
+        "mcp_unit": rendered_mcp_unit(),
+        "recover": bool(recover),
+        "state_dir": f"/var/lib/{PROJECT_NAME}-deploy",
+        "cron_path": f"/etc/cron.d/stageops-{PROJECT_NAME}",
+        "environment_updates": updates,
+        "initial_environment": {
+            "DJANGO_DEBUG": "false",
+            "DJANGO_ALLOWED_HOSTS": DOMAIN,
+            "DJANGO_CSRF_TRUSTED_ORIGINS": f"https://{DOMAIN}",
+            "DJANGO_SECURE_COOKIES": "true",
+            "DJANGO_SECURE_SSL_REDIRECT": "true",
+            "DJANGO_DATABASE_URL": "sqlite:///db.sqlite3",
+            "DJANGO_EMAIL_BACKEND": "ses",
+            "TRUSTED_PROXY_IPS": "127.0.0.1,::1",
+            "PUBLIC_BASE_URL": f"https://{DOMAIN}",
+            "INBOUND_SERVICE_DOMAIN": f"inbound.{DOMAIN}",
+            "BACKUP_DIRECTORY": BACKUP_DIR,
+        },
+    }
     connection = production_connection()
-
-    connection.run(f"mkdir -p {quote(PROJECT_DIR)}")
-    connection.run(f"chown {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
-    if connection.run(f"test -d {quote(PROJECT_DIR + '/.git')}", warn=True, hide=True).ok:
-        connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
-            f"remote set-url origin {quote(REPO_URL)}"
-        )
-        run_authenticated_git(
-            connection,
-            f"-c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
-            "fetch origin main --prune",
-            github_token,
-        )
-        connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} checkout main"
-        )
-        connection.run(
-            f"git -c safe.directory={quote(PROJECT_DIR)} -C {quote(PROJECT_DIR)} "
-            "reset --hard origin/main"
-        )
-    else:
-        is_empty = connection.run(
-            f'test -z "$(find {quote(PROJECT_DIR)} -mindepth 1 -maxdepth 1 -print -quit)"',
-            warn=True,
-            hide=True,
-        ).ok
-        if not is_empty:
-            raise RuntimeError(f"{PROJECT_DIR} exists and is not an empty Git checkout")
-        run_authenticated_git(
-            connection,
-            f"clone {quote(REPO_URL)} {quote(PROJECT_DIR)}",
-            github_token,
-        )
-    connection.run(f"chown -R {quote(APP_USER)}:{quote(APP_USER)} {quote(PROJECT_DIR)}")
-
-    ensure_runtime_env(connection)
-    sync_runtime_env(connection)
-    app_run(
-        connection,
-        "python3 -c "
-        + quote(
-            "import sys; "
-            "assert sys.version_info[:2] == (3, 12), "
-            "'Operational Inbox requires Python 3.12'"
-        ),
-    )
-    if connection.run(f"test -x {quote(VENV_DIR + '/bin/python')}", warn=True, hide=True).failed:
-        app_run(connection, f"python3 -m venv {quote(VENV_DIR)}")
-    app_run(connection, f"{quote(VENV_DIR + '/bin/pip')} install --upgrade pip")
-    app_run(connection, f"{quote(VENV_DIR + '/bin/pip')} install -r requirements.txt")
-
-    connection.sudo(
-        f"systemctl stop app@{PROJECT_NAME}.socket app@{PROJECT_NAME}.service {quote(MCP_SERVICE)}",
-        warn=True,
-    )
-    mcp_verified = False
+    staging = connection.run("mktemp -d", hide=True).stdout.strip()
     try:
-        try:
-            deploy_under_locks(connection)
-        finally:
-            restart_web_runtime(connection)
-        install_mcp_runtime(connection)
-        connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
-        connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}")
-        verify_mcp_runtime(connection)
-        mcp_verified = True
+        script = f"{staging}/deploy_release.py"
+        payload = f"{staging}/release.json"
+        connection.put(str(DEPLOY_DIR / "scripts" / "deploy_release.py"), remote=script)
+        connection.put(BytesIO(json.dumps(config).encode()), remote=payload)
+        connection.run(f"chmod 600 {quote(script)} {quote(payload)}", hide=True)
+        result = connection.sudo(f"python3 {quote(script)} {quote(payload)}", warn=True)
+        if result.failed:
+            raise RuntimeError(
+                "Deployment failed. Inspect the recorded release state and runtime health; "
+                "a contained schema failure requires roll-forward with deploy --recover."
+            )
     finally:
-        if not mcp_verified:
-            connection.sudo(f"systemctl reset-failed {quote(MCP_SERVICE)}", warn=True)
-            connection.sudo(f"systemctl restart {quote(MCP_SERVICE)}", warn=True)
+        connection.run(f"rm -rf -- {quote(staging)}", warn=True, hide=True)
+        connection.close()
 
 
 ns = Collection(deploy, prepare_postgresql, cutover_postgresql)

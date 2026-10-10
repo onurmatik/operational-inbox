@@ -531,13 +531,17 @@ The StageOps registry contains an `operationalinbox` app on `hetzner-stage`:
 
 The tracked [`.deploy/fabfile.py`](.deploy/fabfile.py) contract deploys only `origin/main` to
 `/srv/apps/operationalinbox`. It mints a short-lived GitHub App installation token locally,
-clones/fetches the configured private repository over HTTPS without persisting credentials on the
-host, checks out `main`, creates or reuses the Python 3.12 virtual environment, installs the frozen
-production [`requirements.txt`](requirements.txt), and safely merges only an explicit environment
-allowlist.
-It then stops the cold service, acquires every cron/deploy lock, backs up and verifies the active
-database, runs migrations, collects static files, executes `check --deploy`, and restarts the
-socket. Normal deploys do not sync `DJANGO_DATABASE_URL`; PostgreSQL preparation and the SQLite
+fetches the configured private repository over HTTPS without persisting credentials on the
+host and pins the published local SHA. One remote helper holds the deploy lock through checkout,
+configuration, dependencies, migrations, activation, and repeated live verification. Before a
+schema-changing checkout it pauses the app's cron file, drains all workload locks, stops web/MCP,
+and creates the encrypted verified backup using compatible code. A persistent systemd condition
+keeps failed releases contained; migration failure requires roll-forward. Proven migrationless
+releases have an in-place path with explicit previous-release recovery. Frozen production
+[`requirements.txt`](requirements.txt), configuration, static files, and units are updated only
+when needed. Pending migrations, ORM columns, both web health endpoints, the MCP authentication
+challenge, the deployed SHA, and each runtime are verified before cron resumes.
+Normal deploys do not sync `DJANGO_DATABASE_URL`; PostgreSQL preparation and the SQLite
 cutover use the explicit `prepare-postgresql` and `cutover-postgresql` Fabric tasks documented in
 [`.deploy/README.md`](.deploy/README.md).
 
