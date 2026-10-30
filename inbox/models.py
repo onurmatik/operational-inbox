@@ -5,12 +5,15 @@ import hmac
 import json
 import secrets
 import uuid
+from datetime import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.conf import settings
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -156,6 +159,50 @@ class OutboundControl(UUIDTimeStampedModel):
     )
     is_paused = models.BooleanField(default=False)
     paused_at = models.DateTimeField(null=True, blank=True)
+
+
+def validate_digest_timezone(value: str) -> None:
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValidationError("Choose a valid IANA timezone, such as Europe/Istanbul.") from exc
+
+
+class DigestSettings(UUIDTimeStampedModel):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="digest_settings"
+    )
+    enabled = models.BooleanField(default=False)
+    window_hours = models.PositiveSmallIntegerField(
+        default=24, validators=[MinValueValidator(1), MaxValueValidator(168)]
+    )
+    send_time = models.TimeField(default=time(9, 0))
+    timezone_name = models.CharField(
+        max_length=64, default="UTC", validators=[validate_digest_timezone]
+    )
+    next_send_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+
+class DigestDelivery(UUIDTimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SENT = "SENT", "Sent"
+        SKIPPED = "SKIPPED", "Skipped"
+
+    preference = models.ForeignKey(
+        DigestSettings, on_delete=models.CASCADE, related_name="deliveries"
+    )
+    period_start = models.DateTimeField()
+    period_end = models.DateTimeField()
+    timezone_name = models.CharField(max_length=64)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    message_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("preference", "period_end"), name="uniq_digest_period")
+        ]
 
 
 class StripeWebhookEvent(UUIDTimeStampedModel):

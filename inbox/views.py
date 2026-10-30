@@ -36,6 +36,7 @@ from sesame.views import LoginView as SesameLoginView
 
 from inbox.forms import (
     ComposeForm,
+    DigestSettingsForm,
     DomainForm,
     DraftRevisionForm,
     RetentionForm,
@@ -48,6 +49,8 @@ from inbox.models import (
     Attachment,
     AuditEvent,
     Conversation,
+    DigestDelivery,
+    DigestSettings,
     Domain,
     DomainDNSRecord,
     DomainTest,
@@ -78,6 +81,7 @@ from inbox.services.billing import (
 )
 from inbox.services.compose import send_composed_email
 from inbox.services.conversations import apply_conversation_action, mark_conversation_viewed
+from inbox.services.digests import next_digest_at
 from inbox.services.domain_entitlements import domain_capacity, select_free_primary_domain
 from inbox.services.domains import (
     DomainClaimConflict,
@@ -2080,6 +2084,24 @@ def attachment_download(request: HttpRequest, attachment_id: uuid.UUID) -> HttpR
 
 @verified_required
 def settings_view(request: HttpRequest) -> HttpResponse:
+    preference, _ = DigestSettings.objects.get_or_create(user=request.user)
+    form = DigestSettingsForm(instance=preference)
+    if request.method == "POST":
+        with transaction.atomic():
+            preference = DigestSettings.objects.select_for_update().get(pk=preference.pk)
+            form = DigestSettingsForm(request.POST, instance=preference)
+            if form.is_valid():
+                preference = form.save(commit=False)
+                if form.has_changed():
+                    preference.deliveries.filter(status=DigestDelivery.Status.PENDING).update(
+                        status=DigestDelivery.Status.SKIPPED, updated_at=timezone.now()
+                    )
+                    preference.next_send_at = (
+                        next_digest_at(preference, timezone.now()) if preference.enabled else None
+                    )
+                preference.save()
+                messages.success(request, "Digest settings saved.")
+                return redirect("settings")
     return render(
         request,
         "inbox/settings.html",
@@ -2087,6 +2109,7 @@ def settings_view(request: HttpRequest) -> HttpResponse:
             "active_nav": "settings",
             "control": get_outbound_control(request.user),
             "usage": outbound_usage(request.user),
+            "digest_form": form,
         },
     )
 

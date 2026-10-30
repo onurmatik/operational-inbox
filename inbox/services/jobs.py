@@ -20,6 +20,7 @@ from inbox.models import (
     OutboundControl,
     OutboundMessage,
 )
+from inbox.services.digests import schedule_digests, send_digest
 from inbox.services.domain_entitlements import reconcile_all_domain_capacities
 from inbox.services.domains import (
     expire_unverified_claims,
@@ -289,7 +290,7 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
 
 def schedule_work(now=None) -> int:
     now = now or timezone.now()
-    count = 0
+    count = schedule_digests(now)
     count += reconcile_all_domain_capacities(now=now)
     expire_unverified_claims()
     recover_stale_submissions(now=now)
@@ -369,7 +370,9 @@ def schedule_work(now=None) -> int:
 
 
 def _handle(job: DurableJob) -> None:
-    if job.kind == "send_outbound":
+    if job.kind == "send_digest":
+        send_digest(job.payload["delivery_id"])
+    elif job.kind == "send_outbound":
         submit_outbound(OutboundMessage.objects.get(id=job.payload["outbound_id"]))
     elif job.kind == "send_notification":
         if not send_pending_email_notification(

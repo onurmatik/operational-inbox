@@ -3,7 +3,7 @@ from __future__ import annotations
 from django import forms
 from django.core.validators import validate_email
 
-from inbox.models import Domain, RetentionPolicy, User
+from inbox.models import DigestSettings, Domain, RetentionPolicy, User
 from inbox.services.domains import normalize_hostname
 
 
@@ -188,3 +188,23 @@ class ComposeForm(StyledFormMixin, forms.Form):
             cleaned["domain"] = selected
             cleaned["from_address"] = address
         return cleaned
+
+
+class DigestSettingsForm(StyledFormMixin, forms.ModelForm):
+    class Meta:
+        model = DigestSettings
+        fields = ("enabled", "window_hours", "send_time", "timezone_name")
+        labels = {
+            "enabled": "Email me a digest",
+            "window_hours": "Look back (hours)",
+            "send_time": "Send daily at",
+            "timezone_name": "Timezone",
+        }
+        widgets = {
+            "send_time": forms.TimeInput(format="%H:%M", attrs={"type": "time"}),
+            "timezone_name": forms.TextInput(attrs={"placeholder": "Europe/Istanbul"}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._style_fields()

@@ -45,6 +45,7 @@ workflows. Agents connect to the native MCP server with explicit `read`, `write`
 ## Core capabilities
 
 - Multi-domain inbox with unlimited routed addresses per connected domain.
+- Optional daily email digest across all account domains, with configurable lookback and schedule.
 - Direct-MX and provider catch-all forwarding setup paths.
 - Searchable conversation history, attachment quarantine, and audit trail.
 - Safe outbound sending with immutable revisions and conservative retry behavior.
@@ -87,3 +88,18 @@ readable during the grace period and are disabled when it ends.
 - [Agentic integration and MCP contract](docs/agentic-integration.md)
 - [OpenAPI schema](openapi.json)
 - [Plugin package](plugins/operational-inbox)
+
+## Digest
+
+Enable **Settings → Account → Digest** to receive one email at the account address
+covering incoming messages across all accessible domains. The default is a 24-hour lookback
+at 09:00 UTC; lookback can be 1–168 hours, with a daily send time and IANA timezone.
+The digest includes sender, subject, a short preview, and a conversation link. Quarantined
+content is not included. Empty periods do not produce email. Digests are off by default.
+
+The existing `run_scheduler` command queues and delivers digests through durable jobs and the
+configured notification email backend. Run it regularly (for example, every minute) and set
+`PUBLIC_BASE_URL` to the application URL for email links. Each scheduled window is fixed for
+retries; after scheduler downtime, only the latest window is queued. Lookbacks shorter than
+24 hours leave gaps between daily windows; longer lookbacks can repeat messages. Windows use
+elapsed hours, while send times follow the selected timezone, including daylight-saving changes.
