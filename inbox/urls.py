@@ -22,6 +22,11 @@ urlpatterns = [
         name="domain_switch",
     ),
     path("app/inbox/", views.inbox_list, name="inbox"),
+    path(
+        "app/messages/<uuid:message_id>/spam-review/",
+        views.message_spam_review,
+        name="message_spam_review",
+    ),
     path("app/outbox/", views.outbox, name="outbox"),
     path("app/compose/", views.compose, name="compose"),
     path("app/outbox/control/", views.outbox_control, name="outbox_control"),

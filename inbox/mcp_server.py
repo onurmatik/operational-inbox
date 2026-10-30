@@ -17,6 +17,7 @@ from inbox.api import (
     OutboundControlInput,
     RevisionInput,
     SendInput,
+    SpamReviewInput,
     account_limits_get,
     api_domain,
     audit_list,
@@ -36,6 +37,7 @@ from inbox.api import (
     drafts_revise,
     drafts_send,
     messages_feed,
+    messages_spam_review,
     outbound_compose,
     outbound_control_get,
     outbound_control_set,
@@ -297,6 +299,7 @@ MESSAGE_FEED_ITEM_SCHEMA = _object_schema(
         "subject": {"type": "string", "maxLength": 998},
         "from_address": EMAIL_SCHEMA,
         "text_preview": _nullable({"type": "string", "maxLength": 500}),
+        "not_spam_at": _nullable(DATETIME_SCHEMA),
         "is_suspicious": {"type": "boolean"},
         "is_quarantined": {"type": "boolean"},
         "domain": _object_schema(
@@ -316,6 +319,7 @@ MESSAGE_FEED_ITEM_SCHEMA = _object_schema(
         "subject",
         "from_address",
         "text_preview",
+        "not_spam_at",
         "is_suspicious",
         "is_quarantined",
         "domain",
@@ -363,6 +367,7 @@ MESSAGE_SCHEMA = _object_schema(
         "from_address": EMAIL_SCHEMA,
         "received_at": DATETIME_SCHEMA,
         "viewed_at": _nullable(DATETIME_SCHEMA),
+        "not_spam_at": _nullable(DATETIME_SCHEMA),
         "is_suspicious": {"type": "boolean"},
         "is_quarantined": {"type": "boolean"},
         "security": SECURITY_VERDICTS_SCHEMA,
@@ -377,6 +382,7 @@ MESSAGE_SCHEMA = _object_schema(
         "from_address",
         "received_at",
         "viewed_at",
+        "not_spam_at",
         "is_suspicious",
         "is_quarantined",
         "security",
@@ -940,6 +946,40 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "review_message_spam",
+        "title": "Review message spam",
+        "description": (
+            "Mark one authorized inbound message as not spam, or undo that decision. "
+            "Preserves provider verdicts and authentication warnings; never unlocks quarantine, "
+            "trusts a sender, or sends feedback to the provider. Resolves unsent spam-only alerts."
+        ),
+        "inputSchema": _object_schema(
+            {
+                "domain_id": UUID_SCHEMA,
+                "message_id": UUID_SCHEMA,
+                "action": {"type": "string", "enum": ["not_spam", "undo"]},
+            },
+            ["domain_id", "message_id", "action"],
+        ),
+        "outputSchema": _object_schema(
+            {
+                "id": UUID_SCHEMA,
+                "changed": {"type": "boolean"},
+                "not_spam_at": _nullable(DATETIME_SCHEMA),
+                "is_suspicious": {"type": "boolean"},
+                "is_quarantined": {"type": "boolean"},
+                "security": SECURITY_VERDICTS_SCHEMA,
+            },
+            ["id", "changed", "not_spam_at", "is_suspicious", "is_quarantined", "security"],
+        ),
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    },
+    {
         "name": "apply_conversation_action",
         "title": "Organize conversation",
         "description": (
@@ -1264,6 +1304,7 @@ MCP_TOOL_SCOPES = {
     "add_conversation_tag": AccessScope.WRITE,
     "remove_conversation_tag": AccessScope.WRITE,
     "apply_conversation_action": AccessScope.WRITE,
+    "review_message_spam": AccessScope.WRITE,
     "get_domain_health": AccessScope.READ,
     "get_outbound_status": AccessScope.READ,
     "list_outbound": AccessScope.READ,
@@ -1483,6 +1524,17 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
             _uuid(arguments, "domain_id"),
             _uuid(arguments, "conversation_id"),
             _uuid(arguments, "tag_id"),
+        )
+    if name == "review_message_spam":
+        spam_action = cast(
+            Literal["not_spam", "undo"],
+            _choice(arguments, "action", {"not_spam", "undo"}, required=True),
+        )
+        return messages_spam_review(
+            request,
+            _uuid(arguments, "domain_id"),
+            _uuid(arguments, "message_id"),
+            SpamReviewInput(action=spam_action),
         )
     if name == "apply_conversation_action":
         action = cast(

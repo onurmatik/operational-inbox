@@ -345,11 +345,24 @@ def schedule_work(now=None) -> int:
     for notification in Notification.objects.filter(
         channel=Notification.Channel.EMAIL, status=Notification.Status.PENDING
     ):
-        enqueue_job(
+        job = enqueue_job(
             kind="send_notification",
             idempotency_key=f"notification:{notification.id}",
             payload={"notification_id": str(notification.id)},
             domain=notification.domain,
+        )
+        # Undo can reopen an alert after its queued delivery completed as a no-op.
+        # Reconcile on every schedule pass, including a worker finishing during Undo.
+        DurableJob.objects.filter(
+            id=job.id,
+            status__in=(DurableJob.Status.COMPLETE, DurableJob.Status.FAILED),
+        ).update(
+            status=DurableJob.Status.PENDING,
+            due_at=now,
+            leased_until=None,
+            attempts=0,
+            last_error_code="",
+            updated_at=now,
         )
         count += 1
     return count

@@ -103,6 +103,26 @@ or attachments implicitly, cross tenant boundaries, or claim an external action 
 an authoritative result. Operational Inbox does not generate reply copy. Outbound sending requires
 the exact current agent-authored revision and content hash under focused delegated `send` authority.
 
+### Review a spam false positive
+
+Use `review_message_spam` with `domain_id`, `message_id`, and `action: "not_spam"` or
+`action: "undo"`. It requires `write` scope and a writable, authorized domain. The HTTP equivalent
+is `POST /api/v1/domains/{domain_id}/messages/{message_id}/spam-review` with `{"action":"not_spam"}`.
+Both actions are idempotent; only actual transitions create audit events.
+
+`not_spam_at` records the review separately from the unchanged provider `security` verdicts.
+`is_suspicious` and security filters reflect the review while preserving SPF/DKIM/DMARC failures.
+Only inbound messages with a non-PASS spam verdict and a PASS virus verdict can be marked as not
+spam; quarantined content stays locked. This decision does not trust future mail from the sender
+or send feedback to the provider. Read the latest message state to observe a review; the feed's
+arrival checkpoint is not a stream of message updates.
+
+Unsent spam-only security notifications become `RESOLVED`; queued jobs read fresh state before
+sending. Authentication and quarantine alerts remain active. Undo restores the spam warning and
+reopens resolved notifications for scheduled delivery; already-sent alerts are not sent again.
+Audit events `message.marked_not_spam` and `message.not_spam_undone` retain the actor, time,
+provider verdicts, and resulting review state.
+
 ### Send a new email
 
 Use `send_email` with `domain_id`, `from_address`, `to_address`, `subject`, `body_text`, and a fresh

@@ -397,6 +397,7 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "add_conversation_tag",
         "remove_conversation_tag",
         "apply_conversation_action",
+        "review_message_spam",
         "get_domain_health",
         "get_outbound_status",
         "list_outbound",
@@ -1016,3 +1017,40 @@ def test_mcp_send_quota_error_exposes_only_neutral_reset_contract(
         "reset_at": "2026-09-01T00:00:00Z",
         "retryable": True,
     }
+
+
+@pytest.mark.django_db(transaction=True)
+def test_mcp_spam_review_scope_audit_and_undo(mcp_client, owner, domain, inbound_message):
+    from inbox.models import Message
+
+    inbound_message.spam_verdict = Message.Verdict.FAIL
+    inbound_message.is_suspicious = True
+    inbound_message.save()
+    args = {
+        "domain_id": str(domain.id),
+        "message_id": str(inbound_message.id),
+        "action": "not_spam",
+    }
+    read_token = oauth_access_token(owner, scope="read")
+    denied = tool_call(mcp_client, read_token, "review_message_spam", args)
+    assert denied["isError"] is True
+    inbound_message.refresh_from_db()
+    assert inbound_message.not_spam_at is None
+    write_token = oauth_access_token(owner, scope="read write")
+    result = tool_call(mcp_client, write_token, "review_message_spam", args)["structuredContent"]
+    assert result["changed"] is True
+    assert result["security"]["spam"] == "FAIL"
+    assert result["is_suspicious"] is False
+    assert result["not_spam_at"]
+    event = AuditEvent.objects.get(event_type="message.marked_not_spam")
+    assert event.actor_type == AuditEvent.ActorType.AGENT
+    assert event.metadata["oauth_client_id"]
+    feed = tool_call(mcp_client, write_token, "read_message_feed", {})
+    assert feed["structuredContent"]["items"][0]["not_spam_at"]
+    args["action"] = "undo"
+    result = tool_call(mcp_client, write_token, "review_message_spam", args)["structuredContent"]
+    assert result["is_suspicious"] is True
+    assert result["not_spam_at"] is None
+    assert AuditEvent.objects.filter(event_type="message.not_spam_undone").exists()
+    args["action"] = "invalid"
+    assert tool_call(mcp_client, write_token, "review_message_spam", args)["isError"] is True

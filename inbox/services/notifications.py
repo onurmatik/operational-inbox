@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 from django.utils import timezone
 
 from inbox.models import Domain, Message, Notification, OutboundMessage
@@ -79,10 +80,19 @@ def create_outbound_problem_notifications(
     )
 
 
+@transaction.atomic
 def send_pending_email_notification(notification: Notification) -> bool:
+    # Serialize delivery with review: always lock message before notification.
+    # Refresh the notification so queued jobs cannot send a resolved alert.
+    if notification.kind == "security_verdict":
+        message_id = notification.dedupe_key.removeprefix("security:")
+        Message.objects.select_for_update().filter(
+            domain_id=notification.domain_id, id=message_id
+        ).first()
+    notification = Notification.objects.select_for_update().get(id=notification.id)
     if notification.channel != Notification.Channel.EMAIL:
         return False
-    if notification.status == Notification.Status.SENT:
+    if notification.status in {Notification.Status.SENT, Notification.Status.RESOLVED}:
         return True
     try:
         send_mail(

@@ -33,6 +33,7 @@ the copied skill.
 - Inspect and set up domains with exact, provider-neutral DNS instructions.
 - Review and search mail across domains and routed addresses.
 - Organize conversations with tags, Star, Archive, Trash, and Restore.
+- Mark spam false positives as Not spam and Undo, with original verdicts and audit history.
 - Draft immutable reply revisions and send only the exact authorized revision.
 - Send a new one-to-one plain-text email from any address on a verified sending domain.
 - Monitor outbound delivery, including failures, bounces, and complaints.

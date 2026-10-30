@@ -77,6 +77,7 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     ensure_routing_transition_test,
 )
+from inbox.services.spam_review import SPAM_REVIEW_EVENTS, apply_spam_review, spam_review_metadata
 from inbox.services.tags import add_conversation_tag, normalize_tag, remove_conversation_tag
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,10 @@ class ConversationTagInput(Schema):
 
 class ConversationActionInput(Schema):
     action: Literal["star", "unstar", "archive", "trash", "restore"]
+
+
+class SpamReviewInput(Schema):
+    action: Literal["not_spam", "undo"]
 
 
 class ClassificationInput(Schema):
@@ -846,6 +851,7 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
         "from_address": message.from_address,
         "received_at": message.received_at,
         "viewed_at": message.viewed_at,
+        "not_spam_at": message.not_spam_at,
         "is_suspicious": message.is_suspicious,
         "is_quarantined": message.is_quarantined,
         "security": {
@@ -927,6 +933,7 @@ def _message_feed_dict(message: Message) -> dict[str, Any]:
         "subject": message.subject,
         "from_address": message.from_address,
         "text_preview": None if message.is_quarantined else message.text_body[:500],
+        "not_spam_at": message.not_spam_at,
         "is_suspicious": message.is_suspicious,
         "is_quarantined": message.is_quarantined,
         "domain": {
@@ -1799,6 +1806,43 @@ def conversations_tags_remove(
         {"conversation_id": str(conversation.id), "tag": tag_name},
     )
     return {"removed": True, "tag": tag_name}
+
+
+@api.post(
+    "/domains/{domain_id}/messages/{message_id}/spam-review",
+    auth=authenticated,
+    tags=["Messages"],
+)
+def messages_spam_review(
+    request: HttpRequest,
+    domain_id: uuid.UUID,
+    message_id: uuid.UUID,
+    payload: SpamReviewInput,
+):
+    require_scope(request, AccessScope.WRITE)
+    domain = api_writable_domain(request, domain_id)
+    with transaction.atomic():
+        message = scoped_object(Message.objects.select_for_update(), domain, message_id)
+        try:
+            changed = apply_spam_review(message, payload.action)
+        except DjangoValidationError as exc:
+            raise APIError("invalid_spam_review", exc.messages[0], status=409) from exc
+        if changed:
+            record_api_audit(
+                request,
+                domain,
+                SPAM_REVIEW_EVENTS[payload.action],
+                message,
+                spam_review_metadata(message, payload.action),
+            )
+    data = _message_dict(message)
+    return {
+        "changed": changed,
+        **{
+            key: data[key]
+            for key in ("id", "not_spam_at", "is_suspicious", "is_quarantined", "security")
+        },
+    }
 
 
 @api.post(

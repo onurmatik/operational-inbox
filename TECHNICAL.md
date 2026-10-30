@@ -195,6 +195,10 @@ writes customer records. Provider-forward domains with sending disabled are not 
   part-count, and nesting limits.
 - HTML is sanitized with an allowlist. Scripts, forms, active content, and external image loads
   are removed; attachments are never opened automatically.
+- A per-message `not_spam_at` review leaves provider verdicts unchanged. Web, API, and MCP share
+  the same reversible review service and transactional audit. Effective suspicious state keeps
+  authentication failures; unsent spam-only alerts resolve and reopen on Undo. Notification
+  delivery locks the message before the alert, so queued jobs cannot send a resolved alert.
 - A virus verdict other than `PASS` quarantines the message and its attachments. Spam or failed
   authentication verdicts remain visible as suspicious mail instead of being deleted.
 - Only a clean, unexpired attachment can receive an authorized S3 URL. The URL expires after five

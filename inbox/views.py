@@ -111,6 +111,7 @@ from inbox.services.routing_transitions import (
     cancel_routing_transition,
     ensure_routing_transition_test,
 )
+from inbox.services.spam_review import SPAM_REVIEW_EVENTS, apply_spam_review, spam_review_metadata
 from inbox.services.tags import add_conversation_tag, remove_conversation_tag
 from inbox.services.tenancy import domain_get_or_404, get_owned_domain
 
@@ -1142,6 +1143,38 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     if result.changed:
         messages.success(request, feedback[action])
     return redirect(next_url)
+
+
+@verified_required
+@require_POST
+def message_spam_review(request: HttpRequest, message_id: uuid.UUID) -> HttpResponse:
+    domain = _owned_record(request, Message.objects, id=message_id).domain
+    if denied := _domain_write_required(request, domain):
+        return denied
+    action = request.POST.get("action", "")
+    with transaction.atomic():
+        message = domain_get_or_404(
+            Message.objects.select_for_update(), domain=domain, id=message_id
+        )
+        try:
+            changed = apply_spam_review(message, action)
+        except ValidationError as exc:
+            return HttpResponse(exc.messages[0], status=409)
+        if changed:
+            _audit(
+                domain,
+                request,
+                SPAM_REVIEW_EVENTS[action],
+                message,
+                spam_review_metadata(message, action),
+            )
+    return redirect(
+        _safe_next(
+            request,
+            request.POST.get("next")
+            or reverse("conversation_detail", args=[message.conversation_id]),
+        )
+    )
 
 
 @verified_required

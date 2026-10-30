@@ -1,0 +1,9 @@
+{% if item.is_suspicious %}
+<div class="mt-4 flex flex-wrap items-center gap-3 border-l-2 border-coral-strong pl-3 text-sm text-coral-strong">
+  <span>{% if item.not_spam_at %}Sender authentication failed.{% elif item.has_auth_failure %}This message has suspicious security results.{% else %}Flagged as possible spam.{% endif %}</span>
+  {% if item.can_mark_not_spam %}<form method="post" action="{% url 'message_spam_review' item.id %}">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><button class="oi-button-secondary text-xs" name="action" value="not_spam" {% if not domain_writable %}disabled{% endif %}>Not spam</button></form>{% endif %}
+</div>
+{% endif %}
+{% if item.not_spam_at %}
+<form method="post" action="{% url 'message_spam_review' item.id %}" class="mt-4 flex flex-wrap items-center gap-3 text-xs text-muted">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><span>Marked as not spam</span><button class="oi-button-secondary text-xs" name="action" value="undo" {% if not domain_writable %}disabled{% endif %}>Undo</button></form>
+{% endif %}

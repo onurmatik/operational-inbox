@@ -625,6 +625,7 @@ class Message(DomainScopedModel):
     dmarc_verdict = models.CharField(
         max_length=10, choices=Verdict.choices, default=Verdict.UNKNOWN
     )
+    not_spam_at = models.DateTimeField(null=True, blank=True)
     is_suspicious = models.BooleanField(default=False)
     is_quarantined = models.BooleanField(default=False)
     raw_s3_key = models.CharField(max_length=1024, blank=True)
@@ -647,6 +648,28 @@ class Message(DomainScopedModel):
                 name="inbox_messa_domain__8dfcf6_idx",
             ),
         ]
+
+    @property
+    def display_recipient_addresses(self) -> list[str]:
+        """Show each address once while retaining the separate header and routing records."""
+        addresses: dict[str, str] = {}
+        for recipient in self.recipients.all():
+            addresses.setdefault(recipient.address.casefold(), recipient.address)
+        return list(addresses.values())
+
+    @property
+    def has_auth_failure(self) -> bool:
+        return self.Verdict.FAIL in (self.spf_verdict, self.dkim_verdict, self.dmarc_verdict)
+
+    @property
+    def can_mark_not_spam(self) -> bool:
+        return (
+            self.direction == self.Direction.INBOUND
+            and not self.is_quarantined
+            and self.virus_verdict == self.Verdict.PASS
+            and self.spam_verdict != self.Verdict.PASS
+            and self.not_spam_at is None
+        )
 
     @property
     def is_new(self) -> bool:
@@ -982,6 +1005,7 @@ class Notification(DomainScopedModel):
         PENDING = "PENDING", "Pending"
         SENT = "SENT", "Sent"
         FAILED = "FAILED", "Failed"
+        RESOLVED = "RESOLVED", "Resolved"
 
     conversation = models.ForeignKey(
         Conversation, on_delete=models.CASCADE, null=True, blank=True, related_name="notifications"

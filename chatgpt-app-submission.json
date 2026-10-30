@@ -140,6 +140,18 @@
         "destructive_justification": "Deletes the selected tag association, although the underlying conversation and messages remain intact."
       }
     },
+    "review_message_spam": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Records or undoes a per-message not-spam decision and resolves or reopens unsent spam-only alerts.",
+        "open_world_justification": "Updates Operational Inbox state without sending provider feedback or trusting a sender.",
+        "destructive_justification": "Reversible decision with audit history; original verdicts, authentication failures, quarantine, and message content are preserved."
+      }
+    },
     "apply_conversation_action": {
       "annotations": {
         "readOnlyHint": false,

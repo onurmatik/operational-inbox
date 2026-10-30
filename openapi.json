@@ -610,6 +610,23 @@
         ],
         "title": "SendInput",
         "type": "object"
+      },
+      "SpamReviewInput": {
+        "properties": {
+          "action": {
+            "enum": [
+              "not_spam",
+              "undo"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "SpamReviewInput",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -1626,6 +1643,60 @@
         "summary": "Classifications Override",
         "tags": [
           "Classifications"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/messages/{message_id}/spam-review": {
+      "post": {
+        "operationId": "inbox_api_messages_spam_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpamReviewInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Messages Spam Review",
+        "tags": [
+          "Messages"
         ]
       }
     },
