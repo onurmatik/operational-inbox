@@ -3,13 +3,21 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.mail import send_mail
 from django.db import transaction
+from django.urls import reverse
 from django.utils import timezone
 
 from inbox.models import Domain, Message, Notification, OutboundMessage
 
 
 def _email_notification(
-    *, domain: Domain, dedupe_key: str, kind: str, title: str, body: str, conversation=None
+    *,
+    domain: Domain,
+    dedupe_key: str,
+    kind: str,
+    title: str,
+    body: str,
+    target_path: str,
+    conversation=None,
 ) -> list[Notification]:
     notification, _ = Notification.objects.get_or_create(
         domain=domain,
@@ -19,7 +27,7 @@ def _email_notification(
             "conversation": conversation,
             "kind": kind,
             "title": title,
-            "body": body,
+            "body": f"{body}\n\n{settings.PUBLIC_BASE_URL.rstrip('/')}{target_path}",
         },
     )
     return [notification]
@@ -33,6 +41,10 @@ def create_security_notifications(message: Message) -> list[Notification]:
         conversation=message.conversation,
         dedupe_key=f"security:{message.id}",
         kind="security_verdict",
+        target_path=(
+            reverse("conversation_detail", args=[message.conversation_id])
+            + f"#message-{message.id}"
+        ),
         title=(
             "Quarantined inbound message"
             if message.is_quarantined
@@ -51,6 +63,7 @@ def create_domain_drift_notifications(domain: Domain) -> list[Notification]:
         domain=domain,
         dedupe_key=f"domain-drift:{domain.id}:{domain.last_checked_at:%Y%m%d%H}",
         kind="domain_drift",
+        target_path=reverse("domain_detail", args=[domain.id]),
         title="Domain DNS drift detected",
         body="A required DNS record no longer matches. Inbound readiness is degraded.",
     )
@@ -72,10 +85,14 @@ def create_outbound_problem_notifications(
         conversation=outbound.conversation,
         dedupe_key=f"outbound:{outbound.id}:{outbound.status}",
         kind="outbound_problem",
+        target_path=(
+            reverse("conversation_detail", args=[outbound.conversation_id])
+            + f"#outbound-{outbound.id}"
+        ),
         title=f"Outbound reply {label}",
         body=(
             f"A reply to {outbound.to_address} is {label}. "
-            "Open Outbox to inspect the attempt before deciding whether to resend."
+            "Open the message to inspect the attempt before deciding whether to resend."
         ),
     )
 
