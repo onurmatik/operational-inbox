@@ -12,8 +12,10 @@ Use Operational Inbox as the only email source for this workflow. Work only thro
 Before mailbox work, confirm that the Operational Inbox MCP tools are available.
 
 - If the tools are unavailable, do not create an OAuth client, PKCE script, API wrapper, or direct HTTP fallback.
-- Do not request a restart before checking tool availability. Current Codex tasks can load a newly configured MCP connection without restarting.
-- If the tools are unavailable immediately after setup, ask for that client's native reload or restart action, then retry once in a new task if the client requires one.
+- Do not request a restart before checking tool availability. Check authentication and tool availability in the current task separately.
+- A local skill file or configured server does not prove that this task has an authenticated MCP connection. Check the current client's native MCP status first. If it shows Authenticate or an authentication error, use its native OAuth control; a restart cannot replace consent.
+- Local Codex configuration does not automatically expose tools in a hosted chat or a delegated task. Diagnose the connection in the client and execution environment that will use it.
+- Only if authentication is complete and tools remain unavailable after setup, ask for that client's native reload or restart action, then retry once in a new task if the client requires one.
 - Otherwise direct the user to `https://operationalinbox.com/INSTALL.md` and stop.
 - Never ask the user to paste an OAuth code, access token, refresh token, password, or API key into chat.
 
@@ -26,8 +28,8 @@ installed skill implicitly.
 
 Only during initial setup, an explicit Operational Inbox update request, or connection diagnostics:
 
-1. Read the sibling `VERSION` file from this skill directory.
-2. Call `get_integration_status` with that exact value as `skill_version`.
+1. Read the sibling `VERSION` file from this skill directory. If it is missing, report an unversioned legacy copy; do not invent a version. Omit `skill_version` when calling the compatibility tool and explain that compatibility is unverified. An update still requires an explicit setup or update request.
+2. Call `get_integration_status` with that exact value as `skill_version` when `VERSION` is present; otherwise omit the argument.
 3. If `upgrade_required` is true, stop before mailbox operations and direct the user to
    `https://operationalinbox.com/INSTALL.md`. Do not download or install anything unless the user
    explicitly requested setup or an update.

@@ -28,11 +28,11 @@ enabled = true
 default_tools_approval_mode = \"writes\"
 {END_MARKER}
 """
-MACOS_BUNDLED_CODEX_PATHS = (
-    Path("/Applications/ChatGPT.app/Contents/Resources/codex"),
-    Path("/Applications/Codex.app/Contents/Resources/codex"),
-    Path.home() / "Applications" / "ChatGPT.app" / "Contents" / "Resources" / "codex",
-    Path.home() / "Applications" / "Codex.app" / "Contents" / "Resources" / "codex",
+MACOS_BUNDLED_CODEX_PATHS = tuple(
+    applications / app / "Contents" / "Resources" / executable
+    for applications in (Path("/Applications"), Path.home() / "Applications")
+    for app in ("ChatGPT.app", "Codex.app")
+    for executable in ("codex-cli/bin/codex", "codex")
 )
 
 
@@ -217,6 +217,12 @@ def main() -> int:
             raise SystemExit(
                 f"Codex already has {SERVER_NAME!r} configured with another URL; "
                 "refusing to overwrite it."
+            )
+        if existing.get("enabled") is False:
+            raise SystemExit(
+                "Operational Inbox is configured but disabled (enabled = false). "
+                "Enable it through the client's native MCP settings if intended, then rerun "
+                "setup. Configuration and authentication were left unchanged."
             )
         print(f"Operational Inbox is already configured in {args.config}.")
     else:

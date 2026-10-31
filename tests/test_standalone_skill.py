@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = REPOSITORY_ROOT / ".agents" / "skills" / "operational-inbox"
@@ -87,6 +90,10 @@ def test_one_paste_install_uses_skill_and_native_mcp() -> None:
     assert "call `get_integration_status`" in normalized_guide
     assert "Do not check for or install updates during ordinary mailbox work" in normalized_guide
     assert "Never overwrite the skill implicitly" in guide
+    assert "codex-cli/bin/codex" in guide
+    assert "restarting does not grant access" in normalized_guide
+    assert "unversioned legacy copy" in guide
+    assert "does not automatically inherit local Codex MCP configuration" in normalized_guide
     assert "do not ask the user to reload or restart anything" in normalized_guide
     assert "Do not prescribe a universal restart for other agents" in normalized_guide
     assert "Stop at the reload boundary" not in guide
@@ -215,3 +222,58 @@ def test_codex_mcp_installer_refuses_a_conflicting_server(tmp_path: Path) -> Non
     assert result.returncode != 0
     assert "refusing to overwrite" in result.stderr
     assert config.read_text(encoding="utf-8") == original
+
+
+def load_installer():
+    spec = importlib.util.spec_from_file_location("operational_inbox_installer", INSTALLER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("executable", ["codex-cli/bin/codex", "codex"])
+def test_installer_discovers_bundled_cli_after_legacy_path_cli(tmp_path, monkeypatch, executable):
+    installer = load_installer()
+    expected = Path("/Applications/ChatGPT.app/Contents/Resources") / executable
+    assert expected in installer.MACOS_BUNDLED_CODEX_PATHS
+    assert (
+        Path.home() / "Applications/Codex.app/Contents/Resources" / executable
+        in installer.MACOS_BUNDLED_CODEX_PATHS
+    )
+    legacy = tmp_path / "legacy-codex"
+    legacy.write_text(f"#!{sys.executable}\nprint('Usage: codex <prompt>')\n")
+    legacy.chmod(0o755)
+    bundle = tmp_path / "ChatGPT.app/Contents/Resources" / Path(executable).parent
+    bundle.mkdir(parents=True)
+    cli, login_log = fake_codex_cli(bundle)
+    monkeypatch.setattr(installer.shutil, "which", lambda name: str(legacy))
+    monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
+    monkeypatch.setenv("FAKE_CODEX_LOGIN_LOG", str(login_log))
+    monkeypatch.setattr(installer, "MACOS_BUNDLED_CODEX_PATHS", (cli,))
+
+    assert installer.find_codex_cli(None) == cli
+    assert not login_log.exists()
+
+
+def test_installer_preserves_disabled_server_without_starting_login(tmp_path):
+    config = tmp_path / "config.toml"
+    original = (
+        "[mcp_servers.operational-inbox]\n"
+        'url = "https://operationalinbox.com/mcp"\n'
+        "enabled = false\n"
+    )
+    config.write_text(original, encoding="utf-8")
+    cli, login_log = fake_codex_cli(tmp_path)
+    result = subprocess.run(  # noqa: S603 - fixed local interpreter and checked-in script
+        [sys.executable, str(INSTALLER), "--config", str(config), "--codex-cli", str(cli)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "FAKE_CODEX_LOGIN_LOG": str(login_log)},
+    )
+
+    assert result.returncode != 0
+    assert "configured but disabled" in result.stderr
+    assert config.read_text(encoding="utf-8") == original
+    assert not login_log.exists()

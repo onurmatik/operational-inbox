@@ -41,7 +41,10 @@ python3 ~/.agents/skills/operational-inbox/scripts/install_codex_mcp.py
 The installer preserves the rest of `~/.codex/config.toml`, refuses to replace a conflicting server,
 and configures `https://operationalinbox.com/mcp` with OAuth and write-action approvals. It then
 finds an MCP-capable Codex CLI—checking both `PATH` and the CLI bundled with the macOS Codex
-application—and starts the client's native OAuth login.
+application, including `Contents/Resources/codex-cli/bin/codex` and the older
+`Contents/Resources/codex` layout—and starts the client's native OAuth login. An existing disabled
+server is reported without enabling it or starting OAuth; enable it in the client's native MCP
+settings only if intended.
 
 For any other client, do not run the Codex installer or edit `~/.codex/config.toml`. Follow
 `https://operationalinbox.com/mcp-docs/` to add `https://operationalinbox.com/mcp` through that
@@ -70,19 +73,25 @@ secret into chat.
 ## Step 4 — Verify before any reload
 
 After OAuth completes, first check whether the `operational-inbox` MCP tools are available in the
-current task. If they are, read `~/.agents/skills/operational-inbox/VERSION` and call
-`get_integration_status` with that exact value as `skill_version`. If `upgrade_required` is true,
-return to Step 1 before mailbox operations. Never overwrite the skill implicitly. If the
-compatibility tool is unavailable on an older server, continue without treating that additive tool
-as a failure.
+current task. A configured server or readable skill file alone does not prove an authenticated
+connection. If Settings shows **Authenticate**, finish native OAuth first; restarting does not
+grant access. Verify in the same client and execution environment that will use the tools. A
+hosted chat or delegated task does not automatically inherit local Codex MCP configuration.
+
+If the tools are available, read `~/.agents/skills/operational-inbox/VERSION` and call
+`get_integration_status` with that exact value as `skill_version`. If `VERSION` is missing, report
+an unversioned legacy copy and return to Step 1 during this authorized setup; do not guess a
+version. If `upgrade_required` is true, return to Step 1 before mailbox operations.
+Never overwrite the skill implicitly. If the compatibility tool is unavailable on an older server,
+continue without treating that additive tool as a failure.
 
 Then call `list_domains` for a read-only connection check. If it succeeds, setup is complete; do
 not ask the user to reload or restart anything. Do not read mailbox content merely to prove setup
 succeeded.
 
-Only when the tools are unavailable should you ask the user to use that client's native reload or
-restart action, start a new task if the client requires it, and retry `list_domains` once. Do not
-prescribe a universal restart for other agents. If the tool is available but returns an
+Only when authentication is complete but the tools remain unavailable should you ask the user to
+use that client's native reload or restart action, start a new task if the client requires it,
+and retry `list_domains` once. Do not prescribe a universal restart for other agents. If the tool is available but returns an
 authentication error, reconnect with the client's native OAuth control instead of restarting.
 
 Outside setup, run the version check only when the user explicitly asks to update Operational Inbox
