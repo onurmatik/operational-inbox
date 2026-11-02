@@ -6,6 +6,7 @@
   <form method="post" action="{% url 'conversation_action' conversation.id %}" class="flex gap-1">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><button class="icon-button {% if conversation.starred_at %}text-gold-strong{% endif %}" name="action" value="{% if conversation.starred_at %}unstar{% else %}star{% endif %}" aria-label="{% if conversation.starred_at %}Unstar{% else %}Star{% endif %} conversation" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/star.svg" %}</span></button>{% if conversation.trashed_at or conversation.archived_at %}<button class="oi-button-secondary text-xs" name="action" value="restore" {% if not domain_writable %}disabled{% endif %}>Restore</button>{% else %}<button class="icon-button" name="action" value="archive" aria-label="Archive conversation" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/archive.svg" %}</span></button>{% endif %}{% if not conversation.trashed_at %}<button class="icon-button" name="action" value="trash" aria-label="Move to Trash" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/trash-2.svg" %}</span></button>{% endif %}</form>
   </header>
 
+  {% include "inbox/partials/handling.html" %}
   <div class="thread-timeline">
   {% for entry in timeline %}
     {% with item=entry.message outbound=entry.outbound %}

@@ -103,3 +103,21 @@ configured notification email backend. Run it regularly (for example, every minu
 retries; after scheduler downtime, only the latest window is queued. Lookbacks shorter than
 24 hours leave gaps between daily windows; longer lookbacks can repeat messages. Windows use
 elapsed hours, while send times follow the selected timezone, including daylight-saving changes.
+
+
+## Built-in agent
+
+New inbound mail is handled by the built-in agent by default. Settings → Agent controls account
+and domain modes, domain knowledge, ordered type/tag/risk rules, and follow-up timing. Existing
+mail stays unchanged until you choose **Hand to agent**. **Take over** stops pending automation
+for that conversation, including future inbound replies, until you delegate again.
+
+Decisions classifies mail; a bounded Responses call proposes actions. Server policy enforces
+sending authority. The agent can ask for missing details, reply from domain knowledge, tag,
+archive, and send one reminder. Refunds, external account changes, link browsing, and attachment
+analysis are not available. High/unknown risk, uncertain classification and API failures appear
+under **Needs review**. Missing billing details alone do not establish phishing.
+
+The service supplies `OPENAI_API_KEY`. Configure the model and daily usage limits with the
+`HANDLING_*` settings in `.env.example`; run migration `0018` and the existing scheduler.
+No inbound history is scanned or automatically answered during migration or activation.

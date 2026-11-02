@@ -253,6 +253,7 @@ def _django_request(access_token: AccessToken, request_id: str) -> HttpRequest:
         request.auth = None  # type: ignore[attr-defined]
         request.user = User.objects.get(id=user_id)
         request.mcp_oauth_client_id = access_token.client_id  # type: ignore[attr-defined]
+        request.mcp_oauth_scopes = frozenset(access_token.scopes)  # type: ignore[attr-defined]
         return request
     raise ValueError("Unsupported MCP credential type.")
 

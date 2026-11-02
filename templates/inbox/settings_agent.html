@@ -1,0 +1,27 @@
+{% extends "app_base.html" %}
+{% block title %}Agent · Operational Inbox{% endblock %}
+{% block content %}
+{% include "inbox/partials/settings_tabs.html" %}
+<div class="max-w-3xl">
+  <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+    <h1 class="font-heading text-3xl font-semibold">Agent</h1>
+    <form method="get"><select name="domain" class="oi-input" aria-label="Agent settings scope" data-submit-change><option value="">Account defaults</option>{% for item in domains %}<option value="{{ item.id }}" {% if domain.id == item.id %}selected{% endif %}>{{ item.hostname }}</option>{% endfor %}</select><button class="sr-only">Select</button></form>
+  </div>
+  <form method="post" class="space-y-6">{% csrf_token %}
+    {{ form.non_field_errors }}
+    <section class="oi-panel p-5"><label for="{{ form.mode.id_for_label }}" class="oi-label">{{ form.mode.label }}</label>{{ form.mode }}{{ form.mode.errors }}<p class="mt-2 text-xs text-muted">New mail only. Hand existing conversations to the agent individually.</p></section>
+    {% if form.knowledge %}<details class="oi-panel p-5" {% if form.knowledge.errors %}open{% endif %}><summary class="cursor-pointer font-semibold">Domain knowledge</summary><div class="mt-4"><label class="sr-only" for="{{ form.knowledge.id_for_label }}">Domain knowledge</label>{{ form.knowledge }}{{ form.knowledge.errors }}<p class="mt-2 text-xs text-muted">Product facts and support policies. Do not include secrets.</p></div></details>{% endif %}
+    <section class="oi-panel p-5">
+      <h2 class="font-heading text-lg font-semibold">Rules</h2>
+      <p class="mt-1 text-xs text-muted">First match wins. Domain rules precede account rules. Empty conditions match any value.</p>
+      {{ rules.management_form }}{{ rules.non_form_errors }}
+      {% for rule in rules %}<details class="mt-4 border-t border-line pt-4" {% if rule.errors %}open{% endif %}>
+        <summary class="cursor-pointer text-sm font-semibold">{% if rule.initial.name %}{{ forloop.counter }} · {{ rule.initial.name }}{% else %}+ Add rule{% endif %}</summary>
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">{{ rule.non_field_errors }}{% for field in rule %}<div><label for="{{ field.id_for_label }}" class="oi-label">{{ field.label }}</label>{{ field }}{{ field.errors }}{% if field.help_text %}<p class="mt-1 text-xs text-muted">{{ field.help_text }}</p>{% endif %}</div>{% endfor %}</div>
+      </details>{% endfor %}
+    </section>
+    <details class="oi-panel p-5" {% if form.followup_hours.errors %}open{% endif %}><summary class="cursor-pointer font-semibold">Follow-up</summary><div class="mt-4 space-y-4"><label class="flex items-center gap-2">{{ form.followup_enabled }} {{ form.followup_enabled.label }}</label><div><label class="oi-label" for="{{ form.followup_hours.id_for_label }}">{{ form.followup_hours.label }}</label>{{ form.followup_hours }}{{ form.followup_hours.errors }}</div></div></details>
+    <button class="oi-button-primary">Save</button>
+  </form>
+</div>
+{% endblock %}

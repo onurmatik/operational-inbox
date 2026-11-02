@@ -99,6 +99,7 @@ from inbox.services.drafts import (
     revise_draft,
 )
 from inbox.services.entitlements import can_manage_domain, for_user
+from inbox.services.handling import handling_dict
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
     enqueue_job,
@@ -809,7 +810,11 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
                 timeline.append({"outbound": item, "at": item.created_at})
         timeline.sort(key=lambda item: item["at"])
         draft = (
-            selected.reply_drafts.filter(domain=selected.domain, kind=ReplyDraft.Kind.REPLY)
+            selected.reply_drafts.filter(
+                domain=selected.domain,
+                kind=ReplyDraft.Kind.REPLY,
+                current_revision__outbound_messages__isnull=True,
+            )
             .select_related("current_revision")
             .order_by("-created_at")
             .first()
@@ -888,6 +893,9 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
     tag = request.GET.get("tag", "").strip().casefold()
     if tag:
         conversations = conversations.filter(tags__normalized_name=tag).distinct()
+    needs_review = request.GET.get("needs_review") == "1"
+    if needs_review:
+        conversations = conversations.filter(handling__status="review")
     security = request.GET.get("security", "")
     if security in {"suspicious", "quarantined"}:
         conversations = conversations.filter(
@@ -911,7 +919,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
     else:
         delivery = ""
     page = Paginator(
-        conversations.select_related("domain")
+        conversations.select_related("domain", "handling")
         .prefetch_related(
             "tags",
             Prefetch("outbound_messages", queryset=OutboundMessage.objects.order_by("-created_at")),
@@ -963,6 +971,8 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
             "pagination_query": params.urlencode(),
             "folder": folder,
             "folder_label": folders[folder],
+            "needs_review": needs_review,
+            "handling": handling_dict(selected, details=True) if selected else None,
             "conversation": selected,
             "timeline": timeline,
             "draft": draft,
@@ -985,7 +995,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
                 "status": delivery,
             },
             "statuses": OutboundMessage.Status.choices,
-            "has_active_filters": any((tag, security, recipient, delivery)),
+            "has_active_filters": any((tag, security, recipient, delivery, needs_review)),
             "compose_form": ComposeForm(
                 auto_id="compose_%s",
                 domains=domains,
@@ -1124,6 +1134,7 @@ def conversation_action(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
     }
     try:
         with transaction.atomic():
+            get_outbound_control(request.user, lock=True)
             conversation = domain_get_or_404(
                 Conversation.objects.select_for_update(),
                 domain=domain,
@@ -1195,6 +1206,7 @@ def conversation_tag(request: HttpRequest, conversation_id: uuid.UUID) -> HttpRe
     value = request.POST.get("tag", "")
     try:
         with transaction.atomic():
+            get_outbound_control(request.user, lock=True)
             conversation = domain_get_or_404(
                 Conversation.objects.select_for_update(),
                 domain=domain,

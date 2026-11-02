@@ -151,6 +151,10 @@ class ConversationActionInput(Schema):
     action: Literal["star", "unstar", "archive", "trash", "restore"]
 
 
+class HandlingInput(Schema):
+    action: Literal["handoff", "takeover"]
+
+
 class SpamReviewInput(Schema):
     action: Literal["not_spam", "undo"]
 
@@ -382,6 +386,9 @@ def handle_http_error(request: HttpRequest, exc: HttpError):
 
 
 def require_scope(request: HttpRequest, scope: str) -> None:
+    oauth_scopes = getattr(request, "mcp_oauth_scopes", None)
+    if oauth_scopes is not None and scope not in oauth_scopes:
+        raise APIError("insufficient_scope", f"Required scope: {scope}", status=403)
     auth = request.auth
     if isinstance(auth, APIToken):
         return
@@ -882,6 +889,8 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
 
 
 def _conversation_dict(conversation: Conversation, *, details: bool = False) -> dict[str, Any]:
+    from inbox.services.handling import handling_dict
+
     if conversation.trashed_at is not None:
         folder = "trash"
     elif conversation.archived_at is not None:
@@ -907,6 +916,7 @@ def _conversation_dict(conversation: Conversation, *, details: bool = False) -> 
         "new_message_count": new_message_count,
         "has_quarantined": has_quarantined,
         "last_message_at": conversation.last_message_at,
+        "handling": handling_dict(conversation, details=details),
     }
     if details:
         result["messages"] = [
@@ -1568,7 +1578,7 @@ def conversations_list(
             | Q(messages__text_body__icontains=q)
         ).distinct()
     items, next_cursor = _paginate_queryset(
-        queryset.prefetch_related("tags"),
+        queryset.select_related("domain", "handling").prefetch_related("tags"),
         cursor=cursor,
         limit=limit,
         timestamp_field="last_message_at",
@@ -1729,6 +1739,7 @@ def conversations_action(
         "restore": "conversation.restored",
     }
     with transaction.atomic():
+        get_outbound_control(domain.owner, lock=True)
         conversation = scoped_object(
             Conversation.objects.select_for_update().prefetch_related("tags"),
             domain,
@@ -2430,3 +2441,24 @@ def token_rotate(request: HttpRequest):
             "shown_once": True,
         },
     )
+
+
+@api.post(
+    "/domains/{domain_id}/conversations/{conversation_id}/handling",
+    auth=authenticated,
+    tags=["Conversations"],
+)
+def conversations_handling(
+    request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID, payload: HandlingInput
+):
+    from inbox.services.handling import set_handling
+
+    require_scope(request, AccessScope.WRITE)
+    if payload.action == "handoff":
+        require_scope(request, AccessScope.SEND)
+    domain = api_writable_domain(request, domain_id)
+    conversation = scoped_object(
+        Conversation.objects.select_related("domain__owner"), domain, conversation_id
+    )
+    set_handling(conversation, owner=domain.owner, action=payload.action)
+    return _conversation_dict(conversation, details=True)

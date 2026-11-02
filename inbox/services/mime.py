@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from email import policy
 from email.headerregistry import AddressHeader
@@ -85,6 +85,7 @@ class ParsedMIME:
     html_body: str
     attachments: tuple[ParsedAttachment, ...]
     raw_sha256: str
+    automation_headers: dict = field(default_factory=dict)
 
 
 def _addresses(message: Message, header_name: str) -> tuple[str, ...]:
@@ -207,4 +208,13 @@ def parse_mime(raw: bytes) -> ParsedMIME:
         html_body=safe_html,
         attachments=tuple(attachments),
         raw_sha256=hashlib.sha256(raw).hexdigest(),
+        automation_headers={
+            "auto_submitted": str(message.get("Auto-Submitted", "")).strip().casefold()[:80],
+            "list_id": bool(message.get("List-Id")),
+            "bulk": str(message.get("Precedence", "")).strip().casefold()
+            in {"bulk", "list", "junk"},
+            "bounce": message.get_content_type() == "multipart/report",
+            "suppress": bool(message.get("X-Auto-Response-Suppress")),
+            "empty_return_path": str(message.get("Return-Path", "")).strip() == "<>",
+        },
     )

@@ -56,6 +56,7 @@ def create_authored_draft(
 def revise_draft(
     *, draft: ReplyDraft, owner: User, subject: str, body_text: str
 ) -> ReplyDraftRevision:
+    get_outbound_control(owner, lock=True)
     locked = ReplyDraft.objects.select_for_update().select_related("domain").get(id=draft.id)
     if locked.kind != ReplyDraft.Kind.REPLY:
         raise ValidationError("Sent Compose snapshots cannot be edited as reply drafts.")
@@ -66,6 +67,9 @@ def revise_draft(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
+    from inbox.services.handling import interrupt_handling
+
+    interrupt_handling(locked.conversation)
     current_revision = locked.current_revision
     if current_revision is None:
         next_number = 1
@@ -160,6 +164,9 @@ def approve_exact_revision(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
+    from inbox.services.handling import interrupt_handling
+
+    interrupt_handling(locked.conversation)
     approval = DraftApproval.objects.filter(revision=revision).first()
     if approval is not None:
         if (
@@ -170,7 +177,9 @@ def approve_exact_revision(
             raise ValidationError("The existing approval is no longer valid.")
         existing_outbound = revision.outbound_messages.order_by("attempt_number").first()
         if existing_outbound is not None:
-            return existing_outbound
+            return _adopt_agent_send(
+                existing_outbound, OutboundMessage.AuthorizationMode.OWNER_APPROVAL
+            )
     else:
         approval = DraftApproval(
             domain=locked.domain,
@@ -180,6 +189,11 @@ def approve_exact_revision(
         )
         approval.full_clean()
         approval.save()
+    existing_outbound = revision.outbound_messages.order_by("attempt_number").first()
+    if existing_outbound is not None:
+        return _adopt_agent_send(
+            existing_outbound, OutboundMessage.AuthorizationMode.OWNER_APPROVAL
+        )
     return _outbound_for_revision(
         draft=locked,
         revision=revision,
@@ -214,9 +228,12 @@ def send_exact_revision(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
+    from inbox.services.handling import interrupt_handling
+
+    interrupt_handling(locked.conversation)
     existing = revision.outbound_messages.order_by("attempt_number").first()
     if existing is not None:
-        return existing
+        return _adopt_agent_send(existing, OutboundMessage.AuthorizationMode.DELEGATED_SCOPE)
     return _outbound_for_revision(
         draft=locked,
         revision=revision,
@@ -236,6 +253,9 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
         )
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
         raise ValidationError("Only failed or unknown sends can be resent explicitly.")
+    from inbox.services.handling import interrupt_handling
+
+    interrupt_handling(original.conversation)
     require_outbound_capacity(original.domain)
     attempt = original.revision.outbound_messages.count() + 1
     resend = OutboundMessage(
@@ -244,7 +264,11 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
         revision=original.revision,
         parent=original,
         attempt_number=attempt,
-        authorization_mode=original.authorization_mode,
+        authorization_mode=(
+            OutboundMessage.AuthorizationMode.DELEGATED_SCOPE
+            if original.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY
+            else original.authorization_mode
+        ),
         from_address=original.from_address,
         to_address=original.to_address,
         subject=original.subject,
@@ -255,3 +279,14 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
     resend.full_clean()
     resend.save()
     return resend
+
+
+def _adopt_agent_send(outbound: OutboundMessage, mode: str) -> OutboundMessage:
+    """An explicit exact-revision send can adopt a queued policy send without duplicating it."""
+    if (
+        outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY
+        and outbound.status == OutboundMessage.Status.QUEUED
+    ):
+        outbound.authorization_mode = mode
+        outbound.save(update_fields=("authorization_mode", "updated_at"))
+    return outbound

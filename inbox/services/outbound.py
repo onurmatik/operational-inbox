@@ -265,6 +265,12 @@ def recover_stale_submissions(*, now=None, stale_after_minutes: int = 10) -> int
 
 def _authorization_error(outbound: OutboundMessage) -> str:
     draft = outbound.revision.draft
+    if outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY:
+        from inbox.services.handling import authorization_error
+
+        error = authorization_error(outbound)
+        if error:
+            return error
     if draft.current_revision_id != outbound.revision_id or draft.is_stale:
         return "The exact draft revision is no longer current."
     if draft.kind == ReplyDraft.Kind.COMPOSE and (
@@ -309,6 +315,9 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
     message["To"] = outbound.to_address
     message["Subject"] = outbound.subject
     message["Message-ID"] = outbound.rfc_message_id
+    if outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY:
+        message["Auto-Submitted"] = "auto-replied"
+        message["X-Auto-Response-Suppress"] = "All"
     context = outbound.revision.draft.context_message
     if context is not None and context.rfc_message_id:
         message["In-Reply-To"] = context.rfc_message_id
@@ -320,6 +329,7 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
 
 def submit_outbound(outbound: OutboundMessage, *, ses_client: Any | None = None) -> OutboundMessage:
     with transaction.atomic():
+        get_outbound_control(outbound.domain.owner, lock=True)
         locked = (
             OutboundMessage.objects.select_for_update(of=("self", "revision__draft"))
             .select_related("domain__owner", "revision__draft")

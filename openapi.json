@@ -242,6 +242,23 @@
         "title": "EnableReceivingInput",
         "type": "object"
       },
+      "HandlingInput": {
+        "properties": {
+          "action": {
+            "enum": [
+              "handoff",
+              "takeover"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "HandlingInput",
+        "type": "object"
+      },
       "OutboundControlInput": {
         "properties": {
           "paused": {
@@ -1239,6 +1256,60 @@
         "summary": "Drafts Create Authored",
         "tags": [
           "Drafts"
+        ]
+      }
+    },
+    "/api/v1/domains/{domain_id}/conversations/{conversation_id}/handling": {
+      "post": {
+        "operationId": "inbox_api_conversations_handling",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Domain Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HandlingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "security": [
+          {
+            "SessionAuth": []
+          },
+          {
+            "ScopedBearer": []
+          }
+        ],
+        "summary": "Conversations Handling",
+        "tags": [
+          "Conversations"
         ]
       }
     },

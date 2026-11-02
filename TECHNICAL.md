@@ -206,14 +206,14 @@ writes customer records. Provider-forward domains with sending disabled are not 
 - Logs and direct API error envelopes may carry request IDs, but MCP tool content does not expose
   internal request identifiers. Neither surface includes message bodies, secrets, tenant S3 keys,
   or raw AWS details.
-- Email content and attachment metadata are untrusted input for connected agents; the server does not execute their instructions or run an internal language model.
+- Email content and attachment metadata are untrusted input for connected agents; the server never treats them as instructions; built-in model requests use scoped evidence and bounded actions.
 
 Agents connected through MCP persist their own subject and body as an exact agent-authored draft
-revision. Operational Inbox does not generate reply copy. A connection with focused `send`
+revision. The built-in agent can generate reply copy under owner-configured policy. A connection with focused `send`
 authority may queue the exact current revision without a second per-message approval prompt;
 revision ID, content hash, freshness, domain readiness, pause state, and send limits are revalidated.
 
-Operational Inbox has no internal classification, report, or agent-run runtime. The user's external agent decides triage and customer relationship actions and persists ordinary tags and exact draft revisions. Domain-health, security, and delivery issues still create deduplicated email alerts.
+Operational Inbox runs a bounded internal handling worker in addition to external MCP agents. It uses separate classification, deterministic policy and action execution services. Domain-health, security, and delivery issues still create deduplicated email alerts.
 
 Migration `0015_simplify_agent_first` snapshots retired ReportSchedule, Report, ReportItem, AgentRun, Classification, in-app notification records, and nondefault removed fields into scoped audit history before dropping their tables/fields. Original IDs and timestamps are preserved. Deprecated report/notification reads and classification overrides remain compatible; new overrides persist tags plus audit evidence. Archived content follows normalized-content retention and is excluded from ordinary audit API metadata. Stop old workers and use the normal deployment backup contract before applying this migration. Reversal restores retained snapshots; rollback after retention expiry cannot recover purged content.
 
@@ -625,3 +625,54 @@ marketing or bulk email, personal IMAP/POP replacement, CRM/work-management stat
 allowed-tag catalogs, in-app notification queues, automatic acknowledgement, autonomous external
 replies, or automatic model analysis of attachment contents. Customer DNS is verified and shown
 as exact instructions but is never modified by the application.
+
+
+## Built-in handling runtime
+
+Migration `0018_internal_agent_handling` adds `HandlingPolicy`, `ConversationHandling`,
+`HandlingRun`, `HandlingUsage`, message automation-header signals, and policy-authorized outbound
+references. It initializes account activation times without reading/classifying historical mail.
+Migration `0019_agent_send_once` additionally enforces one outbound per handling run in the database.
+These migrations do not restore the retired `0015` tables. Back up the database and stop old workers before
+migration. Deploy application and scheduler together. Roll back by disabling `HANDLING_ENABLED`
+first; do not drop authorization records while policy-authorized sends remain queued.
+
+Inbound persistence creates a uniquely keyed durable job in the same transaction. The existing
+scheduler handles new work and due reminders. A four-minute conversation lease surrounds at most
+three 30-second model requests. Generation, newest inbound, latest outbound and policy fingerprint
+are rechecked before effects. Expired worker results cannot commit over a newer lease token.
+Human sends, edits, tag changes, policy edits and takeover invalidate pending work. Once a provider
+handoff has entered SUBMITTING it cannot be recalled; ambiguous acceptance is never retried.
+
+An account policy defaults to auto; a domain policy can inherit settings while providing domain
+knowledge and higher-priority rules. All specified rule fields must match; values within a field
+are alternatives. Security restrictions and confidence thresholds are ceilings on rule authority.
+Unknown risk and confidence below 0.85 require review. High risk defaults to review; an explicit
+matching rule can tag/archive it but cannot authorize a reply. Medium risk cannot auto-send;
+explicit organization rules can archive it. Quarantine never enters a model request.
+Classification does not overwrite provider security results. Agent-produced tags cannot change
+policy selection within the same run. Policy writes are authenticated owner web actions, not MCP.
+
+`POST /api/v1/domains/{domain_id}/conversations/{conversation_id}/handling` and
+`set_conversation_handling` take `handoff` or `takeover`. Both require write; handoff additionally
+requires send. Conversation reads add an optional `handling` object. Deprecated classification
+writes retain their prior tag/audit behavior and do not grant internal agent permissions.
+
+Policy-authorized messages reuse immutable draft revisions, content hashes, account/domain limits,
+Outbox pause and SES delivery controls. They add Auto-Submitted and X-Auto-Response-Suppress headers.
+There are no arbitrary tools, browsing, attachment analysis, refunds or external system connectors.
+The agent sees only the current domain's owner-authored knowledge and this conversation. Contexts
+above 30 messages or 90 KB go to review without silently dropping older evidence.
+
+One reminder is due 72 hours after provider acceptance, followed by review 72 hours later if no
+reply arrives. The interval and reminder enablement are configurable. Failed/uncertain delivery,
+takeover, newer inbound or changed policy stops follow-up. Review and completed actions remain
+visible in conversation details; audit entries contain action metadata, never generated reply text.
+Classification/reasons follow normalized-message retention; generated bodies follow draft retention.
+
+Daily service-funded limits default to 200 model requests, 1,000,000 input tokens and 50,000 output
+tokens per account, reset at UTC midnight. Input bytes and maximum output are reserved under the
+account lock before I/O, then reconciled to reported usage. Failed/unreported calls retain the
+reservation. Limit exhaustion preserves mail and surfaces review. Requests never log keys or bodies.
+The test suite clears OPENAI_API_KEY and uses mocked model/provider calls. Run the opt-in synthetic
+evaluation command separately before enabling a production rollout; never run it on real mail.

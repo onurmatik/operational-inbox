@@ -24,3 +24,7 @@ media/
 backups/
 .superdesign/tmp/
 .superdesign/init/
+
+# Local browser verification artifacts
+.playwright-cli/
+output/playwright/

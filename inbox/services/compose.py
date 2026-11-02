@@ -68,7 +68,10 @@ def send_composed_email(
     )
     if domain.owner_id != owner.id or not owner.is_active:
         raise ValidationError("Only the active domain owner can send email.", code="send_forbidden")
-    if authorization_mode not in OutboundMessage.AuthorizationMode.values:
+    if authorization_mode not in {
+        OutboundMessage.AuthorizationMode.OWNER_APPROVAL,
+        OutboundMessage.AuthorizationMode.DELEGATED_SCOPE,
+    }:
         raise ValidationError("Select a supported send authorization.")
     try:
         idempotency_key = uuid.UUID(str(idempotency_key))

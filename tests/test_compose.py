@@ -245,7 +245,13 @@ def test_compose_worker_rejects_changed_snapshot_before_ses(owner, domain, compo
 
 
 @pytest.mark.django_db
-@pytest.mark.parametrize("authorization_mode", OutboundMessage.AuthorizationMode.values)
+@pytest.mark.parametrize(
+    "authorization_mode",
+    [
+        OutboundMessage.AuthorizationMode.OWNER_APPROVAL,
+        OutboundMessage.AuthorizationMode.DELEGATED_SCOPE,
+    ],
+)
 def test_reply_arriving_during_ses_submission_is_attached_to_compose(
     owner, domain, compose_payload, authorization_mode
 ):

@@ -30,6 +30,10 @@ import database, host, cookie, Django secret, or debug overrides from `.env-prod
 changes use the separate guarded PostgreSQL tasks below. Values containing CR/LF are rejected.
 The persistent server `.env` is mode `0600` and is updated atomically.
 
+Built-in mail handling uses the existing `OPENAI_API_KEY` from `.env-prod`. Its
+`HANDLING_*` model, confidence, enablement and daily budget settings are also in the
+runtime allowlist. Omitted settings retain the server value or application default.
+
 ## Deploy
 
 ```console

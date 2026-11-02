@@ -375,6 +375,7 @@ def _store_domain_message(
         is_quarantined=virus_verdict != Message.Verdict.PASS,
         raw_s3_key=raw_key,
         raw_sha256=parsed.raw_sha256,
+        automation_headers=parsed.automation_headers,
     )
     recipient_rows: dict[tuple[str, str], MessageRecipient] = {}
     for address in routed.recipients:
@@ -525,6 +526,9 @@ def _store_domain_message(
         },
     )
     create_security_notifications(message)
+    from inbox.services.handling import on_inbound
+
+    on_inbound(message)
     return message
 
 
@@ -665,6 +669,9 @@ def process_received_notification(
         )
         try:
             with transaction.atomic():
+                from inbox.services.outbound import get_outbound_control
+
+                get_outbound_control(routed.domain.owner, lock=True)
                 _store_domain_message(
                     routed=routed,
                     parsed=parsed,

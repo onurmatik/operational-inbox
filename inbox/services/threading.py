@@ -238,8 +238,37 @@ def reconcile_outbound_replies(outbound: OutboundMessage) -> int:
             if at is not None:
                 setattr(target, name, max(getattr(target, name) or at, at))
         target.starred_at = target.starred_at or source.starred_at
+        from inbox.models import ConversationHandling, HandlingRun
+
+        # Retain action history when SES resolves an early reply into its real thread.
+        source_runs = HandlingRun.objects.filter(conversation=source)
+        for old_run in source_runs:
+            old_run.generation = 1 + max(
+                HandlingRun.objects.filter(conversation=target).values_list(
+                    "generation", flat=True
+                ),
+                default=0,
+            )
+            old_run.conversation = target
+            old_run.status = "superseded"
+            old_run.save()
+        source_state = ConversationHandling.objects.filter(conversation=source).first()
+        if source_state and source_state.taken_over:
+            from inbox.services.handling import set_handling
+
+            set_handling(target, owner=target.domain.owner, action="takeover")
         source.delete()
     target.archived_at = None
     target.trashed_at = None
     target.save()
+    if moved:
+        from inbox.services.handling import on_inbound
+
+        newest = (
+            target.messages.filter(direction=Message.Direction.INBOUND)
+            .order_by("-received_at", "-created_at", "-id")
+            .first()
+        )
+        if newest:
+            on_inbound(newest)
     return moved

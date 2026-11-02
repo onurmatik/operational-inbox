@@ -385,6 +385,7 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
     tools = listed.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
     assert names == {
+        "set_conversation_handling",
         "get_integration_status",
         "get_account_limits",
         "list_domains",
@@ -1054,3 +1055,29 @@ def test_mcp_spam_review_scope_audit_and_undo(mcp_client, owner, domain, inbound
     assert AuditEvent.objects.filter(event_type="message.not_spam_undone").exists()
     args["action"] = "invalid"
     assert tool_call(mcp_client, write_token, "review_message_spam", args)["isError"] is True
+
+
+@pytest.mark.django_db(transaction=True)
+def test_handling_tool_requires_send_for_handoff_and_returns_optional_state(
+    mcp_client, owner, inbound_message
+):
+    arguments = {
+        "domain_id": str(inbound_message.domain_id),
+        "conversation_id": str(inbound_message.conversation_id),
+    }
+    writer = oauth_access_token(owner, scope="read write")
+    denied = tool_call(
+        mcp_client, writer, "set_conversation_handling", {**arguments, "action": "handoff"}
+    )
+    assert denied["isError"]
+    takeover = tool_call(
+        mcp_client, writer, "set_conversation_handling", {**arguments, "action": "takeover"}
+    )
+    assert takeover["structuredContent"]["handling"]["taken_over"]
+    sender = oauth_access_token(owner, scope="read write send")
+    handed = tool_call(
+        mcp_client, sender, "set_conversation_handling", {**arguments, "action": "handoff"}
+    )
+    assert handed["structuredContent"]["handling"]["status"] == "pending"
+    read = tool_call(mcp_client, writer, "get_conversation", arguments)
+    assert read["structuredContent"]["handling"]["status"] == "pending"

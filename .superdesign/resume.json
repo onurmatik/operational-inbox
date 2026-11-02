@@ -148,6 +148,16 @@
       ],
       "proposalPath": ".superdesign/simplify/proposal.html",
       "assessmentPath": ".superdesign/simplify/assessment.md"
+    },
+    "/app/settings/agent/": {
+      "targetKind": "new-ui",
+      "projectId": "04a87f91-aea0-4c8f-b358-afc8e0bbf553",
+      "activeDraftId": "9f7420a0-fedc-4394-bb0c-32fe9704ac13",
+      "sourceDraftId": "e21c2fe9-0642-4f5c-8ed6-629c410e7aac",
+      "contextFiles": [
+        "templates/inbox/settings.html"
+      ],
+      "notes": "Minimal Settings > Agent implementation follows local components and approved behavior; generated preview labels are not the product contract."
     }
   }
 }

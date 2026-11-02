@@ -93,3 +93,9 @@ def inbound_message(conversation: Conversation) -> Message:
         spf_verdict=Message.Verdict.PASS,
         dmarc_verdict=Message.Verdict.PASS,
     )
+
+
+@pytest.fixture(autouse=True)
+def no_live_agent_api(settings):
+    """The test suite must never send mailbox content to a live model endpoint."""
+    settings.OPENAI_API_KEY = ""

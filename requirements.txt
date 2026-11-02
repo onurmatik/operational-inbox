@@ -4,6 +4,7 @@ annotated-types==0.8.0
     # via pydantic
 anyio==4.14.2
     # via
+    #   httpx
     #   httpx2
     #   mcp
     #   sse-starlette
@@ -25,7 +26,10 @@ botocore==1.43.62
     #   boto3
     #   s3transfer
 certifi==2026.7.22
-    # via requests
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
 cffi==2.1.0
     # via
     #   argon2-cffi-bindings
@@ -62,10 +66,15 @@ gunicorn==23.0.0
     # via operational-inbox
 h11==0.16.0
     # via
+    #   httpcore
     #   httpcore2
     #   uvicorn
+httpcore==1.0.9
+    # via httpx
 httpcore2==2.10.0 ; sys_platform != 'emscripten'
     # via httpx2
+httpx==0.28.1
+    # via operational-inbox
 httpx2==2.10.0
     # via mcp
 httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
@@ -73,6 +82,7 @@ httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'
 idna==3.18
     # via
     #   anyio
+    #   httpx
     #   httpx2
     #   requests
 jmespath==1.1.0

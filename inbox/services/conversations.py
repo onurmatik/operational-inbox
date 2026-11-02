@@ -31,6 +31,8 @@ def mark_conversation_viewed(conversation: Conversation) -> int:
 def apply_conversation_action(
     conversation: Conversation,
     action: str,
+    *,
+    agent_action: bool = False,
 ) -> ConversationActionResult:
     now = timezone.now()
     update_fields: list[str] = []
@@ -62,6 +64,10 @@ def apply_conversation_action(
     else:
         raise ValidationError("Select a supported conversation action.")
 
+    if update_fields and not agent_action:
+        from inbox.services.handling import interrupt_handling
+
+        interrupt_handling(conversation)
     if update_fields:
         conversation.save(update_fields=(*dict.fromkeys(update_fields), "updated_at"))
     return ConversationActionResult(

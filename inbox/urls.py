@@ -1,8 +1,14 @@
 from django.urls import path
 
-from inbox import views
+from inbox import handling_views, views
 
 urlpatterns = [
+    path("app/settings/agent/", handling_views.agent_settings, name="agent_settings"),
+    path(
+        "app/conversations/<uuid:conversation_id>/handling/",
+        handling_views.conversation_handling,
+        name="conversation_handling",
+    ),
     path(
         "app/domains/<uuid:domain_id>/receiving/enable/",
         views.domain_enable_receiving,

@@ -331,6 +331,18 @@
         "open_world_justification": "Provisioning contacts managed SES infrastructure without changing customer DNS.",
         "destructive_justification": "Keeps existing sending and does not replace MX or delete messages."
       }
+    },
+    "set_conversation_handling": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": true,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Changes conversation handling ownership and may queue agent work.",
+        "open_world_justification": "Explicit handoff can generate and send replies under owner-configured policy.",
+        "destructive_justification": "Does not delete mail; takeover cancels pending automation."
+      }
     }
   },
   "test_cases": [

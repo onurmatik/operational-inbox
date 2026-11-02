@@ -336,3 +336,13 @@ LOGGING = {
     },
     "root": {"handlers": ["console"], "level": "INFO"},
 }
+
+# Service-funded inbox automation. Never include this key in API/UI responses.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+HANDLING_ENABLED = env_bool("HANDLING_ENABLED", True)
+HANDLING_DECISION_MODEL = os.getenv("HANDLING_DECISION_MODEL", "gpt-6-luna")
+HANDLING_RESPONSE_MODEL = os.getenv("HANDLING_RESPONSE_MODEL", "gpt-6-luna")
+HANDLING_DAILY_REQUESTS = int(os.getenv("HANDLING_DAILY_REQUESTS", "200"))
+HANDLING_DAILY_INPUT_TOKENS = int(os.getenv("HANDLING_DAILY_INPUT_TOKENS", "1000000"))
+HANDLING_DAILY_OUTPUT_TOKENS = int(os.getenv("HANDLING_DAILY_OUTPUT_TOKENS", "50000"))
+HANDLING_CONFIDENCE = float(os.getenv("HANDLING_CONFIDENCE", "0.85"))

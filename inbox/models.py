@@ -679,6 +679,7 @@ class Message(DomainScopedModel):
     raw_sha256 = models.CharField(max_length=64, blank=True)
     raw_purged_at = models.DateTimeField(null=True, blank=True)
     normalized_purged_at = models.DateTimeField(null=True, blank=True)
+    automation_headers = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ("received_at", "created_at")
@@ -935,6 +936,7 @@ class OutboundMessage(DomainScopedModel):
     class AuthorizationMode(models.TextChoices):
         OWNER_APPROVAL = "OWNER_APPROVAL", "Owner approval"
         DELEGATED_SCOPE = "DELEGATED_SCOPE", "Delegated send scope"
+        AGENT_POLICY = "AGENT_POLICY", "Agent policy"
 
     class Status(models.TextChoices):
         QUEUED = "QUEUED", "Queued"
@@ -951,6 +953,9 @@ class OutboundMessage(DomainScopedModel):
     )
     revision = models.ForeignKey(
         ReplyDraftRevision, on_delete=models.PROTECT, related_name="outbound_messages"
+    )
+    agent_run = models.ForeignKey(
+        "HandlingRun", on_delete=models.PROTECT, null=True, blank=True, related_name="outbound"
     )
     parent = models.ForeignKey(
         "self", on_delete=models.SET_NULL, null=True, blank=True, related_name="resends"
@@ -993,6 +998,11 @@ class OutboundMessage(DomainScopedModel):
         constraints = [
             models.UniqueConstraint(
                 fields=("revision", "attempt_number"), name="uniq_revision_send_attempt"
+            ),
+            models.UniqueConstraint(
+                fields=("agent_run",),
+                condition=Q(agent_run__isnull=False),
+                name="uniq_handling_run_send",
             ),
             models.UniqueConstraint(
                 fields=("domain", "idempotency_key"),
@@ -1199,3 +1209,108 @@ class APIToken(UUIDTimeStampedModel):
         return self.revoked_at is None and (
             self.expires_at is None or self.expires_at > timezone.now()
         )
+
+
+class HandlingPolicy(UUIDTimeStampedModel):
+    class Mode(models.TextChoices):
+        AUTO = "auto", "Auto handle"
+        DRAFT = "draft", "Draft only"
+        REVIEW = "review", "Review"
+        OFF = "off", "Off"
+        INHERIT = "inherit", "Use account settings"
+
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="handling_policies")
+    domain = models.OneToOneField(
+        Domain, on_delete=models.CASCADE, null=True, blank=True, related_name="handling_policy"
+    )
+    mode = models.CharField(max_length=12, choices=Mode.choices, default=Mode.AUTO)
+    knowledge = models.TextField(blank=True)
+    rules = models.JSONField(default=list, blank=True)
+    followup_enabled = models.BooleanField(default=True)
+    followup_hours = models.PositiveSmallIntegerField(default=72)
+    enabled_at = models.DateTimeField(default=timezone.now)
+    version = models.PositiveIntegerField(default=1)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner",), condition=Q(domain__isnull=True), name="uniq_account_handling"
+            ),
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        from inbox.services.handling_policy import validate_rules
+
+        validate_rules(self.rules)
+        if self.domain is not None and self.domain.owner_id != self.owner_id:
+            raise ValidationError("Policy and domain must belong to the same owner.")
+        if self.domain_id is None and self.mode == self.Mode.INHERIT:
+            raise ValidationError("Account settings cannot inherit.")
+        if not 1 <= self.followup_hours <= 720:
+            raise ValidationError("Follow-up must be between 1 and 720 hours.")
+        if len(self.knowledge) > 20000:
+            raise ValidationError("Domain knowledge must be 20,000 characters or fewer.")
+
+
+class ConversationHandling(DomainScopedModel):
+    class Status(models.TextChoices):
+        PENDING = "pending", "Queued"
+        RUNNING = "running", "Working"
+        WAITING = "waiting", "Waiting for reply"
+        REVIEW = "review", "Needs review"
+        DONE = "done", "Handled"
+        MANUAL = "manual", "You are handling"
+
+    conversation = models.OneToOneField(
+        Conversation, on_delete=models.CASCADE, related_name="handling"
+    )
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    generation = models.PositiveIntegerField(default=1)
+    taken_over = models.BooleanField(default=False)
+    explicit_handoff = models.BooleanField(default=False)
+    context_message = models.ForeignKey(Message, on_delete=models.CASCADE)
+    classification = models.JSONField(default=dict, blank=True)
+    reason = models.CharField(max_length=160, blank=True)
+    followup_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    lease_until = models.DateTimeField(null=True, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True)
+
+
+class HandlingRun(DomainScopedModel):
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.CASCADE, related_name="handling_runs"
+    )
+    context_message = models.ForeignKey(Message, on_delete=models.CASCADE)
+    generation = models.PositiveIntegerField()
+    phase = models.CharField(max_length=12, default="initial")
+    status = models.CharField(max_length=12, default="pending")
+    policy_fingerprint = models.CharField(max_length=64, blank=True)
+    classification = models.JSONField(default=dict, blank=True)
+    action = models.CharField(max_length=24, blank=True)
+    reason = models.CharField(max_length=160, blank=True)
+    model = models.CharField(max_length=80, blank=True)
+    prompt_version = models.CharField(max_length=32, default="handling-v1")
+    draft = models.ForeignKey(ReplyDraft, on_delete=models.SET_NULL, null=True, blank=True)
+    baseline_outbound_id = models.UUIDField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("conversation", "generation", "phase"), name="uniq_handling_run"
+            ),
+        ]
+
+
+class HandlingUsage(UUIDTimeStampedModel):
+    owner = models.ForeignKey(User, on_delete=models.CASCADE)
+    day = models.DateField()
+    requests = models.PositiveIntegerField(default=0)
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("owner", "day"), name="uniq_handling_usage_day"),
+        ]
