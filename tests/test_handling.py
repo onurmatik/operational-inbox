@@ -231,6 +231,90 @@ def test_reply_goals_use_full_context_without_starting_handling(client, ready, m
     assert not OutboundMessage.objects.exists()
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("reply_to_address", "reply@example.net"),
+        ("reply_to_address", "reply@other.example"),
+        ("spf_verdict", "FAIL"),
+        ("is_suspicious", True),
+    ],
+)
+def test_reply_goals_do_not_require_sending_authorization(client, ready, monkeypatch, field, value):
+    from inbox.services.reply_briefs import reply_composer
+
+    setattr(ready, field, value)
+    ready.save()
+    goals = [{"label": "Clarify merchant name", "instructions": "Ask for the merchant name."}]
+    suggest = Mock(return_value=goals)
+    monkeypatch.setattr(handling_model, "suggest_reply_goals", suggest)
+    client.force_login(ready.domain.owner)
+    response = client.post(
+        reverse("conversation_reply_goals", args=[ready.conversation_id]),
+        {"context_token": reply_composer(ready.conversation)["token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"goals": goals}
+    suggest.assert_called_once()
+    assert not HandlingRun.objects.exists()
+    assert not ConversationHandling.objects.exists()
+    assert not OutboundMessage.objects.exists()
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("is_quarantined", True, "Quarantined content requires review."),
+        ("virus_verdict", "FAIL", "Quarantined content requires review."),
+        ("virus_verdict", "UNKNOWN", "Quarantined content requires review."),
+        ("normalized_purged_at", "now", "Message content has expired."),
+        (
+            "automation_headers",
+            {"auto_submitted": "auto-replied"},
+            "Automated messages do not support reply suggestions.",
+        ),
+    ],
+)
+def test_reply_goals_reject_unavailable_content_without_stale_error(
+    client, ready, monkeypatch, field, value, message
+):
+    from inbox.services.reply_briefs import reply_composer
+
+    setattr(ready, field, timezone.now() if value == "now" else value)
+    ready.save()
+    suggest = Mock()
+    monkeypatch.setattr(handling_model, "suggest_reply_goals", suggest)
+    client.force_login(ready.domain.owner)
+    response = client.post(
+        reverse("conversation_reply_goals", args=[ready.conversation_id]),
+        {"context_token": reply_composer(ready.conversation)["token"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"message": message, "stale": False}
+    suggest.assert_not_called()
+
+
+def test_reply_goals_reject_changed_context_with_stale_error(client, ready, monkeypatch):
+    from inbox.services.reply_briefs import reply_composer
+
+    token = reply_composer(ready.conversation)["token"]
+    ready.text_body += " Updated request."
+    ready.save()
+    suggest = Mock()
+    monkeypatch.setattr(handling_model, "suggest_reply_goals", suggest)
+    client.force_login(ready.domain.owner)
+    response = client.post(
+        reverse("conversation_reply_goals", args=[ready.conversation_id]),
+        {"context_token": token},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["stale"] is True
+    suggest.assert_not_called()
+
+
 def test_suggestions_fail_without_hardcoded_menu(client, ready, monkeypatch):
     from inbox.services.reply_briefs import reply_composer
 

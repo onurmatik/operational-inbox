@@ -668,9 +668,13 @@
         retry.hidden = loaded;
         status.textContent = result.message || (choices.length ? "" : "Add your instructions to guide the reply.");
       } catch (failure) {
-        if (failure.payload?.stale) showError(failure.message, true);
-        else retry.hidden = false;
-        status.textContent = "Suggestions unavailable. You can write your own instructions.";
+        if (failure.payload?.stale) {
+          showError(failure.message, true);
+          status.textContent = "";
+        } else {
+          retry.hidden = false;
+          status.textContent = failure.payload?.message || "Suggestions unavailable. You can write your own instructions.";
+        }
       } finally {
         loading = false;
         goals.setAttribute("aria-busy", "false");

@@ -10,7 +10,7 @@ from inbox.models import ConversationHandling, HandlingRun, Message
 from inbox.services import handling_model as model
 from inbox.services.entitlements import can_manage_domain
 from inbox.services.handling import _evidence, _latest_outbound
-from inbox.services.handling_policy import effective_policy, no_reply, security_block
+from inbox.services.handling_policy import content_block, effective_policy, no_reply
 
 SALT = "conversation-reply-brief-v1"
 
@@ -91,8 +91,12 @@ def suggest_goals(conversation, token):
     )
     if message is None:
         raise ValidationError("There is no inbound message to reply to.")
-    if security_block(message) or no_reply(message):
-        raise ValidationError("This message requires review before preparing a reply.")
+    # Reply goals do not authorize sending or choose a recipient.
+    block = content_block(message)
+    if block:
+        raise ValidationError(block)
+    if no_reply(message):
+        raise ValidationError("Automated messages do not support reply suggestions.")
     evidence = _evidence(
         HandlingRun(conversation=conversation, context_message=message, domain=conversation.domain),
         effective_policy(conversation.domain),

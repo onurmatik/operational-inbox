@@ -133,7 +133,10 @@ def conversation_reply_goals(request, conversation_id):
     try:
         goals = suggest_goals(conversation, request.POST.get("context_token", ""))
     except ValidationError as exc:
-        return JsonResponse({"message": " ".join(exc.messages), "stale": True}, status=409)
+        stale = getattr(exc, "code", "") == "stale"
+        return JsonResponse(
+            {"message": " ".join(exc.messages), "stale": stale}, status=409 if stale else 400
+        )
     except ModelUnavailable:
         return JsonResponse(
             {"goals": [], "message": "Suggestions unavailable. Add your instructions."}

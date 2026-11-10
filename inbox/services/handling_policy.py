@@ -117,11 +117,19 @@ def save_policy(policy: HandlingPolicy) -> HandlingPolicy:
     return policy
 
 
-def security_block(message: Message) -> str:
+def content_block(message: Message) -> str:
+    """Content availability applies to both suggestions and sending."""
     if message.normalized_purged_at:
         return "Message content has expired."
     if message.is_quarantined or message.virus_verdict != Message.Verdict.PASS:
         return "Quarantined content requires review."
+    return ""
+
+
+def security_block(message: Message) -> str:
+    block = content_block(message)
+    if block:
+        return block
     if message.has_auth_failure or message.is_suspicious:
         return "Sender security checks require review."
     if (

@@ -639,6 +639,8 @@ three contextual goals on demand from Responses; it never enqueues handling mere
 Suggestions use the current thread and domain knowledge, share the daily agent budget, and
 fall back to custom instructions when unavailable. A signed, expiring context digest binds
 submission to the owner, domain, messages, policy, tags, handling generation and latest send.
+Suggestions use readable message content independently of sending authorization; a different
+Reply-To address does not block them. Sending checks still apply when the agent handles a reply.
 Changes during generation or before submission require refreshing the conversation.
 Draft-only delivery persists across subsequent inbound messages and cannot be widened by model
 output. Reply instructions cannot bypass account or risk rules, archive a conversation, or
