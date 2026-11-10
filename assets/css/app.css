@@ -254,6 +254,14 @@
   .mail-item:last-child { border-bottom: 0; padding-bottom: 0; }
   .mail-body { margin-top: 32px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; line-height: 26px; }
   .agent-draft { margin-top: 32px; padding: 16px; border: 1px solid var(--color-line); background: var(--color-paper); }
+  .reply-brief { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--color-line); }
+  .reply-goals { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0 12px; }
+  .reply-goal { min-height: 44px; padding: 8px 14px; border: 1px solid var(--color-line); border-radius: 2px; font-size: 14px; overflow-wrap: anywhere; }
+  .reply-goal[aria-pressed="true"] { border: 2px solid var(--color-forest); padding: 7px 13px; background: var(--color-paper); color: var(--color-forest); font-weight: 600; }
+  .reply-goal:focus-visible, .reply-delivery input:focus-visible { outline: 2px solid var(--color-forest); outline-offset: 3px; }
+  .reply-delivery { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; cursor: pointer; }
+  .reply-delivery input { width: 18px; height: 18px; accent-color: var(--color-forest); }
+  .reply-brief-actions { display: flex; justify-content: flex-end; gap: 16px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--color-line); }
   .thread-empty { height: 100%; display: flex; align-items: center; justify-content: center; flex-direction: column; text-align: center; padding: 24px; }
   .thread-empty > .oi-icon svg { width: 32px; height: 32px; }
   .delivery-badge { font-size: 11px; white-space: nowrap; }

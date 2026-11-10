@@ -62,7 +62,11 @@ def _enqueue(state: ConversationHandling, phase="initial") -> HandlingRun:
         conversation=state.conversation,
         generation=state.generation,
         phase=phase,
-        defaults={"domain": state.domain, "context_message": state.context_message},
+        defaults={
+            "domain": state.domain,
+            "context_message": state.context_message,
+            "reply_brief": state.reply_brief,
+        },
     )
     enqueue_job(
         kind="handle_conversation",
@@ -111,7 +115,9 @@ def on_inbound(message: Message) -> None:
 
 
 @transaction.atomic
-def set_handling(conversation: Conversation, *, owner, action: str) -> ConversationHandling:
+def set_handling(
+    conversation: Conversation, *, owner, action: str, reply_brief=None, context_token=None
+) -> ConversationHandling:
     if conversation.domain.owner_id != owner.id or not can_manage_domain(
         owner, conversation.domain
     ):
@@ -120,6 +126,13 @@ def set_handling(conversation: Conversation, *, owner, action: str) -> Conversat
         raise ValidationError("Choose handoff or takeover.")
     get_outbound_control(owner, lock=True)
     conversation = Conversation.objects.select_for_update().get(id=conversation.id)
+    if reply_brief is not None:
+        from inbox.services.reply_briefs import validate_brief, validate_context
+
+        if action != "handoff":
+            raise ValidationError("Reply instructions require a handoff.")
+        reply_brief = validate_brief(reply_brief)
+        validate_context(conversation, context_token)
     message = (
         conversation.messages.filter(direction=Message.Direction.INBOUND)
         .order_by("-received_at", "-created_at", "-id")
@@ -140,6 +153,7 @@ def set_handling(conversation: Conversation, *, owner, action: str) -> Conversat
     state.context_message = message
     state.taken_over = action == "takeover"
     state.explicit_handoff = action == "handoff"
+    state.reply_brief = reply_brief or {}
     state.status = "manual" if state.taken_over else "pending"
     state.reason = ""
     state.followup_at = None
@@ -267,6 +281,8 @@ def _evidence(run: HandlingRun, policy: dict) -> dict:
     }
     if len(json.dumps(evidence).encode()) > 90000:
         raise model.ModelUnavailable("Conversation context exceeds the agent limit.")
+    if run.reply_brief:
+        evidence["owner_reply_brief"] = run.reply_brief
     return evidence
 
 
@@ -343,10 +359,19 @@ def run_handling(run_id: str) -> None:
             return
     try:
         evidence = _evidence(run, policy)
-        classification = model.classify(run.domain.owner, evidence)
+        classification = model.classify(
+            run.domain.owner,
+            {key: value for key, value in evidence.items() if key != "owner_reply_brief"},
+        )
         action, tags, reason = resolve_action(
             policy, classification, evidence["tags"], explicit=state.explicit_handoff
         )
+        if run.reply_brief:
+            # A reply brief narrows authorization; it cannot override risk/account rules.
+            if action == "auto" and run.reply_brief["delivery"] == "draft":
+                action = "draft"
+            elif action == "archive":
+                action, reason = "review", "Reply requested; the matching rule requires archive."
         if block and action != "archive":
             action, reason = "review", block
         plan: dict[str, Any] = {
@@ -367,6 +392,8 @@ def run_handling(run_id: str) -> None:
             reason = "Automated message; no reply."
         if action in {"auto", "draft"}:
             plan = model.propose(run.domain.owner, evidence, classification, phase=run.phase)
+            if run.reply_brief and plan["action"] not in {"reply", "review"}:
+                plan["action"] = "review"
             if plan["action"] == "reply" and not model.safe_reply(
                 run.domain.owner, evidence, plan["body"]
             ):
@@ -492,7 +519,7 @@ def fail_handling(run_id: str) -> None:
             and not state.taken_over
             and run.status not in {"complete", "review", "superseded"}
         ):
-            _finish(state, run, "review", "Agent could not finish. Hand to agent to retry.")
+            _finish(state, run, "review", "Agent could not finish. Use Reply with agent to retry.")
 
 
 def schedule_handling(now=None) -> int:

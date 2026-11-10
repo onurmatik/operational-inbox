@@ -88,6 +88,247 @@ def run_initial(message):
     return state, run
 
 
+def guided_run(message, *, delivery="draft"):
+    from inbox.services.reply_briefs import reply_composer
+
+    state = set_handling(
+        message.conversation,
+        owner=message.domain.owner,
+        action="handoff",
+        reply_brief={"instructions": "Ask for the merchant description.", "delivery": delivery},
+        context_token=reply_composer(message.conversation)["token"],
+    )
+    run = HandlingRun.objects.get(conversation=message.conversation, generation=state.generation)
+    run_handling(str(run.id))
+    state.refresh_from_db()
+    run.refresh_from_db()
+    return state, run
+
+
+def test_guided_draft_cannot_send_under_auto_policy(ready):
+    state, run = guided_run(ready)
+    assert run.action == "draft" and state.status == "review"
+    assert run.draft is not None and not OutboundMessage.objects.exists()
+    evidence = handling_model.propose.call_args.args[1]
+    assert evidence["owner_reply_brief"]["instructions"] == "Ask for the merchant description."
+    assert run.reply_brief == state.reply_brief
+
+
+def test_guided_automatic_reply_uses_existing_authorization(ready):
+    _, run = guided_run(ready, delivery="auto")
+    outbound = OutboundMessage.objects.get(agent_run=run)
+    assert not authorization_error(outbound)
+
+
+@pytest.mark.parametrize("mode", ["draft", "review"])
+def test_guided_auto_cannot_expand_account_policy(ready, mode):
+    policy = account_policy(ready.domain.owner)
+    policy.mode = mode
+    save_policy(policy)
+    state, run = guided_run(ready, delivery="auto")
+    assert state.status == "review"
+    assert not OutboundMessage.objects.exists()
+    assert run.action == ("draft" if mode == "draft" else "review")
+
+
+@pytest.mark.parametrize("action", ["archive", "done"])
+def test_guided_request_cannot_silently_close_or_archive(ready, action):
+    handling_model.propose.return_value["action"] = action
+    state, _ = guided_run(ready, delivery="auto")
+    ready.conversation.refresh_from_db()
+    assert state.status == "review"
+    assert ready.conversation.archived_at is None
+    assert not OutboundMessage.objects.exists()
+
+
+def test_guided_request_respects_archive_rule_without_archiving(ready):
+    policy = account_policy(ready.domain.owner)
+    policy.rules = [{"name": "archive billing", "types": ["billing"], "action": "archive"}]
+    save_policy(policy)
+    state, _ = guided_run(ready)
+    ready.conversation.refresh_from_db()
+    assert state.status == "review" and not ready.conversation.archived_at
+    handling_model.propose.assert_not_called()
+
+
+def test_new_inbound_keeps_draft_only_choice(ready):
+    state, _ = guided_run(ready)
+    new = Message.objects.create(
+        domain=ready.domain,
+        conversation=ready.conversation,
+        direction="INBOUND",
+        from_address=ready.from_address,
+        subject=ready.subject,
+        text_body="Here is the receipt.",
+        received_at=timezone.now(),
+        virus_verdict="PASS",
+        provider_message_id="next-guided",
+    )
+    on_inbound(new)
+    state.refresh_from_db()
+    run = HandlingRun.objects.get(conversation=ready.conversation, generation=state.generation)
+    assert run.reply_brief["delivery"] == "draft"
+    run_handling(str(run.id))
+    assert not OutboundMessage.objects.exists()
+
+
+@pytest.mark.parametrize("change", ["message", "policy", "takeover", "replay"])
+def test_reply_brief_rejects_stale_context(ready, change):
+    from inbox.services.reply_briefs import reply_composer
+
+    token = reply_composer(ready.conversation)["token"]
+    if change == "message":
+        ready.text_body += " Updated request."
+        ready.save()
+    elif change == "policy":
+        policy = account_policy(ready.domain.owner)
+        policy.mode = "draft"
+        save_policy(policy)
+    else:
+        set_handling(
+            ready.conversation,
+            owner=ready.domain.owner,
+            action="takeover" if change == "takeover" else "handoff",
+        )
+    with pytest.raises(ValidationError, match="changed"):
+        set_handling(
+            ready.conversation,
+            owner=ready.domain.owner,
+            action="handoff",
+            reply_brief={"instructions": "Ask about the charge.", "delivery": "auto"},
+            context_token=token,
+        )
+
+
+def test_reply_goals_use_full_context_without_starting_handling(client, ready, monkeypatch):
+    from inbox.services.reply_briefs import reply_composer
+
+    Message.objects.create(
+        domain=ready.domain,
+        conversation=ready.conversation,
+        direction="OUTBOUND",
+        from_address="support@example.com",
+        text_body="Which merchant name appears?",
+        received_at=ready.received_at - timedelta(minutes=10),
+        provider_message_id="past-reply",
+    )
+    suggest = Mock(
+        return_value=[
+            {"label": "Clarify merchant name", "instructions": "Ask for the merchant name."}
+        ]
+    )
+    monkeypatch.setattr(handling_model, "suggest_reply_goals", suggest)
+    client.force_login(ready.domain.owner)
+    response = client.post(
+        reverse("conversation_reply_goals", args=[ready.conversation_id]),
+        {"context_token": reply_composer(ready.conversation)["token"]},
+    )
+    assert response.status_code == 200
+    assert response.json()["goals"][0]["label"] == "Clarify merchant name"
+    assert len(suggest.call_args.args[1]["messages"]) == 2
+    assert not HandlingRun.objects.exists()
+    assert not ConversationHandling.objects.exists()
+    assert not OutboundMessage.objects.exists()
+
+
+def test_suggestions_fail_without_hardcoded_menu(client, ready, monkeypatch):
+    from inbox.services.reply_briefs import reply_composer
+
+    monkeypatch.setattr(
+        handling_model, "suggest_reply_goals", Mock(side_effect=handling_model.ModelUnavailable)
+    )
+    client.force_login(ready.domain.owner)
+    response = client.post(
+        reverse("conversation_reply_goals", args=[ready.conversation_id]),
+        {"context_token": reply_composer(ready.conversation)["token"]},
+    )
+    assert response.status_code == 200 and response.json()["goals"] == []
+    assert not HandlingRun.objects.exists()
+
+
+def test_suggestions_recheck_context_after_model(ready, monkeypatch):
+    from inbox.services.reply_briefs import reply_composer, suggest_goals
+
+    def changed(*args):
+        ready.text_body = "A changed request"
+        ready.save()
+        return []
+
+    monkeypatch.setattr(handling_model, "suggest_reply_goals", changed)
+    with pytest.raises(ValidationError, match="changed"):
+        suggest_goals(ready.conversation, reply_composer(ready.conversation)["token"])
+
+
+def test_reply_goals_and_submit_are_owner_scoped(client, ready):
+    stranger = User.objects.create_user(email="stranger-goals@example.com")
+    client.force_login(stranger)
+    assert (
+        client.post(reverse("conversation_reply_goals", args=[ready.conversation_id])).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            reverse("conversation_handling", args=[ready.conversation_id]), {"action": "handoff"}
+        ).status_code
+        == 404
+    )
+
+
+def test_guided_handoff_ui_validates_and_preserves_errors(client, ready):
+    from inbox.services.reply_briefs import reply_composer
+
+    client.force_login(ready.domain.owner)
+    url = reverse("conversation_handling", args=[ready.conversation_id])
+    assert (
+        client.post(url, {"action": "handoff"}, HTTP_X_REQUESTED_WITH="XMLHttpRequest").status_code
+        == 400
+    )
+    assert not HandlingRun.objects.exists()
+    response = client.post(
+        url,
+        {
+            "action": "handoff",
+            "instructions": "Ask for the receipt reference.",
+            "delivery": "draft",
+            "context_token": reply_composer(ready.conversation)["token"],
+        },
+        HTTP_X_REQUESTED_WITH="XMLHttpRequest",
+    )
+    assert response.status_code == 200
+    assert HandlingRun.objects.get().reply_brief["delivery"] == "draft"
+
+
+@pytest.mark.parametrize(
+    "goals",
+    [
+        [{"label": "", "instructions": "Ask for reference"}],
+        [{"label": "Specific reply", "instructions": ""}],
+        [{"label": "Specific reply", "instructions": "Ask for reference"}] * 2,
+        [{"label": "Specific reply", "instructions": "Ask for reference", "send": True}],
+    ],
+)
+def test_invalid_model_reply_goals_are_rejected(ready, monkeypatch, goals):
+    import json
+
+    monkeypatch.setattr(
+        handling_model,
+        "request_model",
+        Mock(
+            return_value={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "suggest_reply_goals",
+                        "arguments": json.dumps({"goals": goals}),
+                    }
+                ]
+            }
+        ),
+    )
+    with pytest.raises(handling_model.ModelUnavailable):
+        handling_model.suggest_reply_goals(ready.domain.owner, {"messages": []})
+
+
 def test_missing_billing_details_asks_without_claiming_refund(ready):
     state, run = run_initial(ready)
     outbound = OutboundMessage.objects.get(agent_run=run)
@@ -344,7 +585,9 @@ def test_settings_and_conversation_ui(client, ready):
     assert response.status_code == 200
     assert b"Account defaults" in response.content
     response = client.get(reverse("conversation_detail", args=[ready.conversation_id]))
-    assert b"Hand to agent" in response.content
+    assert b"Reply with agent" in response.content
+    assert b"What should the reply do?" in response.content
+    assert b"Nothing is sent until you approve." in response.content
     run_initial(ready)
     response = client.get(reverse("conversation_detail", args=[ready.conversation_id]))
     assert b"Take over" in response.content and b"Billing" in response.content

@@ -6,6 +6,12 @@ from inbox.services.handling_policy import ACTIONS, RISKS, TYPES
 from inbox.services.tags import normalize_tag
 
 
+class ReplyBriefForm(forms.Form):
+    instructions = forms.CharField(max_length=2000, strip=True)
+    delivery = forms.ChoiceField(choices=[("draft", "Draft"), ("auto", "Automatic reply")])
+    context_token = forms.CharField(max_length=1000)
+
+
 class HandlingPolicyForm(forms.ModelForm):
     class Meta:
         model = HandlingPolicy

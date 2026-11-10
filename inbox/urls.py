@@ -3,6 +3,11 @@ from django.urls import path
 from inbox import handling_views, views
 
 urlpatterns = [
+    path(
+        "app/conversations/<uuid:conversation_id>/reply-goals/",
+        handling_views.conversation_reply_goals,
+        name="conversation_reply_goals",
+    ),
     path("app/settings/agent/", handling_views.agent_settings, name="agent_settings"),
     path(
         "app/conversations/<uuid:conversation_id>/handling/",

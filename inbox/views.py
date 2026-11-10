@@ -111,6 +111,7 @@ from inbox.services.outbound import (
     outbound_usage,
     set_outbound_paused,
 )
+from inbox.services.reply_briefs import reply_composer
 from inbox.services.routing_transitions import (
     begin_routing_transition,
     cancel_routing_transition,
@@ -973,6 +974,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
             "folder_label": folders[folder],
             "needs_review": needs_review,
             "handling": handling_dict(selected, details=True) if selected else None,
+            "reply_composer": reply_composer(selected) if selected else None,
             "conversation": selected,
             "timeline": timeline,
             "draft": draft,

@@ -187,12 +187,13 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         if old_message_ids:
             ConversationHandling.objects.filter(context_message_id__in=old_message_ids).update(
                 classification={},
+                reply_brief={},
                 status="review",
                 reason="Message content has expired.",
                 followup_at=None,
             )
             HandlingRun.objects.filter(context_message_id__in=old_message_ids).update(
-                classification={}, reason=""
+                classification={}, reason="", reply_brief={}
             )
             MessageRecipient.objects.filter(message_id__in=old_message_ids).delete()
         Conversation.objects.filter(domain=domain).exclude(

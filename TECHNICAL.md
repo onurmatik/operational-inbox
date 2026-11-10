@@ -633,6 +633,16 @@ Migration `0018_internal_agent_handling` adds `HandlingPolicy`, `ConversationHan
 `HandlingRun`, `HandlingUsage`, message automation-header signals, and policy-authorized outbound
 references. It initializes account activation times without reading/classifying historical mail.
 Migration `0019_agent_send_once` additionally enforces one outbound per handling run in the database.
+Migration `0020_conversation_reply_briefs` stores the owner's reply instructions and delivery
+choice on the conversation and each run. The inline Reply with agent composer requests up to
+three contextual goals on demand from Responses; it never enqueues handling merely by opening.
+Suggestions use the current thread and domain knowledge, share the daily agent budget, and
+fall back to custom instructions when unavailable. A signed, expiring context digest binds
+submission to the owner, domain, messages, policy, tags, handling generation and latest send.
+Changes during generation or before submission require refreshing the conversation.
+Draft-only delivery persists across subsequent inbound messages and cannot be widened by model
+output. Reply instructions cannot bypass account or risk rules, archive a conversation, or
+change recipients. Brief content is redacted with its context message during retention.
 These migrations do not restore the retired `0015` tables. Back up the database and stop old workers before
 migration. Deploy application and scheduler together. Roll back by disabling `HANDLING_ENABLED`
 first; do not drop authorization records while policy-authorized sends remain queued.

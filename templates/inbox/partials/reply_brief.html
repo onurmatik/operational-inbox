@@ -1,0 +1,30 @@
+<section id="reply-brief" class="reply-brief" aria-labelledby="reply-brief-title" hidden>
+  <h3 id="reply-brief-title" class="font-heading text-xl font-semibold" tabindex="-1">What should the reply do?</h3>
+  <p class="mt-1 text-sm text-muted">Suggested for this conversation</p>
+  <form method="post" action="{% url 'conversation_handling' conversation.id %}" data-reply-brief data-goals-url="{% url 'conversation_reply_goals' conversation.id %}">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="handoff">
+    <input type="hidden" name="context_token" value="{{ reply_composer.token }}">
+    <div class="reply-goals" role="group" aria-label="Reply goal" data-reply-goals>
+      <button type="button" class="reply-goal" data-custom-goal aria-pressed="true">Custom</button>
+    </div>
+    <p class="text-sm text-muted" role="status" aria-live="polite" data-goals-status></p>
+    <button type="button" class="mt-2 text-sm underline" data-retry-goals hidden>Retry suggestions</button>
+    <div class="mt-5">
+      <label for="reply-instructions" class="mb-2 block text-sm font-semibold">Instructions</label>
+      <textarea id="reply-instructions" class="oi-input py-3" name="instructions" rows="3" maxlength="2000" required placeholder="What should the agent say?"></textarea>
+    </div>
+    <fieldset class="mt-5">
+      <legend class="text-sm font-semibold">Send</legend>
+      <label class="reply-delivery"><input type="radio" name="delivery" value="draft" checked aria-describedby="reply-delivery-help">Let me review first</label>
+      {% if reply_composer.automatic_allowed %}<label class="reply-delivery"><input type="radio" name="delivery" value="auto" aria-describedby="reply-delivery-help">{% if reply_composer.followup_enabled %}Reply &amp; follow up{% else %}Reply automatically{% endif %}</label>{% endif %}
+      <p id="reply-delivery-help" class="mt-2 text-sm text-muted" data-delivery-help>Nothing is sent until you approve.</p>
+    </fieldset>
+    <p class="mt-3 text-sm text-coral-strong" role="alert" data-brief-error hidden></p>
+    <a href="{{ request.get_full_path }}" class="mt-2 text-sm underline" data-refresh-brief hidden>Refresh conversation</a>
+    <div class="reply-brief-actions">
+      <button type="button" class="oi-button-secondary" data-cancel-reply-brief>Cancel</button>
+      <button class="oi-button-primary" data-submit-reply-brief>Create draft</button>
+    </div>
+  </form>
+</section>

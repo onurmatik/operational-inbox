@@ -253,7 +253,8 @@ def reconcile_outbound_replies(outbound: OutboundMessage) -> int:
             old_run.status = "superseded"
             old_run.save()
         source_state = ConversationHandling.objects.filter(conversation=source).first()
-        if source_state and source_state.taken_over:
+        if source_state and (source_state.taken_over or source_state.reply_brief):
+            # A merged thread needs a fresh brief; never lose a draft-only restriction.
             from inbox.services.handling import set_handling
 
             set_handling(target, owner=target.domain.owner, action="takeover")

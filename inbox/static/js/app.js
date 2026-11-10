@@ -605,6 +605,120 @@
     });
   };
 
+  const initReplyBrief = () => {
+    const form = document.querySelector("[data-reply-brief]");
+    const opener = document.querySelector("[data-open-reply-brief]");
+    if (!form || !opener) return;
+    const panel = form.closest("section");
+    const goals = form.querySelector("[data-reply-goals]");
+    const custom = form.querySelector("[data-custom-goal]");
+    const instructions = form.elements.instructions;
+    const status = form.querySelector("[data-goals-status]");
+    const retry = form.querySelector("[data-retry-goals]");
+    const error = form.querySelector("[data-brief-error]");
+    const refresh = form.querySelector("[data-refresh-brief]");
+    const submit = form.querySelector("[data-submit-reply-brief]");
+    let loaded = false;
+    let loading = false;
+    let sending = false;
+    let stale = false;
+    const select = (button) => {
+      goals.querySelectorAll("button").forEach((item) => {
+        item.setAttribute("aria-pressed", String(item === button));
+      });
+    };
+    const showError = (message, changed = false) => {
+      error.textContent = message;
+      error.hidden = false;
+      if (changed) {
+        stale = true;
+        refresh.hidden = false;
+        submit.disabled = true;
+      }
+    };
+    const loadGoals = async () => {
+      if (loading || loaded || stale) return;
+      loading = true;
+      retry.hidden = true;
+      status.textContent = "Finding reply options…";
+      goals.setAttribute("aria-busy", "true");
+      try {
+        const body = new FormData();
+        body.set("context_token", form.elements.context_token.value);
+        const result = await window.OperationalInbox.request(form.dataset.goalsUrl, { method: "POST", body });
+        const choices = result.goals || [];
+        choices.forEach((goal, index) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "reply-goal";
+          button.textContent = goal.label;
+          button.setAttribute("aria-pressed", "false");
+          button.addEventListener("click", () => {
+            instructions.value = goal.instructions;
+            select(button);
+          });
+          goals.insertBefore(button, custom);
+          // Never overwrite instructions the owner entered while suggestions were loading.
+          if (index === 0 && !instructions.value.trim()) {
+            instructions.value = goal.instructions;
+            select(button);
+          }
+        });
+        loaded = !result.message;
+        retry.hidden = loaded;
+        status.textContent = result.message || (choices.length ? "" : "Add your instructions to guide the reply.");
+      } catch (failure) {
+        if (failure.payload?.stale) showError(failure.message, true);
+        else retry.hidden = false;
+        status.textContent = "Suggestions unavailable. You can write your own instructions.";
+      } finally {
+        loading = false;
+        goals.setAttribute("aria-busy", "false");
+      }
+    };
+    opener.addEventListener("click", () => {
+      panel.hidden = false;
+      opener.setAttribute("aria-expanded", "true");
+      panel.querySelector("h3").focus();
+      panel.scrollIntoView({ block: "nearest" });
+      loadGoals();
+    });
+    form.querySelector("[data-cancel-reply-brief]").addEventListener("click", () => {
+      panel.hidden = true;
+      opener.setAttribute("aria-expanded", "false");
+      opener.focus();
+    });
+    custom.addEventListener("click", () => { select(custom); instructions.focus(); });
+    instructions.addEventListener("input", () => select(custom));
+    retry.addEventListener("click", loadGoals);
+    form.addEventListener("change", () => {
+      const auto = form.elements.delivery.value === "auto";
+      submit.textContent = auto ? "Start replying" : "Create draft";
+      form.querySelector("[data-delivery-help]").textContent = auto
+        ? "Sends replies under your agent rules. You can take over anytime."
+        : "Nothing is sent until you approve.";
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (sending || stale) return;
+      sending = true;
+      submit.disabled = true;
+      error.hidden = true;
+      const label = submit.textContent;
+      submit.textContent = "Queuing…";
+      try {
+        await window.OperationalInbox.request(form.action, { method: "POST", body: new FormData(form) });
+        window.location.reload();
+      } catch (failure) {
+        showError(failure.message, Boolean(failure.payload?.stale));
+        sending = false;
+        submit.disabled = stale;
+        submit.textContent = label;
+      }
+    });
+  };
+
+  document.addEventListener("DOMContentLoaded", initReplyBrief);
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
   document.addEventListener("DOMContentLoaded", initCopyControls);

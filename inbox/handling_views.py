@@ -1,13 +1,17 @@
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 
-from inbox.handling_forms import HandlingPolicyForm, HandlingRuleFormSet
+from inbox.handling_forms import HandlingPolicyForm, HandlingRuleFormSet, ReplyBriefForm
 from inbox.models import AuditEvent, Conversation, Domain, HandlingPolicy
+from inbox.services.entitlements import can_manage_domain
 from inbox.services.handling import set_handling
+from inbox.services.handling_model import ModelUnavailable
 from inbox.services.handling_policy import account_policy, save_policy
+from inbox.services.reply_briefs import suggest_goals
 from inbox.services.tenancy import get_owned_domain
 
 
@@ -87,7 +91,51 @@ def conversation_handling(request, conversation_id):
         domain__owner=request.user,
     )
     try:
-        set_handling(conversation, owner=request.user, action=request.POST.get("action", ""))
+        if request.POST.get("action") == "handoff":
+            form = ReplyBriefForm(request.POST)
+            if not form.is_valid():
+                raise ValidationError(
+                    "Choose a reply goal or add instructions, then select delivery."
+                )
+            set_handling(
+                conversation,
+                owner=request.user,
+                action="handoff",
+                reply_brief={key: form.cleaned_data[key] for key in ("instructions", "delivery")},
+                context_token=form.cleaned_data["context_token"],
+            )
+            messages.success(request, "Reply request queued. Agent rules still apply.")
+        else:
+            set_handling(conversation, owner=request.user, action=request.POST.get("action", ""))
     except ValidationError as exc:
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse(
+                {"message": " ".join(exc.messages), "stale": getattr(exc, "code", "") == "stale"},
+                status=400,
+            )
         messages.error(request, " ".join(exc.messages))
+    else:
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return JsonResponse({"queued": True})
     return redirect("conversation_detail", conversation_id=conversation.id)
+
+
+@login_required
+@require_POST
+def conversation_reply_goals(request, conversation_id):
+    conversation = get_object_or_404(
+        Conversation.objects.select_related("domain__owner"),
+        id=conversation_id,
+        domain__owner=request.user,
+    )
+    if not can_manage_domain(request.user, conversation.domain):
+        return JsonResponse({"message": "This conversation is read-only."}, status=403)
+    try:
+        goals = suggest_goals(conversation, request.POST.get("context_token", ""))
+    except ValidationError as exc:
+        return JsonResponse({"message": " ".join(exc.messages), "stale": True}, status=409)
+    except ModelUnavailable:
+        return JsonResponse(
+            {"goals": [], "message": "Suggestions unavailable. Add your instructions."}
+        )
+    return JsonResponse({"goals": goals})
