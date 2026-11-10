@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load static %}
 {% block body %}
-<div class="app-shell">
+<div class="app-shell {% block app_shell_class %}{% endblock %}">
   <button id="sidebar-backdrop" type="button" class="fixed inset-0 z-40 hidden bg-ink/20 lg:hidden" aria-label="Close navigation"></button>
   <aside id="app-sidebar" class="fixed inset-y-0 left-0 z-50 hidden w-56 flex-col border-r border-line bg-white lg:flex">
     <a href="{% url 'inbox' %}" class="flex h-14 shrink-0 items-center gap-3 border-b border-line px-4 font-heading text-[17px] font-semibold tracking-tight"><img src="{% static 'img/logo.svg' %}" alt="" class="size-7"><span>Operational Inbox</span></a>

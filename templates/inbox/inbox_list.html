@@ -1,5 +1,6 @@
 {% extends "app_base.html" %}
 {% block title %}Conversations · Operational Inbox{% endblock %}
+{% block app_shell_class %}conversation-app{% endblock %}
 {% block main_class %}conversation-workspace{% if conversation %} has-selection{% endif %}{% endblock %}
 {% block toolbar %}
   <h1 class="workspace-title font-heading text-lg font-semibold">Conversations</h1>

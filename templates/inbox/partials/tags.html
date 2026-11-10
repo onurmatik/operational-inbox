@@ -1,0 +1,20 @@
+<section class="thread-tags" aria-label="Conversation tags">
+  {% for tag in conversation.tags.all %}
+  <form method="post" action="{% url 'conversation_tag' conversation.id %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+    <input type="hidden" name="operation" value="remove">
+    <input type="hidden" name="tag" value="{{ tag.name }}">
+    <button class="thread-tag" {% if not domain_writable %}disabled{% endif %} {% if tag.normalized_name|slice:':6' == 'agent:' %}aria-label="Remove agent tag {{ tag.name|slice:'6:' }}"><span class="oi-icon" aria-hidden="true">{% include 'icons/bot.svg' %}</span>{{ tag.name|slice:'6:' }}{% else %}aria-label="Remove tag {{ tag.name }}">#{{ tag.name }}{% endif %}<span aria-hidden="true">×</span></button>
+  </form>
+  {% endfor %}
+  {% if domain_writable %}
+  <form method="post" action="{% url 'conversation_tag' conversation.id %}" class="thread-tag-add">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.get_full_path }}">
+    <label class="sr-only" for="thread-tag">Add tag</label>
+    <input id="thread-tag" class="oi-input" name="tag" maxlength="64" placeholder="Add tag" required>
+    <button class="oi-button-secondary">Add</button>
+  </form>
+  {% endif %}
+</section>

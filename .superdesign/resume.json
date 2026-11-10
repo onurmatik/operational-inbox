@@ -118,11 +118,11 @@
       "drafts": {
         "e21c2fe9-0642-4f5c-8ed6-629c410e7aac": {
           "title": "Refined Operational Inbox Preview",
-          "visualDirection": "Conversations-first list and readable thread; two main destinations; secondary agent setup",
-          "currentVersion": 9
+          "visualDirection": "Existing Conversations UI with independent scroll areas, expanded tags, agent icons, and a resizable message/agent split",
+          "currentVersion": 11
         }
       },
-      "updatedAt": "2026-10-09T12:28:09.834136+00:00",
+      "updatedAt": "2026-11-10T12:50:36.899706+00:00",
       "baselineVersion": 3,
       "baselineContextFiles": [
         ".superdesign/simplify/design-system.md",

@@ -605,6 +605,74 @@
     });
   };
 
+  const initThreadSplit = () => {
+    const split = document.querySelector("[data-thread-split]");
+    const divider = split?.querySelector("[data-thread-divider]");
+    if (!divider) return;
+
+    const storageKey = "operational-inbox.thread-message-share";
+    let requestedShare = 0.6;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved !== null && Number.isFinite(Number(saved))) requestedShare = Number(saved);
+    } catch { /* Panel resizing also works when storage is unavailable. */ }
+
+    const render = () => {
+      const available = split.clientHeight - divider.offsetHeight;
+      if (available <= 0) return;
+      const minimum = Math.min(0.4, Math.max(0.25, 160 / available));
+      const share = Math.max(minimum, Math.min(1 - minimum, requestedShare));
+      const percent = Math.round(share * 100);
+      split.style.setProperty("--thread-message-share", share);
+      split.style.setProperty("--thread-interaction-share", 1 - share);
+      divider.setAttribute("aria-valuemin", Math.round(minimum * 100));
+      divider.setAttribute("aria-valuemax", Math.round((1 - minimum) * 100));
+      divider.setAttribute("aria-valuenow", percent);
+      divider.setAttribute("aria-valuetext", `Messages ${percent}%, agent ${100 - percent}%`);
+    };
+    const setShare = (value) => {
+      requestedShare = Math.max(0.25, Math.min(0.75, value));
+      render();
+    };
+    const save = () => {
+      try { localStorage.setItem(storageKey, requestedShare); } catch { /* Optional preference. */ }
+    };
+    divider.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      divider.focus({ preventScroll: true });
+      divider.setPointerCapture(event.pointerId);
+      split.classList.add("is-resizing");
+    });
+    divider.addEventListener("pointermove", (event) => {
+      if (!divider.hasPointerCapture(event.pointerId)) return;
+      const available = split.clientHeight - divider.offsetHeight;
+      if (available <= 0) return;
+      setShare((event.clientY - split.getBoundingClientRect().top - divider.offsetHeight / 2) / available);
+    });
+    const finishResize = (event) => {
+      if (!divider.hasPointerCapture(event.pointerId)) return;
+      divider.releasePointerCapture(event.pointerId);
+      split.classList.remove("is-resizing");
+      save();
+    };
+    divider.addEventListener("pointerup", finishResize);
+    divider.addEventListener("pointercancel", finishResize);
+    divider.addEventListener("lostpointercapture", () => split.classList.remove("is-resizing"));
+    divider.addEventListener("keydown", (event) => {
+      if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const current = Number(divider.getAttribute("aria-valuenow")) / 100;
+      const step = event.shiftKey ? 0.1 : 0.025;
+      setShare(event.key === "Home" ? 0.25 : event.key === "End" ? 0.75
+        : current + (event.key === "ArrowUp" ? -step : step));
+      save();
+    });
+    requestedShare = Math.max(0.25, Math.min(0.75, requestedShare));
+    new ResizeObserver(render).observe(split);
+    render();
+  };
+
   const initReplyBrief = () => {
     const form = document.querySelector("[data-reply-brief]");
     const opener = document.querySelector("[data-open-reply-brief]");
@@ -683,14 +751,16 @@
     opener.addEventListener("click", () => {
       panel.hidden = false;
       opener.setAttribute("aria-expanded", "true");
-      panel.querySelector("h3").focus();
-      panel.scrollIntoView({ block: "nearest" });
+      panel.querySelector("h3").focus({ preventScroll: true });
+      const interaction = panel.closest(".thread-interaction");
+      if (interaction) interaction.scrollTop = 0;
+      else panel.scrollIntoView({ block: "nearest" });
       loadGoals();
     });
     form.querySelector("[data-cancel-reply-brief]").addEventListener("click", () => {
       panel.hidden = true;
       opener.setAttribute("aria-expanded", "false");
-      opener.focus();
+      opener.focus({ preventScroll: true });
     });
     custom.addEventListener("click", () => { select(custom); instructions.focus(); });
     instructions.addEventListener("input", () => select(custom));
@@ -722,6 +792,7 @@
     });
   };
 
+  document.addEventListener("DOMContentLoaded", initThreadSplit);
   document.addEventListener("DOMContentLoaded", initReplyBrief);
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);

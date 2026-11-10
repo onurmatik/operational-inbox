@@ -214,6 +214,9 @@
   .oi-icon svg { width: 18px; height: 18px; stroke-width: 1.8; }
   .app-shell { min-height: 100dvh; }
   .app-main { min-width: 0; }
+  .conversation-app { height: 100dvh; min-height: 0; overflow: hidden; }
+  .conversation-app .app-main { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }
+  .conversation-app .app-toolbar { flex-shrink: 0; }
   .app-nav { display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 0 16px; color: var(--color-muted); }
   .app-nav:hover { background: var(--color-paper); color: var(--color-ink); }
   .app-nav-active, .app-nav-active:hover { background: var(--color-forest); color: white; font-weight: 600; }
@@ -227,7 +230,7 @@
   .workspace-search .oi-input { min-height: 36px; }
   .search-icon { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); color: var(--color-muted); pointer-events: none; }
   .domain-filter { width: 132px; flex-shrink: 0; }
-  .conversation-workspace { display: flex; flex-direction: column; height: calc(100dvh - 56px); min-height: 0; }
+  .conversation-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
   .conversation-tabs { height: 44px; display: flex; flex-shrink: 0; align-items: stretch; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--color-line); background: white; font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
   .conversation-tabs > a { display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--color-muted); }
   .conversation-tabs > a[aria-current] { border-color: var(--color-forest); color: var(--color-forest); font-weight: 600; }
@@ -238,13 +241,31 @@
   .more-views > div > a { display: block; padding: 10px; }
   .workspace-filters { margin-left: auto; }
   .workspace-filters > form { right: 0; width: 300px; padding: 16px; max-height: calc(100dvh - 180px); overflow: auto; }
-  .conversation-columns { display: flex; flex: 1; min-height: 0; }
-  .conversation-list { width: 400px; flex-shrink: 0; border-right: 1px solid var(--color-line); overflow-y: auto; background: white; }
+  .conversation-columns { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+  .conversation-list { width: 400px; flex-shrink: 0; min-height: 0; border-right: 1px solid var(--color-line); overflow-y: auto; overscroll-behavior: contain; background: white; }
   .conversation-row { display: block; padding: 16px; border-bottom: 1px solid var(--color-line); border-left: 3px solid transparent; }
   .conversation-row:hover { background: var(--color-paper); }
   .conversation-row.selected { background: var(--color-paper); border-left-color: var(--color-forest); }
-  .conversation-detail { flex: 1; min-width: 0; overflow-y: auto; background: white; }
-  .thread-content { padding: 48px; max-width: 800px; margin: 0 auto; }
+  .conversation-detail { flex: 1; min-width: 0; min-height: 0; overflow: hidden; background: white; }
+  .thread-split { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .thread-messages { flex: var(--thread-message-share, 3) 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .thread-interaction { flex: var(--thread-interaction-share, 2) 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .thread-content { width: 100%; padding: 48px; max-width: 800px; margin: 0 auto; }
+  .thread-interaction .thread-content { padding-top: 20px; padding-bottom: 24px; }
+  .thread-interaction .thread-content > :first-child { margin-top: 0; }
+  .thread-divider { display: flex; flex: 0 0 12px; align-items: center; justify-content: center; border-block: 1px solid var(--color-line); background: var(--color-paper); cursor: row-resize; touch-action: none; }
+  .thread-divider::after { content: ""; width: 36px; height: 2px; border-radius: 2px; background: var(--color-line-strong); }
+  .thread-divider:hover::after, .thread-divider:focus-visible::after { background: var(--color-forest); }
+  .thread-divider:focus-visible { outline-offset: -2px; }
+  .thread-split.is-resizing, .thread-split.is-resizing * { cursor: row-resize; user-select: none; }
+  .thread-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 16px; }
+  .thread-tag { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; max-width: 100%; padding: 4px 8px; border: 1px solid var(--color-line); color: var(--color-muted); font-size: 12px; overflow-wrap: anywhere; }
+  .thread-tag:disabled { cursor: not-allowed; }
+  .thread-tags > form { min-width: 0; max-width: 100%; }
+  .thread-tag .oi-icon svg { width: 14px; height: 14px; }
+  .thread-tags .thread-tag-add { display: flex; flex: 1 1 160px; gap: 6px; max-width: 240px; }
+  .thread-tag-add .oi-input { min-height: 32px; min-width: 0; font-size: 12px; }
+  .thread-tag-add .oi-button-secondary { flex-shrink: 0; min-height: 32px; padding-inline: 10px; font-size: 12px; }
   .thread-titlebar { display: flex; align-items: flex-start; gap: 12px; }
   .thread-titlebar .icon-button { width: 32px; height: 32px; border: 1px solid var(--color-line); }
   .thread-timeline { margin-top: 16px; }
@@ -286,13 +307,14 @@
   .new-email-button { min-height: 44px; padding: 0 10px; font-size: 12px; }
   .workspace-search .oi-input { min-height: 44px; }
   .oi-button-primary, .oi-button-secondary, .oi-input { min-height: 44px; }
-  .conversation-workspace { height: calc(100dvh - 124px); }
   .conversation-list { width: 100%; border-right: 0; }
   .conversation-detail { display: none; }
   .has-selection .conversation-list { display: none; }
   .has-selection .conversation-detail { display: block; }
   .has-selection .conversation-tabs { display: none; }
   .thread-content { padding: 24px 20px; }
+  .thread-divider { flex-basis: 20px; }
+  .thread-tag, .thread-tag-add .oi-input, .thread-tag-add .oi-button-secondary { min-height: 44px; }
   .thread-titlebar { display: grid; grid-template-columns: 1fr auto; }
   .thread-titlebar h2 { grid-row: 2; grid-column: 1 / -1; margin-top: 12px; }
   .thread-titlebar .icon-button { width: 44px; height: 44px; border: 0; }

@@ -1,4 +1,6 @@
-<div class="thread-content">
+<div class="thread-split" data-thread-split>
+  <section id="thread-messages" class="thread-messages" aria-label="Messages" tabindex="0">
+  <div class="thread-content">
   {% if not domain_writable %}<p class="mb-3 text-xs text-gold-strong">Read-only</p>{% endif %}
   <header class="thread-titlebar">
     <a href="{{ back_url }}" class="icon-button lg:hidden" aria-label="Back to conversations"><span class="oi-icon">{% include "icons/arrow-left.svg" %}</span></a>
@@ -6,7 +8,7 @@
   <form method="post" action="{% url 'conversation_action' conversation.id %}" class="flex gap-1">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><button class="icon-button {% if conversation.starred_at %}text-gold-strong{% endif %}" name="action" value="{% if conversation.starred_at %}unstar{% else %}star{% endif %}" aria-label="{% if conversation.starred_at %}Unstar{% else %}Star{% endif %} conversation" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/star.svg" %}</span></button>{% if conversation.trashed_at or conversation.archived_at %}<button class="oi-button-secondary text-xs" name="action" value="restore" {% if not domain_writable %}disabled{% endif %}>Restore</button>{% else %}<button class="icon-button" name="action" value="archive" aria-label="Archive conversation" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/archive.svg" %}</span></button>{% endif %}{% if not conversation.trashed_at %}<button class="icon-button" name="action" value="trash" aria-label="Move to Trash" {% if not domain_writable %}disabled{% endif %}><span class="oi-icon">{% include "icons/trash-2.svg" %}</span></button>{% endif %}</form>
   </header>
 
-  {% include "inbox/partials/handling.html" %}
+  {% include "inbox/partials/tags.html" %}
   <div class="thread-timeline">
   {% for entry in timeline %}
     {% with item=entry.message outbound=entry.outbound %}
@@ -22,10 +24,19 @@
     {% endwith %}
   {% endfor %}
   </div>
+  </div>
+  </section>
+  {% if handling or reply_composer or draft.current_revision %}
+  <div class="thread-divider" role="separator" tabindex="0" aria-label="Resize message and agent panels" aria-orientation="horizontal" aria-controls="thread-messages thread-interaction" aria-valuemin="25" aria-valuemax="75" aria-valuenow="60" data-thread-divider></div>
+  <section id="thread-interaction" class="thread-interaction" aria-label="Agent interaction" tabindex="0">
+  <div class="thread-content">
+  {% include "inbox/partials/handling.html" %}
   {% if reply_composer %}{% include "inbox/partials/reply_brief.html" %}{% endif %}
   {% if draft.current_revision %}
     <details class="agent-draft"><summary class="flex cursor-pointer items-center gap-2 text-sm font-semibold"><span class="oi-icon">{% include 'icons/bot.svg' %}</span>Review reply draft{% if draft.is_stale %} · Needs revision{% endif %}</summary><div class="mt-4"><p class="font-semibold">{{ draft.current_revision.subject }}</p><p class="mail-body">{{ draft.current_revision.body_text }}</p><details class="mt-4"><summary class="cursor-pointer text-xs text-muted">Edit draft</summary><form method="post" action="{% url 'draft_revise' draft.id %}" class="mt-3 oi-form">{% csrf_token %}{{ draft_form.as_p }}<button class="oi-button-secondary mt-4" {% if not domain_writable %}disabled{% endif %}>Save revision</button></form></details><button type="button" class="oi-button-primary mt-4" data-open-dialog="exact-approval-dialog" {% if draft.is_stale or not domain_writable %}disabled{% endif %}>Review and send</button></div></details>
     <dialog id="exact-approval-dialog" class="oi-dialog" aria-labelledby="approval-title"><div class="dialog-header"><h2 id="approval-title" class="font-heading text-xl font-semibold">Send this reply?</h2><button type="button" class="icon-button" data-close-dialog aria-label="Close"><span class="oi-icon">{% include 'icons/x.svg' %}</span></button></div><form method="post" action="{% url 'draft_approve' draft.id %}" class="p-6">{% csrf_token %}<input type="hidden" name="revision_id" value="{{ draft.current_revision.id }}"><input type="hidden" name="content_hash" value="{{ draft.current_revision.content_hash }}"><p class="text-sm font-semibold">{{ draft.current_revision.subject }}</p><p class="mail-body">{{ draft.current_revision.body_text }}</p><p class="mb-4 text-xs text-muted">Sending approves this exact revision. A later edit requires a new approval.</p><button class="oi-button-primary">Approve and send</button></form></dialog>
   {% endif %}
-  <details class="mt-3 text-xs text-muted"><summary class="cursor-pointer">Tags{% if conversation.tags.all %} · {{ conversation.tags.all|length }}{% endif %}</summary><div class="my-3 flex flex-wrap gap-2">{% for tag in conversation.tags.all %}<form method="post" action="{% url 'conversation_tag' conversation.id %}">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><input type="hidden" name="operation" value="remove"><input type="hidden" name="tag" value="{{ tag.name }}"><button class="min-h-8 border border-line px-2" {% if not domain_writable %}disabled{% endif %} aria-label="Remove tag {{ tag.name }}">#{{ tag.name }} ×</button></form>{% endfor %}</div><form method="post" action="{% url 'conversation_tag' conversation.id %}" class="flex gap-2">{% csrf_token %}<input type="hidden" name="next" value="{{ request.get_full_path }}"><label class="sr-only" for="thread-tag">Add tag</label><input id="thread-tag" class="oi-input" name="tag" maxlength="64" placeholder="Add tag" required><button class="oi-button-secondary" {% if not domain_writable %}disabled{% endif %}>Add</button></form></details>
+  </div>
+  </section>
+  {% endif %}
 </div>
