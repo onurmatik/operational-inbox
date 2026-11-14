@@ -304,7 +304,10 @@ class OperationalInboxEmailStack(Stack):
             iam.PolicyStatement(
                 sid="SESOutboundSending",
                 actions=["ses:SendEmail", "ses:SendRawEmail"],
-                resources=[f"arn:{self.partition}:ses:{self.region}:{self.account}:identity/*"],
+                resources=[
+                    f"arn:{self.partition}:ses:{self.region}:{self.account}:identity/*",
+                    configuration_set_arn,
+                ],
             )
         )
         app_user.add_to_policy(

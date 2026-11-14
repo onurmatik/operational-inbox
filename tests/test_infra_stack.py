@@ -99,16 +99,19 @@ def test_ses_identity_lifecycle_uses_required_wildcard_without_broad_sending() -
     sending = next(
         statement for statement in statements if statement.get("Sid") == "SESOutboundSending"
     )
-    assert sending["Resource"] == {
-        "Fn::Join": [
-            "",
-            [
-                "arn:",
-                {"Ref": "AWS::Partition"},
-                ":ses:us-east-1:111122223333:identity/*",
-            ],
-        ]
-    }
+    assert sending["Resource"] == [
+        {
+            "Fn::Join": [
+                "",
+                [
+                    "arn:",
+                    {"Ref": "AWS::Partition"},
+                    f":ses:us-east-1:111122223333:{resource}",
+                ],
+            ]
+        }
+        for resource in ("identity/*", "configuration-set/operational-inbox")
+    ]
     assert set(sending["Action"]) == {"ses:SendEmail", "ses:SendRawEmail"}
     for statement in statements:
         if statement.get("Resource") == "*":
