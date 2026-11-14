@@ -290,9 +290,7 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
 
 def schedule_work(now=None) -> int:
     now = now or timezone.now()
-    from inbox.services.handling import schedule_handling
-
-    count = schedule_digests(now) + schedule_handling(now)
+    count = schedule_digests(now)
     count += reconcile_all_domain_capacities(now=now)
     expire_unverified_claims()
     recover_stale_submissions(now=now)
@@ -372,11 +370,7 @@ def schedule_work(now=None) -> int:
 
 
 def _handle(job: DurableJob) -> None:
-    if job.kind == "handle_conversation":
-        from inbox.services.handling import run_handling
-
-        run_handling(job.payload["run_id"])
-    elif job.kind == "send_digest":
+    if job.kind == "send_digest":
         send_digest(job.payload["delivery_id"])
     elif job.kind == "send_outbound":
         submit_outbound(OutboundMessage.objects.get(id=job.payload["outbound_id"]))
@@ -432,11 +426,6 @@ def _handle(job: DurableJob) -> None:
 
 
 def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
-    if job.kind == "handle_conversation" and terminal:
-        from inbox.services.handling import fail_handling
-
-        fail_handling(job.payload["run_id"])
-        return
     if job.kind not in {
         "provision_domain",
         "provision_outbound",

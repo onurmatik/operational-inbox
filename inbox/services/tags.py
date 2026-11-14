@@ -20,13 +20,10 @@ def normalize_tag(value: str) -> tuple[str, str]:
 def add_conversation_tag(
     conversation: Conversation,
     value: str,
-    *,
-    agent_action: bool = False,
 ) -> tuple[ConversationTag, bool]:
-    if not agent_action:
-        from inbox.services.outbound import get_outbound_control
+    from inbox.services.outbound import get_outbound_control
 
-        get_outbound_control(conversation.domain.owner, lock=True)
+    get_outbound_control(conversation.domain.owner, lock=True)
     name, normalized_name = normalize_tag(value)
     tag, created = ConversationTag.objects.get_or_create(
         domain=conversation.domain,
@@ -35,10 +32,6 @@ def add_conversation_tag(
         defaults={"name": name},
     )
 
-    if created and not agent_action:
-        from inbox.services.handling import interrupt_handling
-
-        interrupt_handling(conversation, takeover=False)
     return tag, created
 
 
@@ -46,13 +39,10 @@ def add_conversation_tag(
 def remove_conversation_tag(
     conversation: Conversation,
     value: str,
-    *,
-    agent_action: bool = False,
 ) -> ConversationTag | None:
-    if not agent_action:
-        from inbox.services.outbound import get_outbound_control
+    from inbox.services.outbound import get_outbound_control
 
-        get_outbound_control(conversation.domain.owner, lock=True)
+    get_outbound_control(conversation.domain.owner, lock=True)
     _, normalized_name = normalize_tag(value)
     tag = ConversationTag.objects.filter(
         domain=conversation.domain,
@@ -61,8 +51,4 @@ def remove_conversation_tag(
     ).first()
     if tag is not None:
         tag.delete()
-        if not agent_action:
-            from inbox.services.handling import interrupt_handling
-
-            interrupt_handling(conversation, takeover=False)
     return tag

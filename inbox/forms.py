@@ -111,6 +111,7 @@ class RetentionForm(StyledFormMixin, forms.ModelForm):
 
 
 class DraftRevisionForm(StyledFormMixin, forms.Form):
+    expected_revision_id = forms.UUIDField(widget=forms.HiddenInput)
     subject = forms.CharField(max_length=998)
     body_text = forms.CharField(max_length=20000, widget=forms.Textarea(attrs={"rows": 14}))
 
@@ -122,9 +123,12 @@ class DraftRevisionForm(StyledFormMixin, forms.Form):
 class ManualReplyForm(StyledFormMixin, forms.Form):
     context_message_id = forms.UUIDField(widget=forms.HiddenInput)
     idempotency_key = forms.UUIDField(widget=forms.HiddenInput)
+    context_token = forms.CharField(max_length=1000, widget=forms.HiddenInput)
+    draft_id = forms.UUIDField(required=False, widget=forms.HiddenInput)
+    expected_revision_id = forms.UUIDField(required=False, widget=forms.HiddenInput)
     subject = forms.CharField(max_length=998, strip=False)
     body_text = forms.CharField(
-        max_length=20000, label="Message", strip=False, widget=forms.Textarea(attrs={"rows": 8})
+        max_length=20000, label="Message", strip=False, widget=forms.Textarea(attrs={"rows": 5})
     )
 
     def __init__(self, *args, **kwargs):

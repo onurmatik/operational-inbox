@@ -151,10 +151,6 @@ class ConversationActionInput(Schema):
     action: Literal["star", "unstar", "archive", "trash", "restore"]
 
 
-class HandlingInput(Schema):
-    action: Literal["handoff", "takeover"]
-
-
 class SpamReviewInput(Schema):
     action: Literal["not_spam", "undo"]
 
@@ -171,6 +167,10 @@ class ClassificationInput(Schema):
 class RevisionInput(Schema):
     subject: str = Field(min_length=1, max_length=998)
     body_text: str = Field(min_length=1, max_length=20000)
+
+
+class RevisionUpdateInput(RevisionInput):
+    expected_revision_id: uuid.UUID | None = None
 
 
 class SendInput(Schema):
@@ -889,7 +889,7 @@ def _message_dict(message: Message, *, include_body: bool = False) -> dict[str, 
 
 
 def _conversation_dict(conversation: Conversation, *, details: bool = False) -> dict[str, Any]:
-    from inbox.services.handling import handling_dict
+    from inbox.services.drafts import current_reply_draft, draft_reference
 
     if conversation.trashed_at is not None:
         folder = "trash"
@@ -916,9 +916,9 @@ def _conversation_dict(conversation: Conversation, *, details: bool = False) -> 
         "new_message_count": new_message_count,
         "has_quarantined": has_quarantined,
         "last_message_at": conversation.last_message_at,
-        "handling": handling_dict(conversation, details=details),
     }
     if details:
+        result["reply_draft"] = draft_reference(current_reply_draft(conversation))
         result["messages"] = [
             _message_dict(item, include_body=True)
             for item in conversation.messages.filter(
@@ -1578,7 +1578,7 @@ def conversations_list(
             | Q(messages__text_body__icontains=q)
         ).distinct()
     items, next_cursor = _paginate_queryset(
-        queryset.select_related("domain", "handling").prefetch_related("tags"),
+        queryset.select_related("domain").prefetch_related("tags"),
         cursor=cursor,
         limit=limit,
         timestamp_field="last_message_at",
@@ -1990,7 +1990,7 @@ def drafts_revise(
     request: HttpRequest,
     domain_id: uuid.UUID,
     draft_id: uuid.UUID,
-    payload: RevisionInput,
+    payload: RevisionUpdateInput,
 ):
     require_scope(request, AccessScope.WRITE)
     require_outbound_access(request, "Reply drafts")
@@ -1999,7 +1999,11 @@ def drafts_revise(
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         revision = revise_draft(
-            draft=draft, owner=owner, subject=payload.subject, body_text=payload.body_text
+            draft=draft,
+            owner=owner,
+            subject=payload.subject,
+            body_text=payload.body_text,
+            expected_revision_id=payload.expected_revision_id,
         )
     except DjangoValidationError as exc:
         raise APIError("stale_draft", "; ".join(exc.messages), status=409) from exc
@@ -2441,24 +2445,3 @@ def token_rotate(request: HttpRequest):
             "shown_once": True,
         },
     )
-
-
-@api.post(
-    "/domains/{domain_id}/conversations/{conversation_id}/handling",
-    auth=authenticated,
-    tags=["Conversations"],
-)
-def conversations_handling(
-    request: HttpRequest, domain_id: uuid.UUID, conversation_id: uuid.UUID, payload: HandlingInput
-):
-    from inbox.services.handling import set_handling
-
-    require_scope(request, AccessScope.WRITE)
-    if payload.action == "handoff":
-        require_scope(request, AccessScope.SEND)
-    domain = api_writable_domain(request, domain_id)
-    conversation = scoped_object(
-        Conversation.objects.select_related("domain__owner"), domain, conversation_id
-    )
-    set_handling(conversation, owner=domain.owner, action=payload.action)
-    return _conversation_dict(conversation, details=True)

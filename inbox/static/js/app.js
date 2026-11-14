@@ -632,7 +632,7 @@
       divider.setAttribute("aria-valuemin", Math.round(minimum * 100));
       divider.setAttribute("aria-valuemax", Math.round((1 - minimum) * 100));
       divider.setAttribute("aria-valuenow", percent);
-      divider.setAttribute("aria-valuetext", `Messages ${percent}%, agent ${100 - percent}%`);
+      divider.setAttribute("aria-valuetext", `Messages ${percent}%, reply ${100 - percent}%`);
     };
     const setShare = (value) => {
       requestedShare = Math.max(0.25, Math.min(0.75, value));
@@ -677,163 +677,190 @@
     render();
   };
 
-  const initReplyBrief = () => {
-    const form = document.querySelector("[data-reply-brief]");
-    const opener = document.querySelector("[data-open-reply-brief]");
-    if (!form || !opener) return;
-    const panel = form.closest("section");
-    const manual = document.querySelector("[data-manual-reply]");
-    const goals = form.querySelector("[data-reply-goals]");
-    const custom = form.querySelector("[data-custom-goal]");
-    const instructions = form.elements.instructions;
-    const status = form.querySelector("[data-goals-status]");
-    const retry = form.querySelector("[data-retry-goals]");
-    const error = form.querySelector("[data-brief-error]");
-    const refresh = form.querySelector("[data-refresh-brief]");
-    const submit = form.querySelector("[data-submit-reply-brief]");
-    let loaded = false;
-    let loading = false;
-    let sending = false;
-    let stale = false;
-    const select = (button) => {
-      goals.querySelectorAll("button").forEach((item) => {
-        item.setAttribute("aria-pressed", String(item === button));
-      });
+  const initReplyComposer = () => {
+    const form = document.querySelector("[data-reply-form]");
+    if (!form) return;
+    const find = (name) => form.querySelector(`[data-${name}]`);
+    const fields = form.elements;
+    const status = find("reply-status");
+    const error = find("reply-error");
+    const refresh = find("refresh-context");
+    const panel = document.getElementById("reply-assist");
+    const opener = find("open-assist");
+    const preview = find("suggestion");
+    const goals = find("reply-goals");
+    const review = find("review-reply");
+    const generate = find("generate-reply");
+    let busy = false, stale = false, sequence = 0, suggestion = null, goalsLoaded = false;
+    let savedText = JSON.stringify([fields.subject.value, fields.body_text.value]);
+    const editorText = () => JSON.stringify([fields.subject.value, fields.body_text.value]);
+    const fingerprint = () => JSON.stringify([fields.subject.value, fields.body_text.value,
+      fields.instructions.value, fields.context_token.value]);
+    const controls = [find("save-draft"), find("send-reply"), review, generate,
+      find("apply-suggestion"), find("retry-goals")];
+    const update = () => {
+      controls.forEach((button) => { button.disabled = busy || stale; });
+      review.disabled ||= !fields.body_text.value.trim();
+      generate.disabled ||= !fields.instructions.value.trim();
+      find("apply-suggestion").disabled ||= !suggestion;
+      form.setAttribute("aria-busy", String(busy));
     };
-    const showError = (message, changed = false) => {
-      error.textContent = message;
+    const invalidate = () => {
+      sequence += 1;
+      suggestion = null;
+      preview.hidden = true;
+      status.textContent = editorText() === savedText ? "" : "Unsaved changes";
+      update();
+    };
+    const fail = (failure) => {
+      error.textContent = failure.message || "Please try again.";
       error.hidden = false;
-      if (changed) {
+      if (failure.payload?.stale) {
         stale = true;
         refresh.hidden = false;
-        submit.disabled = true;
+        suggestion = null;
+        preview.hidden = true;
       }
     };
-    const loadGoals = async () => {
-      if (loading || loaded || stale) return;
-      loading = true;
-      retry.hidden = true;
-      status.textContent = "Finding reply options…";
-      goals.setAttribute("aria-busy", "true");
+    const request = (operation) => {
+      const data = new FormData(form);
+      data.set("operation", operation);
+      return window.OperationalInbox.request(form.dataset.assistUrl, { method: "POST", body: data });
+    };
+    const run = async (operation) => {
+      if (busy || stale) return;
+      const id = ++sequence, original = fingerprint();
+      busy = true;
+      error.hidden = true;
+      status.textContent = operation === "goals" ? "Finding reply options…" : operation === "review" ? "Reviewing…" : "Writing…";
+      update();
       try {
-        const body = new FormData();
-        body.set("context_token", form.elements.context_token.value);
-        const result = await window.OperationalInbox.request(form.dataset.goalsUrl, { method: "POST", body });
-        const choices = result.goals || [];
-        choices.forEach((goal, index) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "reply-goal";
-          button.textContent = goal.label;
-          button.setAttribute("aria-pressed", "false");
-          button.addEventListener("click", () => {
-            instructions.value = goal.instructions;
-            select(button);
+        const result = await request(operation);
+        if (id !== sequence || original !== fingerprint()) {
+          status.textContent = "Reply changed. Try again.";
+          return;
+        }
+        if (operation === "goals") {
+          goals.replaceChildren();
+          (result.goals || []).forEach((goal) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "reply-goal";
+            button.textContent = goal.label;
+            button.setAttribute("aria-pressed", "false");
+            button.addEventListener("click", () => {
+              fields.instructions.value = goal.instructions;
+              goals.querySelectorAll("button").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
+              invalidate();
+              fields.instructions.focus();
+            });
+            goals.appendChild(button);
           });
-          goals.insertBefore(button, custom);
-          // Never overwrite instructions the owner entered while suggestions were loading.
-          if (index === 0 && !instructions.value.trim()) {
-            instructions.value = goal.instructions;
-            select(button);
-          }
-        });
-        loaded = !result.message;
-        retry.hidden = loaded;
-        status.textContent = result.message || (choices.length ? "" : "Add your instructions to guide the reply.");
-      } catch (failure) {
-        if (failure.payload?.stale) {
-          showError(failure.message, true);
-          status.textContent = "";
+          goalsLoaded = true;
+          find("retry-goals").hidden = true;
         } else {
-          retry.hidden = false;
-          status.textContent = failure.payload?.message || "Suggestions unavailable. You can write your own instructions.";
+          suggestion = { ...result, fingerprint: original };
+          find("suggestion-subject").textContent = result.subject;
+          find("suggestion-body").textContent = result.body_text;
+          const notes = find("review-notes");
+          notes.replaceChildren();
+          (result.notes || []).forEach((note) => {
+            const item = document.createElement("li");
+            item.textContent = note;
+            notes.appendChild(item);
+          });
+          notes.hidden = !result.notes?.length;
+          preview.hidden = false;
+          document.getElementById("reply-suggestion-title").focus();
+        }
+        status.textContent = "";
+      } catch (failure) {
+        if (id === sequence) {
+          fail(failure);
+          status.textContent = "";
+          if (operation === "goals") find("retry-goals").hidden = false;
         }
       } finally {
-        loading = false;
-        goals.setAttribute("aria-busy", "false");
+        busy = false;
+        update();
       }
     };
-    const close = () => {
-      panel.hidden = true;
-      if (manual) manual.hidden = false;
-      opener.textContent = "Reply with agent";
-      opener.setAttribute("aria-expanded", "false");
-      opener.focus({ preventScroll: true });
-    };
+    [fields.subject, fields.body_text, fields.instructions].forEach((field) => field.addEventListener("input", invalidate));
+    fields.instructions.addEventListener("input", () => goals.querySelectorAll("button").forEach((button) => button.setAttribute("aria-pressed", "false")));
     opener.addEventListener("click", () => {
-      if (!panel.hidden) { close(); return; }
-      panel.hidden = false;
-      if (manual) manual.hidden = true;
-      opener.textContent = manual ? "Reply myself" : "Close reply options";
-      opener.setAttribute("aria-expanded", "true");
-      panel.querySelector("h3").focus({ preventScroll: true });
-      const interaction = panel.closest(".thread-interaction");
-      if (interaction) interaction.scrollTop = 0;
-      else panel.scrollIntoView({ block: "nearest" });
-      loadGoals();
-    });
-    form.querySelector("[data-cancel-reply-brief]").addEventListener("click", close);
-    custom.addEventListener("click", () => { select(custom); instructions.focus(); });
-    instructions.addEventListener("input", () => select(custom));
-    retry.addEventListener("click", loadGoals);
-    const updateDelivery = () => {
-      const auto = form.elements.delivery.value === "auto";
-      submit.textContent = sending ? "Queuing…" : auto ? "Start replying" : "Create draft";
-      form.querySelector("[data-delivery-help]").textContent = auto
-        ? "Sends replies under your agent rules. You can take over anytime."
-        : "Nothing is sent until you approve.";
-    };
-    form.addEventListener("change", updateDelivery);
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (sending || stale) return;
-      sending = true;
-      submit.disabled = true;
-      error.hidden = true;
-      updateDelivery();
-      try {
-        await window.OperationalInbox.request(form.getAttribute("action"), { method: "POST", body: new FormData(form) });
-        window.location.reload();
-      } catch (failure) {
-        showError(failure.message, Boolean(failure.payload?.stale));
-        sending = false;
-        submit.disabled = stale;
-        updateDelivery();
+      panel.hidden = !panel.hidden;
+      opener.setAttribute("aria-expanded", String(!panel.hidden));
+      if (!panel.hidden) {
+        fields.instructions.focus();
+        if (!goalsLoaded) run("goals");
       }
     });
-  };
-
-  const initManualReply = () => {
-    const form = document.querySelector("[data-manual-reply-form]");
-    if (!form) return;
-    const submit = form.querySelector("[data-send-reply]");
-    const error = form.querySelector("[data-reply-error]");
-    let sending = false;
+    find("close-assist").addEventListener("click", () => {
+      panel.hidden = true;
+      opener.setAttribute("aria-expanded", "false");
+      opener.focus();
+    });
+    find("retry-goals").addEventListener("click", () => run("goals"));
+    generate.addEventListener("click", () => run("generate"));
+    review.addEventListener("click", () => run("review"));
+    find("dismiss-suggestion").addEventListener("click", () => { invalidate(); fields.body_text.focus(); });
+    find("apply-suggestion").addEventListener("click", async () => {
+      if (busy || stale || !suggestion || suggestion.fingerprint !== fingerprint()) return;
+      const pending = suggestion, id = ++sequence;
+      busy = true;
+      error.hidden = true;
+      update();
+      try {
+        await request("validate");
+        if (id !== sequence || pending.fingerprint !== fingerprint()) return;
+        fields.subject.value = pending.subject;
+        fields.body_text.value = pending.body_text;
+        invalidate();
+        fields.body_text.focus();
+      } catch (failure) { fail(failure); }
+      finally { busy = false; update(); }
+    });
+    refresh.addEventListener("click", () => window.location.reload());
+    window.addEventListener("beforeunload", (event) => {
+      if (editorText() !== savedText) { event.preventDefault(); event.returnValue = ""; }
+    });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (sending) return;
-      sending = true;
-      submit.disabled = true;
-      submit.textContent = "Sending…";
+      if (busy || stale) return;
+      const action = event.submitter?.value || "send";
+      const data = new FormData(form);
+      data.set("action", action);
+      const submittedText = editorText();
+      busy = true;
+      invalidate();
       error.hidden = true;
+      status.textContent = action === "save" ? "Saving…" : "Sending…";
+      if (action === "send") [fields.subject, fields.body_text].forEach((field) => { field.readOnly = true; });
+      update();
       try {
-        const result = await window.OperationalInbox.request(form.getAttribute("action"), {
-          method: "POST", body: new FormData(form),
-        });
-        window.location.assign(result.url);
-      } catch (failure) {
-        error.textContent = failure.message;
-        error.hidden = false;
-        sending = false;
-        submit.disabled = false;
-        submit.textContent = "Send reply";
+        const result = await window.OperationalInbox.request(form.getAttribute("action"), { method: "POST", body: data });
+        if (action === "save") {
+          fields.draft_id.value = result.draft.id;
+          fields.expected_revision_id.value = result.draft.current_revision_id;
+          fields.context_token.value = result.context_token;
+          savedText = submittedText;
+          status.textContent = editorText() === savedText ? "Saved" : "Unsaved changes";
+        } else {
+          savedText = submittedText;
+          window.location.assign(result.url);
+        }
+      } catch (failure) { fail(failure); status.textContent = ""; }
+      finally {
+        busy = false;
+        [fields.subject, fields.body_text].forEach((field) => { field.readOnly = false; });
+        update();
       }
     });
+    update();
   };
 
   document.addEventListener("DOMContentLoaded", initThreadSplit);
-  document.addEventListener("DOMContentLoaded", initReplyBrief);
-  document.addEventListener("DOMContentLoaded", initManualReply);
+  document.addEventListener("DOMContentLoaded", initReplyComposer);
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
   document.addEventListener("DOMContentLoaded", initCopyControls);

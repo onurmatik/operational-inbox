@@ -1,18 +1,12 @@
 from django.urls import path
 
-from inbox import handling_views, views
+from inbox import reply_views, views
 
 urlpatterns = [
     path(
-        "app/conversations/<uuid:conversation_id>/reply-goals/",
-        handling_views.conversation_reply_goals,
-        name="conversation_reply_goals",
-    ),
-    path("app/settings/agent/", handling_views.agent_settings, name="agent_settings"),
-    path(
-        "app/conversations/<uuid:conversation_id>/handling/",
-        handling_views.conversation_handling,
-        name="conversation_handling",
+        "app/conversations/<uuid:conversation_id>/reply-assist/",
+        reply_views.conversation_reply_assist,
+        name="conversation_reply_assist",
     ),
     path(
         "app/domains/<uuid:domain_id>/receiving/enable/",

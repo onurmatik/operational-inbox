@@ -1,5 +1,8 @@
 # Contextual reply composer
 
+The latest implementation and verification are recorded in the final section below. Earlier
+sections describe superseded reply and handling flows.
+
 - Source visual truth: `/Users/onurmatik/.codex/generated_images/01a190b7-7570-7250-a112-8cb54057e9cc/exec-3214b03d-62ec-415f-907f-c0751409758d.png`
 - Target: selected inline composer, with conversation-specific suggestions, editable instructions,
   and separate delivery choices. Existing application layout and design tokens are retained.
@@ -92,3 +95,36 @@ comparison was performed in this pass.
 Validation: 583 Python tests passed, one PostgreSQL-only test skipped; eight JavaScript tests
 passed. Ruff, mypy, migration drift, CSS build, Django deploy checks and CDK synthesis passed.
 CDK reported its existing Node 26 compatibility warning. Changes remain local and unpublished.
+
+## Manual composer and explicit AI assistance — November 14, 2026
+
+Conversation autopilot and its settings, handling state and delivery choices have been removed.
+The composer opens the same saved draft exposed through MCP. AI options fill instructions;
+Generate draft and Review show a preview, Apply changes the editor, Save draft persists an
+immutable revision, and Send reply uses the exact editor content without a second dialog.
+
+The existing Superdesign project and inbox draft were reused (version 12). Only the existing
+compact design-system brief and the new reply-flow brief were shared. The implementation retains
+the local application shell, design tokens and resizable thread panes.
+
+Browser checks used the actual Django views and JavaScript with an isolated synthetic SQLite
+database on loopback. Desktop was 1440 × 900; mobile was 390 × 844. Both layouts remained within
+the viewport width. Keyboard navigation reached Generate, Apply and Send. Review focused its
+preview and Apply returned focus to the editor. The reply textarea was reduced to five rows so
+the main desktop actions fit without scrolling at the tested size.
+
+AI results were stubbed in the browser; Apply context validation, Save and Send used the real
+backend. Saved text survived reload. A keyboard Send queued one owner-authorized attempt with
+the complete editor text and retained the same draft's three immutable revisions. No worker or
+provider delivery ran. The unavailable-model path preserved manual text and controls. The final
+page had no browser console errors or warnings.
+
+Screenshots: `output/playwright/reply-desktop.png`, `output/playwright/reply-mobile.png`,
+`output/playwright/reply-review-mobile.png`, and `output/playwright/reply-send-queued.png`.
+
+Validation: 530 Python tests passed, one PostgreSQL-only test skipped, 82.14% coverage; nine
+JavaScript tests passed. Ruff, format, mypy, Django deploy checks, migration drift, OpenAPI
+contract, CSS build and CDK synthesis passed. CDK reported its existing Node 26 compatibility
+warning. Tests cover model timeout, concurrent revisions, stale context, tenant
+isolation, quarantine, duplicate sending and migration data preservation. Live model responses
+and provider delivery were not exercised. Changes remain local and unpublished.

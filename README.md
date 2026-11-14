@@ -77,10 +77,11 @@ is `POST /api/v1/domains/{domain_id}/outbound/compose`. Retain the same key afte
 response to recover the existing attempt without sending again. Both interfaces return the
 outbound ID, conversation ID, and authoritative status.
 
-Open a conversation to write your own **Reply** and choose **Send reply**. This sends your exact
-text in the existing thread and takes over from the built-in agent. If the agent is already
-handling the conversation, choose **Take over** first. **Reply with agent** opens agent instructions;
-**Reply myself** or **Cancel** returns to your manual reply without clearing either editor.
+Open a conversation to read its thread, filter the inbox, and write a **Reply**. **Save draft**
+persists the exact text so you or your own connected agent can continue later. **Send reply**
+queues the editor's exact content. **Write with AI** opens optional instructions and contextual
+reply choices; **Review** suggests improvements to an existing draft. Suggestions appear in a
+preview and change the editor only when you choose **Apply**. They never save or send themselves.
 
 If an account returns to Free Core while more than one domain is active, it receives a 30-day
 capacity grace period. The owner chooses the domain that will keep the Free slot; the others remain
@@ -110,19 +111,13 @@ retries; after scheduler downtime, only the latest window is queued. Lookbacks s
 elapsed hours, while send times follow the selected timezone, including daylight-saving changes.
 
 
-## Built-in agent
+## Reply assistance
 
-New inbound mail is handled by the built-in agent by default. Settings → Agent controls account
-and domain modes, domain knowledge, ordered type/tag/risk rules, and follow-up timing. Existing
-mail stays unchanged until you choose **Hand to agent**. **Take over** stops pending automation
-for that conversation, including future inbound replies, until you delegate again.
+There is no built-in conversation autopilot, policy engine or automatic follow-up. Your own agent
+can manage conversations through MCP and the supplied skills, using its authorized external
+sources. The website AI sees only the current thread, draft and your instructions.
 
-Decisions classifies mail; a bounded Responses call proposes actions. Server policy enforces
-sending authority. The agent can ask for missing details, reply from domain knowledge, tag,
-archive, and send one reminder. Refunds, external account changes, link browsing, and attachment
-analysis are not available. High/unknown risk, uncertain classification and API failures appear
-under **Needs review**. Missing billing details alone do not establish phishing.
-
-The service supplies `OPENAI_API_KEY`. Configure the model and daily usage limits with the
-`HANDLING_*` settings in `.env.example`; run migration `0018` and the existing scheduler.
-No inbound history is scanned or automatically answered during migration or activation.
+The service supplies `OPENAI_API_KEY`; configure `REPLY_ASSIST_*` settings in `.env.example`.
+Assistance is requested only by an explicit UI action. Manual drafting and sending continue when
+AI is unavailable or its daily budget is exhausted. Server/plugin 0.4.0 uses MCP contract 2.0.0
+and standalone skill 1.3.0. Update older clients: handling tools and metadata have been removed.

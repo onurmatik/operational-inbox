@@ -30,9 +30,12 @@ import database, host, cookie, Django secret, or debug overrides from `.env-prod
 changes use the separate guarded PostgreSQL tasks below. Values containing CR/LF are rejected.
 The persistent server `.env` is mode `0600` and is updated atomically.
 
-Built-in mail handling uses the existing `OPENAI_API_KEY` from `.env-prod`. Its
-`HANDLING_*` model, confidence, enablement and daily budget settings are also in the
-runtime allowlist. Omitted settings retain the server value or application default.
+On-demand reply assistance uses the existing `OPENAI_API_KEY` from `.env-prod`. Its
+`REPLY_ASSIST_ENABLED`, `REPLY_ASSIST_MODEL` and `REPLY_ASSIST_DAILY_*` settings are in the runtime
+allowlist. Omitted settings retain the server value or application default. Before upgrading,
+copy any configured `HANDLING_ENABLED`, `HANDLING_RESPONSE_MODEL` and `HANDLING_DAILY_*` overrides
+to their corresponding `REPLY_ASSIST_*` names in `.env-prod`, preserving their values. Decision
+model and confidence settings are retired; the application has no conversation autopilot.
 
 ## Deploy
 
@@ -60,6 +63,11 @@ migrations, reads every managed model's columns through the ORM, and runs `check
 before opening services. Cron resumes only after three consecutive public web health checks,
 the MCP Bearer challenge, exact revision verification, and individual runtime checks pass.
 Verification does not send email or invoke scheduled workloads.
+
+Migration `0021` uses this schema-changing release path. Old handling workers must remain stopped
+while pending jobs and queued automatic replies are retired and run/state history is archived.
+The verified pre-migration backup preserves the original schema. After migration, delivery
+reconciliation continues for provider-submitted or uncertain outcomes without retrying them.
 
 Proven migrationless releases retain a short in-place path: no database backup or full
 shutdown unless shared environment, dependencies, or units change. They record the previous
@@ -95,7 +103,7 @@ python3 -m fabric deploy --recover
 
 Recovery reacquires the deploy lock, verifies the previous owner is absent, keeps workloads
 contained, and runs forward migrations and the same checks. It clears the failure marker and
-restores cron only after successful verification. Do not reverse migration `0015` or start the
+restores cron only after successful verification. Do not reverse migrations `0015` or `0021` or start the
 old revision after it has retired tables; original records are archived as audit events and the
 encrypted pre-migration backup remains available for deliberate data recovery.
 

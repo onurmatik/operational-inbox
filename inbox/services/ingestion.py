@@ -526,9 +526,6 @@ def _store_domain_message(
         },
     )
     create_security_notifications(message)
-    from inbox.services.handling import on_inbound
-
-    on_inbound(message)
     return message
 
 

@@ -96,11 +96,12 @@ from inbox.services.domains import (
 )
 from inbox.services.drafts import (
     approve_exact_revision,
+    current_reply_draft,
+    draft_reference,
     resend_outbound,
     revise_draft,
 )
 from inbox.services.entitlements import can_manage_domain, for_user
-from inbox.services.handling import handling_dict
 from inbox.services.jobs import (
     can_retry_domain_provisioning,
     enqueue_job,
@@ -112,8 +113,8 @@ from inbox.services.outbound import (
     outbound_usage,
     set_outbound_paused,
 )
-from inbox.services.replies import send_manual_reply
-from inbox.services.reply_briefs import reply_composer
+from inbox.services.replies import save_reply_draft, send_manual_reply
+from inbox.services.reply_assistance import context_token
 from inbox.services.routing_transitions import (
     begin_routing_transition,
     cancel_routing_transition,
@@ -815,16 +816,7 @@ def _conversation_workspace(
             if item.id not in represented:
                 timeline.append({"outbound": item, "at": item.created_at})
         timeline.sort(key=lambda item: item["at"])
-        draft = (
-            selected.reply_drafts.filter(
-                domain=selected.domain,
-                kind=ReplyDraft.Kind.REPLY,
-                current_revision__outbound_messages__isnull=True,
-            )
-            .select_related("current_revision")
-            .order_by("-created_at")
-            .first()
-        )
+        draft = current_reply_draft(selected)
         reply_message = (
             selected.messages.filter(domain=selected.domain, direction=Message.Direction.INBOUND)
             .order_by("-received_at", "-created_at", "-id")
@@ -839,7 +831,17 @@ def _conversation_workspace(
                 initial={
                     "context_message_id": reply_message.id,
                     "idempotency_key": uuid.uuid4(),
-                    "subject": subject if subject.lower().startswith("re:") else f"Re: {subject}",
+                    "context_token": context_token(selected),
+                    "draft_id": draft.id if draft else None,
+                    "expected_revision_id": draft.current_revision_id if draft else None,
+                    "body_text": draft.current_revision.body_text if draft else "",
+                    "subject": (
+                        draft.current_revision.subject
+                        if draft
+                        else subject
+                        if subject.lower().startswith("re:")
+                        else f"Re: {subject}"
+                    ),
                 },
             )
 
@@ -916,9 +918,6 @@ def _conversation_workspace(
     tag = request.GET.get("tag", "").strip().casefold()
     if tag:
         conversations = conversations.filter(tags__normalized_name=tag).distinct()
-    needs_review = request.GET.get("needs_review") == "1"
-    if needs_review:
-        conversations = conversations.filter(handling__status="review")
     security = request.GET.get("security", "")
     if security in {"suspicious", "quarantined"}:
         conversations = conversations.filter(
@@ -942,7 +941,7 @@ def _conversation_workspace(
     else:
         delivery = ""
     page = Paginator(
-        conversations.select_related("domain", "handling")
+        conversations.select_related("domain")
         .prefetch_related(
             "tags",
             Prefetch("outbound_messages", queryset=OutboundMessage.objects.order_by("-created_at")),
@@ -994,9 +993,6 @@ def _conversation_workspace(
             "pagination_query": params.urlencode(),
             "folder": folder,
             "folder_label": folders[folder],
-            "needs_review": needs_review,
-            "handling": handling_dict(selected, details=True) if selected else None,
-            "reply_composer": reply_composer(selected) if selected else None,
             "reply_message": reply_message,
             "manual_reply_form": manual_reply_form,
             "conversation": selected,
@@ -1004,15 +1000,6 @@ def _conversation_workspace(
             "draft": draft,
             "back_url": back_url,
             "domain_writable": selected and can_manage_domain(request.user, selected.domain),
-            "draft_form": DraftRevisionForm(
-                auto_id="draft_%s",
-                initial={
-                    "subject": draft.current_revision.subject,
-                    "body_text": draft.current_revision.body_text,
-                }
-                if draft and draft.current_revision
-                else None,
-            ),
             "filters": {
                 "q": query,
                 "tag": tag,
@@ -1021,7 +1008,7 @@ def _conversation_workspace(
                 "status": delivery,
             },
             "statuses": OutboundMessage.Status.choices,
-            "has_active_filters": any((tag, security, recipient, delivery, needs_review)),
+            "has_active_filters": any((tag, security, recipient, delivery)),
             "compose_form": ComposeForm(
                 auto_id="compose_%s",
                 domains=domains,
@@ -1142,13 +1129,28 @@ def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> Htt
 def conversation_reply(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     conversation = _owned_record(request, Conversation.objects, id=conversation_id)
     form = ManualReplyForm(request.POST, auto_id="reply_%s")
+    error_status = 400
     if form.is_valid():
         try:
+            if request.POST.get("action") == "save":
+                data = {k: v for k, v in form.cleaned_data.items() if k != "idempotency_key"}
+                draft = save_reply_draft(conversation=conversation, owner=request.user, **data)
+                if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                    return JsonResponse(
+                        {
+                            "draft": draft_reference(draft),
+                            "context_token": context_token(conversation),
+                        }
+                    )
+                messages.success(request, "Draft saved.")
+                return redirect("conversation_detail", conversation_id=conversation.id)
             outbound = send_manual_reply(
                 conversation=conversation, owner=request.user, **form.cleaned_data
             )
         except ValidationError as exc:
             form.add_error(None, "; ".join(exc.messages))
+            if getattr(exc, "code", "") == "stale":
+                error_status = 409
         else:
             messages.success(request, f"Reply status: {outbound.get_status_display()}.")
             url = f"{reverse('inbox')}?{urlencode({'conversation': str(conversation.id)})}"
@@ -1157,10 +1159,15 @@ def conversation_reply(request: HttpRequest, conversation_id: uuid.UUID) -> Http
             return redirect(url)
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return JsonResponse(
-            {"message": " ".join(error for errors in form.errors.values() for error in errors)},
-            status=400,
+            {
+                "message": " ".join(error for errors in form.errors.values() for error in errors),
+                "stale": error_status == 409,
+            },
+            status=error_status,
         )
-    return _conversation_workspace(request, conversation.id, manual_reply_form=form, status=400)
+    return _conversation_workspace(
+        request, conversation.id, manual_reply_form=form, status=error_status
+    )
 
 
 @verified_required

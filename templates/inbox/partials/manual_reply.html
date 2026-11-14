@@ -1,20 +1,39 @@
 {% if domain_writable and reply_message %}
-  {% if not handling or handling.taken_over or manual_reply_form.errors %}
-  <section class="mt-5" data-manual-reply aria-labelledby="manual-reply-title">
-    <h3 id="manual-reply-title" class="font-heading text-xl font-semibold">Reply</h3>
-    <p class="mt-2 text-xs text-muted break-all">To: {{ reply_message.reply_to_address|default:reply_message.from_address }}</p>
-    <form method="post" action="{% url 'conversation_reply' conversation.id %}" class="mt-4 oi-form" data-manual-reply-form>
-      {% csrf_token %}
-      {{ manual_reply_form.context_message_id }}{{ manual_reply_form.idempotency_key }}
-      {{ manual_reply_form.non_field_errors }}
-      <details class="mb-4" {% if manual_reply_form.subject.errors %}open{% endif %}>
-        <summary class="cursor-pointer text-xs text-muted">Subject</summary>
-        <div class="mt-2">{{ manual_reply_form.subject.label_tag }}{{ manual_reply_form.subject }}{{ manual_reply_form.subject.errors }}</div>
-      </details>
-      {{ manual_reply_form.body_text.label_tag }}{{ manual_reply_form.body_text }}{{ manual_reply_form.body_text.errors }}
-      <p class="mt-3 text-sm text-coral-strong" role="alert" data-reply-error hidden></p>
-      <div class="mt-4 flex justify-end"><button class="oi-button-primary" data-send-reply>Send reply</button></div>
-    </form>
-  </section>
-  {% endif %}
+<section data-reply-composer aria-labelledby="manual-reply-title">
+  <h3 id="manual-reply-title" class="font-heading text-xl font-semibold">Reply</h3>
+  <p class="mt-2 text-xs text-muted break-all">To: {{ reply_message.reply_to_address|default:reply_message.from_address }}</p>
+  {% if draft.is_stale %}<p class="mt-2 text-xs text-gold-strong">A newer message arrived. Saving creates a new draft for this thread.</p>{% endif %}
+  <form method="post" action="{% url 'conversation_reply' conversation.id %}" class="mt-4 oi-form" data-reply-form data-assist-url="{% url 'conversation_reply_assist' conversation.id %}">
+    {% csrf_token %}
+    {{ manual_reply_form.context_message_id }}{{ manual_reply_form.idempotency_key }}{{ manual_reply_form.context_token }}{{ manual_reply_form.draft_id }}{{ manual_reply_form.expected_revision_id }}
+    {{ manual_reply_form.non_field_errors }}
+    <details class="mb-4" {% if manual_reply_form.subject.errors %}open{% endif %}>
+      <summary class="cursor-pointer text-xs text-muted">Subject</summary>
+      <div class="mt-2">{{ manual_reply_form.subject.label_tag }}{{ manual_reply_form.subject }}{{ manual_reply_form.subject.errors }}</div>
+    </details>
+    <label class="sr-only" for="{{ manual_reply_form.body_text.id_for_label }}">Reply message</label>
+    {{ manual_reply_form.body_text }}{{ manual_reply_form.body_text.errors }}
+    <div class="reply-actions">
+      <button type="button" class="oi-button-secondary text-xs" data-open-assist aria-controls="reply-assist" aria-expanded="false">Write with AI</button>
+      <button type="button" class="oi-button-secondary text-xs" data-review-reply>Review</button>
+      <span class="reply-send"><button class="oi-button-secondary" name="action" value="save" data-save-draft>Save draft</button><button class="oi-button-primary" name="action" value="send" data-send-reply>Send reply</button></span>
+    </div>
+    <p class="mt-2 text-xs text-muted" role="status" aria-live="polite" data-reply-status></p>
+    <p class="mt-2 text-sm text-coral-strong" role="alert" data-reply-error hidden></p>
+    <button type="button" class="mt-2 text-sm underline" data-refresh-context hidden>Refresh context</button>
+    <div id="reply-assist" class="reply-assist" hidden>
+      <div class="reply-goals" role="group" aria-label="Reply intent" data-reply-goals></div>
+      <label class="mb-2 block text-sm font-semibold" for="reply-instructions">AI instructions</label>
+      <textarea id="reply-instructions" class="oi-input py-3" name="instructions" rows="2" maxlength="2000" placeholder="What should the reply say?"></textarea>
+      <div class="mt-3 flex flex-wrap gap-2"><button type="button" class="oi-button-secondary" data-generate-reply>Generate draft</button><button type="button" class="oi-button-secondary" data-close-assist>Close</button><button type="button" class="text-sm underline" data-retry-goals hidden>Retry options</button></div>
+    </div>
+    <section class="reply-suggestion" aria-labelledby="reply-suggestion-title" data-suggestion hidden>
+      <h4 id="reply-suggestion-title" class="text-sm font-semibold" tabindex="-1">Suggested reply</h4>
+      <ul class="mt-2 space-y-1 text-sm text-muted" data-review-notes></ul>
+      <p class="mt-3 text-sm font-semibold" data-suggestion-subject></p>
+      <p class="mail-body" data-suggestion-body></p>
+      <div class="mt-3 flex gap-2"><button type="button" class="oi-button-secondary" data-apply-suggestion>Apply</button><button type="button" class="oi-button-secondary" data-dismiss-suggestion>Dismiss</button></div>
+    </section>
+  </form>
+</section>
 {% endif %}

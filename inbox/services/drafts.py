@@ -5,6 +5,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from inbox.models import (
+    Conversation,
     Domain,
     DraftApproval,
     InboundRoute,
@@ -18,6 +19,31 @@ from inbox.services.entitlements import can_manage_domain
 from inbox.services.outbound import get_outbound_control, require_outbound_capacity
 
 
+def current_reply_draft(conversation: Conversation) -> ReplyDraft | None:
+    """One shared selection for the owner UI and external agents."""
+    return (
+        conversation.reply_drafts.filter(
+            domain=conversation.domain,
+            kind=ReplyDraft.Kind.REPLY,
+            current_revision__isnull=False,
+            current_revision__outbound_messages__isnull=True,
+        )
+        .select_related("current_revision", "context_message")
+        .order_by("-updated_at", "-id")
+        .first()
+    )
+
+
+def draft_reference(draft: ReplyDraft | None) -> dict | None:
+    if draft is None:
+        return None
+    return {
+        "id": str(draft.id),
+        "current_revision_id": str(draft.current_revision_id),
+        "is_stale": draft.is_stale,
+    }
+
+
 def create_authored_draft(
     *, message: Message, owner: User, subject: str, body_text: str, is_agent_generated: bool = True
 ) -> ReplyDraft:
@@ -28,9 +54,10 @@ def create_authored_draft(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
-    if message.is_quarantined:
-        raise ValidationError("A reply draft cannot be created for quarantined content.")
+    if message.is_quarantined or message.normalized_purged_at:
+        raise ValidationError("The original message is unavailable for drafting.")
     with transaction.atomic():
+        get_outbound_control(owner, lock=True)
         draft = ReplyDraft.objects.create(
             domain=message.domain,
             conversation=message.conversation,
@@ -54,7 +81,12 @@ def create_authored_draft(
 
 @transaction.atomic
 def revise_draft(
-    *, draft: ReplyDraft, owner: User, subject: str, body_text: str
+    *,
+    draft: ReplyDraft,
+    owner: User,
+    subject: str,
+    body_text: str,
+    expected_revision_id: object = None,
 ) -> ReplyDraftRevision:
     get_outbound_control(owner, lock=True)
     locked = ReplyDraft.objects.select_for_update().select_related("domain").get(id=draft.id)
@@ -67,10 +99,11 @@ def revise_draft(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
-    from inbox.services.handling import interrupt_handling
-
-    interrupt_handling(locked.conversation)
     current_revision = locked.current_revision
+    if expected_revision_id is not None and str(locked.current_revision_id) != str(
+        expected_revision_id
+    ):
+        raise ValidationError("The draft changed. Reload its current revision.", code="stale")
     if current_revision is None:
         next_number = 1
     else:
@@ -164,9 +197,6 @@ def approve_exact_revision(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
-    from inbox.services.handling import interrupt_handling
-
-    interrupt_handling(locked.conversation)
     approval = DraftApproval.objects.filter(revision=revision).first()
     if approval is not None:
         if (
@@ -177,9 +207,7 @@ def approve_exact_revision(
             raise ValidationError("The existing approval is no longer valid.")
         existing_outbound = revision.outbound_messages.order_by("attempt_number").first()
         if existing_outbound is not None:
-            return _adopt_agent_send(
-                existing_outbound, OutboundMessage.AuthorizationMode.OWNER_APPROVAL
-            )
+            return existing_outbound
     else:
         approval = DraftApproval(
             domain=locked.domain,
@@ -191,9 +219,7 @@ def approve_exact_revision(
         approval.save()
     existing_outbound = revision.outbound_messages.order_by("attempt_number").first()
     if existing_outbound is not None:
-        return _adopt_agent_send(
-            existing_outbound, OutboundMessage.AuthorizationMode.OWNER_APPROVAL
-        )
+        return existing_outbound
     return _outbound_for_revision(
         draft=locked,
         revision=revision,
@@ -228,12 +254,9 @@ def send_exact_revision(
             "This domain is read-only while the account exceeds its active-domain capacity.",
             code="domain_read_only",
         )
-    from inbox.services.handling import interrupt_handling
-
-    interrupt_handling(locked.conversation)
     existing = revision.outbound_messages.order_by("attempt_number").first()
     if existing is not None:
-        return _adopt_agent_send(existing, OutboundMessage.AuthorizationMode.DELEGATED_SCOPE)
+        return existing
     return _outbound_for_revision(
         draft=locked,
         revision=revision,
@@ -253,9 +276,6 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
         )
     if original.status not in {OutboundMessage.Status.FAILED, OutboundMessage.Status.UNKNOWN}:
         raise ValidationError("Only failed or unknown sends can be resent explicitly.")
-    from inbox.services.handling import interrupt_handling
-
-    interrupt_handling(original.conversation)
     require_outbound_capacity(original.domain)
     attempt = original.revision.outbound_messages.count() + 1
     resend = OutboundMessage(
@@ -279,14 +299,3 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
     resend.full_clean()
     resend.save()
     return resend
-
-
-def _adopt_agent_send(outbound: OutboundMessage, mode: str) -> OutboundMessage:
-    """An explicit exact-revision send can adopt a queued policy send without duplicating it."""
-    if (
-        outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY
-        and outbound.status == OutboundMessage.Status.QUEUED
-    ):
-        outbound.authorization_mode = mode
-        outbound.save(update_fields=("authorization_mode", "updated_at"))
-    return outbound

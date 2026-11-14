@@ -213,7 +213,7 @@ revision. The built-in agent can generate reply copy under owner-configured poli
 authority may queue the exact current revision without a second per-message approval prompt;
 revision ID, content hash, freshness, domain readiness, pause state, and send limits are revalidated.
 
-Operational Inbox runs a bounded internal handling worker in addition to external MCP agents. It uses separate classification, deterministic policy and action execution services. Domain-health, security, and delivery issues still create deduplicated email alerts.
+Operational Inbox provides owner-requested reply writing assistance and external MCP access. It has no internal conversation worker. Domain-health, security, and delivery issues still create deduplicated email alerts.
 
 Migration `0015_simplify_agent_first` snapshots retired ReportSchedule, Report, ReportItem, AgentRun, Classification, in-app notification records, and nondefault removed fields into scoped audit history before dropping their tables/fields. Original IDs and timestamps are preserved. Deprecated report/notification reads and classification overrides remain compatible; new overrides persist tags plus audit evidence. Archived content follows normalized-content retention and is excluded from ordinary audit API metadata. Stop old workers and use the normal deployment backup contract before applying this migration. Reversal restores retained snapshots; rollback after retention expiry cannot recover purged content.
 
@@ -628,74 +628,43 @@ replies, or automatic model analysis of attachment contents. Customer DNS is ver
 as exact instructions but is never modified by the application.
 
 
-## Built-in handling runtime
+## Reply assistance and shared drafts
 
-The web conversation view also supports owner-authored replies at
-`POST /app/conversations/{id}/reply/`. It validates the latest inbound context, derives addresses
-from that message, snapshots the owner's exact text as a non-agent revision, approves it, persists
-takeover, and queues delivery in one transaction. It makes no model call. A UUID send key shares
-the existing per-domain outbound uniqueness constraint; replays return the original attempt,
-including failed or unknown attempts. Different content under the same key is rejected. Existing
-sending readiness, quarantine, account capacity and pause checks still apply. The manual editor
-appears after takeover when agent handling is active. Opening/cancelling agent options preserves
-both editors, and non-JSON responses fail without navigating away from the entered text.
+`POST /app/conversations/{id}/reply-assist/` requires a verified owner session and CSRF. Operations
+are goals, generate and review; validate checks context again before applying a preview. Only
+explicit UI actions call the model. Goals offer up to three contextual choices without selecting
+one. Generation and review return subject/body and short notes, never executable actions.
 
-Migration `0018_internal_agent_handling` adds `HandlingPolicy`, `ConversationHandling`,
-`HandlingRun`, `HandlingUsage`, message automation-header signals, and policy-authorized outbound
-references. It initializes account activation times without reading/classifying historical mail.
-Migration `0019_agent_send_once` additionally enforces one outbound per handling run in the database.
-Migration `0020_conversation_reply_briefs` stores the owner's reply instructions and delivery
-choice on the conversation and each run. The inline Reply with agent composer requests up to
-three contextual goals on demand from Responses; it never enqueues handling merely by opening.
-Suggestions use the current thread and domain knowledge, share the daily agent budget, and
-fall back to custom instructions when unavailable. A signed, expiring context digest binds
-submission to the owner, domain, messages, policy, tags, handling generation and latest send.
-Suggestions use readable message content independently of sending authorization; a different
-Reply-To address does not block them. Sending checks still apply when the agent handles a reply.
-Changes during generation or before submission require refreshing the conversation.
-Draft-only delivery persists across subsequent inbound messages and cannot be widened by model
-output. Reply instructions cannot bypass account or risk rules, archive a conversation, or
-change recipients. Brief content is redacted with its context message during retention.
-These migrations do not restore the retired `0015` tables. Back up the database and stop old workers before
-migration. Deploy application and scheduler together. Roll back by disabling `HANDLING_ENABLED`
-first; do not drop authorization records while policy-authorized sends remain queued.
+Context contains readable thread messages, outbound attempts with their delivery status not yet
+mirrored as Message rows, the editor text and owner instructions. Quarantined/expired bodies are omitted;
+an unavailable current inbound blocks assistance. The existing 30-message/90 KB context bounds
+fail explicitly without silently truncating history. Signed context tokens expire in one hour and
+bind owner, domain, messages, delivery state and the selected draft revision. Context is checked
+before/after the model and on Apply, Save and Send. Responses never overwrite changed editor text.
 
-Inbound persistence creates a uniquely keyed durable job in the same transaction. The existing
-scheduler handles new work and due reminders. A four-minute conversation lease surrounds at most
-three 30-second model requests. Generation, newest inbound, latest outbound and policy fingerprint
-are rechecked before effects. Expired worker results cannot commit over a newer lease token.
-Human sends, edits, tag changes, policy edits and takeover invalidate pending work. Once a provider
-handoff has entered SUBMITTING it cannot be recalled; ambiguous acceptance is never retried.
+The service-funded model uses OPENAI_API_KEY and REPLY_ASSIST_MODEL. REPLY_ASSIST_ENABLED and
+REPLY_ASSIST_DAILY_REQUESTS/INPUT_TOKENS/OUTPUT_TOKENS retain the previous defaults and UTC daily
+reservation/reconciliation rules. Rename existing HANDLING_ENABLED, HANDLING_RESPONSE_MODEL and
+HANDLING_DAILY_* environment overrides to REPLY_ASSIST_ENABLED, REPLY_ASSIST_MODEL and
+REPLY_ASSIST_DAILY_* when upgrading. AI failure
+never blocks manual drafting or sending. Tests mock model/provider calls and clear the live API key.
 
-An account policy defaults to auto; a domain policy can inherit settings while providing domain
-knowledge and higher-priority rules. All specified rule fields must match; values within a field
-are alternatives. Security restrictions and confidence thresholds are ceilings on rule authority.
-Unknown risk and confidence below 0.85 require review. High risk defaults to review; an explicit
-matching rule can tag/archive it but cannot authorize a reply. Medium risk cannot auto-send;
-explicit organization rules can archive it. Quarantine never enters a model request.
-Classification does not overwrite provider security results. Agent-produced tags cannot change
-policy selection within the same run. Policy writes are authenticated owner web actions, not MCP.
+Save draft persists explicit owner edits as immutable revisions. Send reply snapshots and approves
+the editor's exact current revision atomically using the existing idempotent delivery pipeline.
+UI saves require the displayed revision; MCP revisions accept expected_revision_id, returning 409
+on conflicts. Conversation detail exposes reply_draft so an external agent can find a UI draft.
+If new inbound makes an existing draft stale, the UI preserves it and saves a new draft for the
+current inbound. No autosave or new-email Compose draft support is added.
 
-`POST /api/v1/domains/{domain_id}/conversations/{conversation_id}/handling` and
-`set_conversation_handling` take `handoff` or `takeover`. Both require write; handoff additionally
-requires send. Conversation reads add an optional `handling` object. Deprecated classification
-writes retain their prior tag/audit behavior and do not grant internal agent permissions.
+Migration 0021 archives retired run/state and domain policy records into scoped legacy audit
+snapshots, with content retention and no record bodies in ordinary audit API metadata. Usage
+counters are renamed without resetting budgets. Pending internal jobs are retired; queued policy
+sends become FAILED with autopilot_removed and their exact text is copied into a fresh unsent
+revision. Sent, SUBMITTING and UNKNOWN outcomes remain historical evidence; they are not retried.
+The old active models and outbound run FK are removed. Legacy AGENT_POLICY provenance remains
+readable but new policy-authorized sends are rejected.
 
-Policy-authorized messages reuse immutable draft revisions, content hashes, account/domain limits,
-Outbox pause and SES delivery controls. They add Auto-Submitted and X-Auto-Response-Suppress headers.
-There are no arbitrary tools, browsing, attachment analysis, refunds or external system connectors.
-The agent sees only the current domain's owner-authored knowledge and this conversation. Contexts
-above 30 messages or 90 KB go to review without silently dropping older evidence.
-
-One reminder is due 72 hours after provider acceptance, followed by review 72 hours later if no
-reply arrives. The interval and reminder enablement are configurable. Failed/uncertain delivery,
-takeover, newer inbound or changed policy stops follow-up. Review and completed actions remain
-visible in conversation details; audit entries contain action metadata, never generated reply text.
-Classification/reasons follow normalized-message retention; generated bodies follow draft retention.
-
-Daily service-funded limits default to 200 model requests, 1,000,000 input tokens and 50,000 output
-tokens per account, reset at UTC midnight. Input bytes and maximum output are reserved under the
-account lock before I/O, then reconciled to reported usage. Failed/unreported calls retain the
-reservation. Limit exhaustion preserves mail and surfaces review. Requests never log keys or bodies.
-The test suite clears OPENAI_API_KEY and uses mocked model/provider calls. Run the opt-in synthetic
-evaluation command separately before enabling a production rollout; never run it on real mail.
+Use the existing deployment backup, cron pause, workload drain and web/MCP stop sequence before
+migration, then start the new app and scheduler together. No live deployment is performed by
+schema generation. If restoring an old application/database backup, set HANDLING_ENABLED=false
+before starting old workers: reversing schema alone does not restore or reactivate retired work.

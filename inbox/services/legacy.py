@@ -30,7 +30,15 @@ def redact_legacy_content(*, domain: Domain, cutoff: Any) -> None:
     """Apply content retention to snapshots as well as current mail records."""
     events = AuditEvent.all_objects.filter(
         domain=domain,
-        object_type__in=("Report", "ReportItem", "Classification", "Notification"),
+        object_type__in=(
+            "Report",
+            "ReportItem",
+            "Classification",
+            "Notification",
+            "ConversationHandling",
+            "HandlingRun",
+            "HandlingPolicy",
+        ),
         metadata__record__isnull=False,
     )
     fields = {
@@ -38,6 +46,9 @@ def redact_legacy_content(*, domain: Domain, cutoff: Any) -> None:
         "ReportItem": ("summary",),
         "Classification": ("topic", "summary", "recommended_action"),
         "Notification": ("title", "body"),
+        "ConversationHandling": ("reason",),
+        "HandlingRun": ("reason",),
+        "HandlingPolicy": ("knowledge",),
     }
     for event in events.iterator():
         record = legacy_payload(event)
@@ -51,6 +62,10 @@ def redact_legacy_content(*, domain: Domain, cutoff: Any) -> None:
             continue
         for field in fields[event.object_type]:
             record[field] = ""
+        if event.object_type in {"ConversationHandling", "HandlingRun"}:
+            record.update(classification={}, reply_brief={})
+        if event.object_type == "HandlingPolicy":
+            record["rules"] = []
         if event.object_type == "Report":
             record["title"] = "Expired report"
         elif event.object_type == "Notification":

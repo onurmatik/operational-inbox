@@ -266,11 +266,7 @@ def recover_stale_submissions(*, now=None, stale_after_minutes: int = 10) -> int
 def _authorization_error(outbound: OutboundMessage) -> str:
     draft = outbound.revision.draft
     if outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY:
-        from inbox.services.handling import authorization_error
-
-        error = authorization_error(outbound)
-        if error:
-            return error
+        return "Built-in conversation handling has been removed."
     if draft.current_revision_id != outbound.revision_id or draft.is_stale:
         return "The exact draft revision is no longer current."
     if draft.kind == ReplyDraft.Kind.COMPOSE and (
@@ -315,9 +311,6 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
     message["To"] = outbound.to_address
     message["Subject"] = outbound.subject
     message["Message-ID"] = outbound.rfc_message_id
-    if outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY:
-        message["Auto-Submitted"] = "auto-replied"
-        message["X-Auto-Response-Suppress"] = "All"
     context = outbound.revision.draft.context_message
     if context is not None and context.rfc_message_id:
         message["In-Reply-To"] = context.rfc_message_id

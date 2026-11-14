@@ -13,13 +13,11 @@ from inbox.models import (
     Attachment,
     AuditEvent,
     Conversation,
-    ConversationHandling,
     DeliveryEvent,
     Domain,
     DraftApproval,
     DurableJob,
     EmailVerificationToken,
-    HandlingRun,
     IngressEvent,
     Message,
     MessageRecipient,
@@ -185,16 +183,6 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             )
             counts["normalized"] += 1
         if old_message_ids:
-            ConversationHandling.objects.filter(context_message_id__in=old_message_ids).update(
-                classification={},
-                reply_brief={},
-                status="review",
-                reason="Message content has expired.",
-                followup_at=None,
-            )
-            HandlingRun.objects.filter(context_message_id__in=old_message_ids).update(
-                classification={}, reason="", reply_brief={}
-            )
             MessageRecipient.objects.filter(message_id__in=old_message_ids).delete()
         Conversation.objects.filter(domain=domain).exclude(
             messages__normalized_purged_at__isnull=True

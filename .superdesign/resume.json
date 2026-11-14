@@ -91,11 +91,11 @@
       "designSystemPath": ".superdesign/simplify/design-system.md",
       "contextFiles": [
         ".superdesign/simplify/design-system.md",
-        ".superdesign/simplify/brief.md"
+        ".superdesign/reply/brief.md"
       ],
       "fingerprints": {
         ".superdesign/simplify/design-system.md": "33b1b90f63df2b8e332897f800611ba490098d316a79585dafece96ce932d58e",
-        ".superdesign/simplify/brief.md": "8fa7ebaef78bf8f6c6d8e834f756e1fd01ded7d47b25620dbf132a0f0af4b8b9"
+        ".superdesign/reply/brief.md": "533f62b72812158367ab6eb9f30e30be339d7b8bac4808a2ba4daf2af8535d3b"
       },
       "referenceIds": [
         "inbox-static-img-logo.svg"
@@ -117,12 +117,12 @@
       ],
       "drafts": {
         "e21c2fe9-0642-4f5c-8ed6-629c410e7aac": {
-          "title": "Refined Operational Inbox Preview",
-          "visualDirection": "Existing Conversations UI with independent scroll areas, expanded tags, agent icons, and a resizable message/agent split",
-          "currentVersion": 11
+          "title": "Reply Composer Implementation",
+          "visualDirection": "Single manual reply composer with explicit AI writing assistance",
+          "currentVersion": 12
         }
       },
-      "updatedAt": "2026-11-10T12:50:36.899706+00:00",
+      "updatedAt": "2026-11-14T20:11:23.393356+00:00",
       "baselineVersion": 3,
       "baselineContextFiles": [
         ".superdesign/simplify/design-system.md",

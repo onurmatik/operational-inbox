@@ -385,7 +385,6 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
     tools = listed.json()["result"]["tools"]
     names = {tool["name"] for tool in tools}
     assert names == {
-        "set_conversation_handling",
         "get_integration_status",
         "get_account_limits",
         "list_domains",
@@ -1058,26 +1057,44 @@ def test_mcp_spam_review_scope_audit_and_undo(mcp_client, owner, domain, inbound
 
 
 @pytest.mark.django_db(transaction=True)
-def test_handling_tool_requires_send_for_handoff_and_returns_optional_state(
+def test_shared_owner_draft_is_discoverable_and_revision_checked(
     mcp_client, owner, inbound_message
 ):
+    from inbox.services.replies import save_reply_draft
+    from inbox.services.reply_assistance import context_token
+
+    conversation = inbound_message.conversation
+    draft = save_reply_draft(
+        conversation=conversation,
+        owner=owner,
+        context_message_id=inbound_message.id,
+        subject="Re: Hello",
+        body_text="Owner draft",
+        context_token=context_token(conversation),
+    )
     arguments = {
         "domain_id": str(inbound_message.domain_id),
-        "conversation_id": str(inbound_message.conversation_id),
+        "conversation_id": str(conversation.id),
     }
-    writer = oauth_access_token(owner, scope="read write")
-    denied = tool_call(
-        mcp_client, writer, "set_conversation_handling", {**arguments, "action": "handoff"}
-    )
-    assert denied["isError"]
-    takeover = tool_call(
-        mcp_client, writer, "set_conversation_handling", {**arguments, "action": "takeover"}
-    )
-    assert takeover["structuredContent"]["handling"]["taken_over"]
-    sender = oauth_access_token(owner, scope="read write send")
-    handed = tool_call(
-        mcp_client, sender, "set_conversation_handling", {**arguments, "action": "handoff"}
-    )
-    assert handed["structuredContent"]["handling"]["status"] == "pending"
-    read = tool_call(mcp_client, writer, "get_conversation", arguments)
-    assert read["structuredContent"]["handling"]["status"] == "pending"
+    token = oauth_access_token(owner, scope="read write")
+    read = tool_call(mcp_client, token, "get_conversation", arguments)["structuredContent"]
+    assert "handling" not in read
+    assert read["reply_draft"]["id"] == str(draft.id)
+    revision_id = read["reply_draft"]["current_revision_id"]
+    revise = {
+        "domain_id": arguments["domain_id"],
+        "draft_id": str(draft.id),
+        "subject": "Re: Hello",
+        "body_text": "Agent revision",
+        "expected_revision_id": revision_id,
+    }
+    assert not tool_call(mcp_client, token, "revise_reply_draft", revise).get("isError")
+    assert tool_call(mcp_client, token, "revise_reply_draft", revise)["isError"]
+    reread = tool_call(
+        mcp_client,
+        token,
+        "get_reply_draft",
+        {"domain_id": arguments["domain_id"], "draft_id": str(draft.id)},
+    )["structuredContent"]
+    assert reread["current_revision"]["body_text"] == "Agent revision"
+    assert "set_conversation_handling" not in {tool["name"] for tool in MCP_TOOLS}
