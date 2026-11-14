@@ -19,7 +19,7 @@ from inbox.services.outbound import get_outbound_control, require_outbound_capac
 
 
 def create_authored_draft(
-    *, message: Message, owner: User, subject: str, body_text: str
+    *, message: Message, owner: User, subject: str, body_text: str, is_agent_generated: bool = True
 ) -> ReplyDraft:
     if message.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can create a reply draft.")
@@ -43,7 +43,7 @@ def create_authored_draft(
             subject=subject,
             body_text=body_text,
             author=owner,
-            is_agent_generated=True,
+            is_agent_generated=is_agent_generated,
         )
         revision.full_clean()
         revision.save()

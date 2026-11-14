@@ -40,6 +40,11 @@ urlpatterns = [
     ),
     path("app/outbox/", views.outbox, name="outbox"),
     path("app/compose/", views.compose, name="compose"),
+    path(
+        "app/conversations/<uuid:conversation_id>/reply/",
+        views.conversation_reply,
+        name="conversation_reply",
+    ),
     path("app/outbox/control/", views.outbox_control, name="outbox_control"),
     path(
         "app/conversations/<uuid:conversation_id>/",

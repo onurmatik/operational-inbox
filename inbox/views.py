@@ -39,6 +39,7 @@ from inbox.forms import (
     DigestSettingsForm,
     DomainForm,
     DraftRevisionForm,
+    ManualReplyForm,
     RetentionForm,
     SignupForm,
     StartOnboardingForm,
@@ -111,6 +112,7 @@ from inbox.services.outbound import (
     outbound_usage,
     set_outbound_paused,
 )
+from inbox.services.replies import send_manual_reply
 from inbox.services.reply_briefs import reply_composer
 from inbox.services.routing_transitions import (
     begin_routing_transition,
@@ -762,7 +764,9 @@ def _owned_record(request: HttpRequest, queryset, **lookup):
     return record
 
 
-def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpResponse:
+def _conversation_workspace(
+    request: HttpRequest, conversation_id=None, *, manual_reply_form=None, status=200
+) -> HttpResponse:
     domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
     domain = (
         get_owned_domain(request.user, request.GET["domain"]) if request.GET.get("domain") else None
@@ -771,6 +775,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
     selected = None
     timeline = []
     draft = None
+    reply_message = None
     if selected_id:
         with transaction.atomic():
             selected = _owned_record(
@@ -820,6 +825,23 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
             .order_by("-created_at")
             .first()
         )
+        reply_message = (
+            selected.messages.filter(domain=selected.domain, direction=Message.Direction.INBOUND)
+            .order_by("-received_at", "-created_at", "-id")
+            .first()
+        )
+        if reply_message and (reply_message.is_quarantined or reply_message.normalized_purged_at):
+            reply_message = None
+        if reply_message and manual_reply_form is None:
+            subject = reply_message.subject or "(no subject)"
+            manual_reply_form = ManualReplyForm(
+                auto_id="reply_%s",
+                initial={
+                    "context_message_id": reply_message.id,
+                    "idempotency_key": uuid.uuid4(),
+                    "subject": subject if subject.lower().startswith("re:") else f"Re: {subject}",
+                },
+            )
 
     folder = request.GET.get("folder", "inbox")
     folders = {
@@ -975,6 +997,8 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
             "needs_review": needs_review,
             "handling": handling_dict(selected, details=True) if selected else None,
             "reply_composer": reply_composer(selected) if selected else None,
+            "reply_message": reply_message,
+            "manual_reply_form": manual_reply_form,
             "conversation": selected,
             "timeline": timeline,
             "draft": draft,
@@ -1008,6 +1032,7 @@ def _conversation_workspace(request: HttpRequest, conversation_id=None) -> HttpR
             ),
             "outbound_control": get_outbound_control(request.user),
         },
+        status=status,
     )
 
 
@@ -1110,6 +1135,32 @@ def outbox_control(request: HttpRequest) -> HttpResponse:
 @verified_required
 def conversation_detail(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
     return _conversation_workspace(request, conversation_id)
+
+
+@verified_required
+@require_POST
+def conversation_reply(request: HttpRequest, conversation_id: uuid.UUID) -> HttpResponse:
+    conversation = _owned_record(request, Conversation.objects, id=conversation_id)
+    form = ManualReplyForm(request.POST, auto_id="reply_%s")
+    if form.is_valid():
+        try:
+            outbound = send_manual_reply(
+                conversation=conversation, owner=request.user, **form.cleaned_data
+            )
+        except ValidationError as exc:
+            form.add_error(None, "; ".join(exc.messages))
+        else:
+            messages.success(request, f"Reply status: {outbound.get_status_display()}.")
+            url = f"{reverse('inbox')}?{urlencode({'conversation': str(conversation.id)})}"
+            if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+                return JsonResponse({"url": url, "status": outbound.status})
+            return redirect(url)
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+        return JsonResponse(
+            {"message": " ".join(error for errors in form.errors.values() for error in errors)},
+            status=400,
+        )
+    return _conversation_workspace(request, conversation.id, manual_reply_form=form, status=400)
 
 
 @verified_required

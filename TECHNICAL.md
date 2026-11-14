@@ -607,6 +607,7 @@ uv run ruff format --check operational_inbox inbox infra tests .deploy
 uv run ruff check operational_inbox inbox infra tests .deploy
 uv run mypy operational_inbox inbox infra
 uv run pytest
+npm run test:ui
 uv run python manage.py makemigrations --check --dry-run
 npm run css:build
 npx cdk synth --quiet
@@ -628,6 +629,16 @@ as exact instructions but is never modified by the application.
 
 
 ## Built-in handling runtime
+
+The web conversation view also supports owner-authored replies at
+`POST /app/conversations/{id}/reply/`. It validates the latest inbound context, derives addresses
+from that message, snapshots the owner's exact text as a non-agent revision, approves it, persists
+takeover, and queues delivery in one transaction. It makes no model call. A UUID send key shares
+the existing per-domain outbound uniqueness constraint; replays return the original attempt,
+including failed or unknown attempts. Different content under the same key is rejected. Existing
+sending readiness, quarantine, account capacity and pause checks still apply. The manual editor
+appears after takeover when agent handling is active. Opening/cancelling agent options preserves
+both editors, and non-JSON responses fail without navigating away from the entered text.
 
 Migration `0018_internal_agent_handling` adds `HandlingPolicy`, `ConversationHandling`,
 `HandlingRun`, `HandlingUsage`, message automation-header signals, and policy-authorized outbound

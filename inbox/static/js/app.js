@@ -15,10 +15,14 @@
           ...(options.headers || {}),
         },
       });
-      const payload = await response.json().catch(() => ({
-        code: "invalid_response",
-        message: "The server returned an unreadable response.",
-      }));
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        const error = new Error("The server returned an unreadable response. Please try again.");
+        error.payload = { code: "invalid_response" };
+        throw error;
+      }
       if (!response.ok) {
         const error = new Error(payload.message || "The request failed.");
         error.payload = payload;
@@ -678,6 +682,7 @@
     const opener = document.querySelector("[data-open-reply-brief]");
     if (!form || !opener) return;
     const panel = form.closest("section");
+    const manual = document.querySelector("[data-manual-reply]");
     const goals = form.querySelector("[data-reply-goals]");
     const custom = form.querySelector("[data-custom-goal]");
     const instructions = form.elements.instructions;
@@ -748,8 +753,18 @@
         goals.setAttribute("aria-busy", "false");
       }
     };
+    const close = () => {
+      panel.hidden = true;
+      if (manual) manual.hidden = false;
+      opener.textContent = "Reply with agent";
+      opener.setAttribute("aria-expanded", "false");
+      opener.focus({ preventScroll: true });
+    };
     opener.addEventListener("click", () => {
+      if (!panel.hidden) { close(); return; }
       panel.hidden = false;
+      if (manual) manual.hidden = true;
+      opener.textContent = manual ? "Reply myself" : "Close reply options";
       opener.setAttribute("aria-expanded", "true");
       panel.querySelector("h3").focus({ preventScroll: true });
       const interaction = panel.closest(".thread-interaction");
@@ -757,43 +772,68 @@
       else panel.scrollIntoView({ block: "nearest" });
       loadGoals();
     });
-    form.querySelector("[data-cancel-reply-brief]").addEventListener("click", () => {
-      panel.hidden = true;
-      opener.setAttribute("aria-expanded", "false");
-      opener.focus({ preventScroll: true });
-    });
+    form.querySelector("[data-cancel-reply-brief]").addEventListener("click", close);
     custom.addEventListener("click", () => { select(custom); instructions.focus(); });
     instructions.addEventListener("input", () => select(custom));
     retry.addEventListener("click", loadGoals);
-    form.addEventListener("change", () => {
+    const updateDelivery = () => {
       const auto = form.elements.delivery.value === "auto";
-      submit.textContent = auto ? "Start replying" : "Create draft";
+      submit.textContent = sending ? "Queuing…" : auto ? "Start replying" : "Create draft";
       form.querySelector("[data-delivery-help]").textContent = auto
         ? "Sends replies under your agent rules. You can take over anytime."
         : "Nothing is sent until you approve.";
-    });
+    };
+    form.addEventListener("change", updateDelivery);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (sending || stale) return;
       sending = true;
       submit.disabled = true;
       error.hidden = true;
-      const label = submit.textContent;
-      submit.textContent = "Queuing…";
+      updateDelivery();
       try {
-        await window.OperationalInbox.request(form.action, { method: "POST", body: new FormData(form) });
+        await window.OperationalInbox.request(form.getAttribute("action"), { method: "POST", body: new FormData(form) });
         window.location.reload();
       } catch (failure) {
         showError(failure.message, Boolean(failure.payload?.stale));
         sending = false;
         submit.disabled = stale;
-        submit.textContent = label;
+        updateDelivery();
+      }
+    });
+  };
+
+  const initManualReply = () => {
+    const form = document.querySelector("[data-manual-reply-form]");
+    if (!form) return;
+    const submit = form.querySelector("[data-send-reply]");
+    const error = form.querySelector("[data-reply-error]");
+    let sending = false;
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (sending) return;
+      sending = true;
+      submit.disabled = true;
+      submit.textContent = "Sending…";
+      error.hidden = true;
+      try {
+        const result = await window.OperationalInbox.request(form.getAttribute("action"), {
+          method: "POST", body: new FormData(form),
+        });
+        window.location.assign(result.url);
+      } catch (failure) {
+        error.textContent = failure.message;
+        error.hidden = false;
+        sending = false;
+        submit.disabled = false;
+        submit.textContent = "Send reply";
       }
     });
   };
 
   document.addEventListener("DOMContentLoaded", initThreadSplit);
   document.addEventListener("DOMContentLoaded", initReplyBrief);
+  document.addEventListener("DOMContentLoaded", initManualReply);
   document.addEventListener("DOMContentLoaded", initAppShell);
   document.addEventListener("DOMContentLoaded", initDomainCreate);
   document.addEventListener("DOMContentLoaded", initCopyControls);

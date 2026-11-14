@@ -1,0 +1,20 @@
+{% if domain_writable and reply_message %}
+  {% if not handling or handling.taken_over or manual_reply_form.errors %}
+  <section class="mt-5" data-manual-reply aria-labelledby="manual-reply-title">
+    <h3 id="manual-reply-title" class="font-heading text-xl font-semibold">Reply</h3>
+    <p class="mt-2 text-xs text-muted break-all">To: {{ reply_message.reply_to_address|default:reply_message.from_address }}</p>
+    <form method="post" action="{% url 'conversation_reply' conversation.id %}" class="mt-4 oi-form" data-manual-reply-form>
+      {% csrf_token %}
+      {{ manual_reply_form.context_message_id }}{{ manual_reply_form.idempotency_key }}
+      {{ manual_reply_form.non_field_errors }}
+      <details class="mb-4" {% if manual_reply_form.subject.errors %}open{% endif %}>
+        <summary class="cursor-pointer text-xs text-muted">Subject</summary>
+        <div class="mt-2">{{ manual_reply_form.subject.label_tag }}{{ manual_reply_form.subject }}{{ manual_reply_form.subject.errors }}</div>
+      </details>
+      {{ manual_reply_form.body_text.label_tag }}{{ manual_reply_form.body_text }}{{ manual_reply_form.body_text.errors }}
+      <p class="mt-3 text-sm text-coral-strong" role="alert" data-reply-error hidden></p>
+      <div class="mt-4 flex justify-end"><button class="oi-button-primary" data-send-reply>Send reply</button></div>
+    </form>
+  </section>
+  {% endif %}
+{% endif %}

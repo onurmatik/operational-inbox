@@ -119,6 +119,20 @@ class DraftRevisionForm(StyledFormMixin, forms.Form):
         self._style_fields()
 
 
+class ManualReplyForm(StyledFormMixin, forms.Form):
+    context_message_id = forms.UUIDField(widget=forms.HiddenInput)
+    idempotency_key = forms.UUIDField(widget=forms.HiddenInput)
+    subject = forms.CharField(max_length=998, strip=False)
+    body_text = forms.CharField(
+        max_length=20000, label="Message", strip=False, widget=forms.Textarea(attrs={"rows": 8})
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._style_fields()
+        self.fields["body_text"].widget.attrs.update(placeholder="Write your reply…")
+
+
 class ComposeForm(StyledFormMixin, forms.Form):
     from_address = forms.CharField(
         max_length=320,

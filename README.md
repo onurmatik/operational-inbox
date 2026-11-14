@@ -77,6 +77,11 @@ is `POST /api/v1/domains/{domain_id}/outbound/compose`. Retain the same key afte
 response to recover the existing attempt without sending again. Both interfaces return the
 outbound ID, conversation ID, and authoritative status.
 
+Open a conversation to write your own **Reply** and choose **Send reply**. This sends your exact
+text in the existing thread and takes over from the built-in agent. If the agent is already
+handling the conversation, choose **Take over** first. **Reply with agent** opens agent instructions;
+**Reply myself** or **Cancel** returns to your manual reply without clearing either editor.
+
 If an account returns to Free Core while more than one domain is active, it receives a 30-day
 capacity grace period. The owner chooses the domain that will keep the Free slot; the others remain
 readable during the grace period and are disabled when it ends.
