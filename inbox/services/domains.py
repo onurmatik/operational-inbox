@@ -274,10 +274,10 @@ def create_domain(
 ) -> Domain:
     if setup_mode not in Domain.SetupMode.values:
         raise ValidationError({"setup_mode": "Select a supported setup mode."})
-    if goal not in Domain.Goal.values:
-        raise ValidationError({"goal": "Select Receive email, Send email or Both."})
+    if goal not in {Domain.Goal.RECEIVE, Domain.Goal.BOTH}:
+        raise ValidationError({"goal": "Select Receive email or Receive & reply."})
     normalized = normalize_hostname(hostname)
-    mx = inspect_mx(normalized) if goal != Domain.Goal.SEND else []
+    mx = inspect_mx(normalized)
     # DNS may take several seconds on a degraded nameserver. Keep it outside the
     # write transaction so one lookup cannot hold SQLite's immediate write lock.
     existing = (
@@ -294,7 +294,7 @@ def create_domain(
                 owner=owner,
                 hostname=normalized,
                 setup_mode=setup_mode,
-                receiving_enabled=goal != Domain.Goal.SEND,
+                receiving_enabled=True,
                 sending_requested=goal != Domain.Goal.RECEIVE,
                 status=Domain.Status.PROVISIONING,
                 existing_mx=[

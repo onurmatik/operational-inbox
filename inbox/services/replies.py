@@ -52,7 +52,6 @@ def _persist_reply(
                 id=draft_id,
                 domain=conversation.domain,
                 conversation=conversation,
-                kind=ReplyDraft.Kind.REPLY,
             )
             .select_related("current_revision")
             .first()
@@ -168,7 +167,6 @@ def send_manual_reply(
     if existing is not None:
         if (
             existing.conversation_id != conversation.id
-            or existing.revision.draft.kind != ReplyDraft.Kind.REPLY
             or existing.revision.draft.context_message_id != context_message_id
             or existing.subject != subject
             or existing.body_text != body_text

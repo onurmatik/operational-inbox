@@ -33,7 +33,6 @@ urlpatterns = [
         name="message_spam_review",
     ),
     path("app/outbox/", views.outbox, name="outbox"),
-    path("app/compose/", views.compose, name="compose"),
     path(
         "app/conversations/<uuid:conversation_id>/reply/",
         views.conversation_reply,

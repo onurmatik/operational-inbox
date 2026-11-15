@@ -304,7 +304,6 @@
   .workspace-search { order: 5; flex-basis: 100%; gap: 12px; }
   .workspace-search > div { max-width: none; }
   .domain-filter { width: 115px; }
-  .new-email-button { min-height: 44px; padding: 0 10px; font-size: 12px; }
   .workspace-search .oi-input { min-height: 44px; }
   .oi-button-primary, .oi-button-secondary, .oi-input { min-height: 44px; }
   .conversation-list { width: 100%; border-right: 0; }

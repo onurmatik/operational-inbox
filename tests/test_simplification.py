@@ -15,11 +15,10 @@ from inbox.models import (
     Domain,
     DomainDNSRecord,
     DomainTest,
+    MessageRecipient,
     Notification,
-    OutboundMessage,
     User,
 )
-from inbox.services.compose import send_composed_email
 from inbox.services.domains import (
     apply_domain_readiness,
     create_domain,
@@ -29,6 +28,7 @@ from inbox.services.domains import (
 )
 from inbox.services.jobs import request_outbound_provisioning
 from inbox.services.receipt_rules import receipt_allowlist
+from inbox.services.replies import send_manual_reply
 from tests.legacy_helpers import archived_record
 
 
@@ -76,7 +76,7 @@ def test_notification_compatibility_merges_live_and_archived_records(client, own
 
 
 @pytest.mark.django_db
-def test_web_send_only_setup_renders_and_receiving_can_be_added(client, owner, monkeypatch):
+def test_web_rejects_send_only_setup_and_legacy_receiving_can_be_added(client, owner, monkeypatch):
     inspect = Mock(side_effect=AssertionError("Send-only must not inspect MX"))
     monkeypatch.setattr("inbox.services.domains.inspect_mx", inspect)
     client.force_login(owner)
@@ -90,12 +90,15 @@ def test_web_send_only_setup_renders_and_receiving_can_be_added(client, owner, m
         follow=True,
     )
     assert response.status_code == 200
-    assert (
-        b"Enable receiving" in response.content
-        and b"Preparing your DNS instructions" in response.content
+    assert b"Select a valid choice" in response.content
+    assert not Domain.objects.filter(hostname="web-outreach.example").exists()
+    domain = Domain.objects.create(
+        owner=owner,
+        hostname="web-outreach.example",
+        receiving_enabled=False,
+        sending_requested=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
     )
-    domain = Domain.objects.get(hostname="web-outreach.example")
-    assert not domain.receiving_enabled and domain.sending_requested
     inspect.assert_not_called()
     domain.outbound_ready = True
     domain.outbound_status = "READY"
@@ -117,7 +120,15 @@ def test_web_send_only_setup_renders_and_receiving_can_be_added(client, owner, m
 def test_send_only_verifies_ownership_and_dkim_without_receiving(owner, monkeypatch):
     inspect = Mock(side_effect=AssertionError("Send-only must not inspect MX"))
     monkeypatch.setattr("inbox.services.domains.inspect_mx", inspect)
-    domain = create_domain(owner=owner, hostname="outreach.example", goal="send")
+    with pytest.raises(ValidationError, match="Receive"):
+        create_domain(owner=owner, hostname="outreach.example", goal="send")
+    domain = Domain.objects.create(
+        owner=owner,
+        hostname="outreach.example",
+        receiving_enabled=False,
+        sending_requested=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
     assert not domain.receiving_enabled and domain.sending_requested
     assert not domain.inbound_routes.exists()
     inbound_ses = Mock()
@@ -231,16 +242,21 @@ def test_conversations_cross_domains_ignore_session_but_enforce_ownership(
 def test_queued_sent_conversation_is_immediate_and_test_mail_stays_out_of_inbox(
     client, owner, domain, inbound_message
 ):
-    sent = send_composed_email(
+    MessageRecipient.objects.create(
         domain=domain,
+        message=inbound_message,
+        kind="ENVELOPE",
+        address="hello@example.com",
+        is_routing_recipient=True,
+    )
+    sent = send_manual_reply(
+        conversation=inbound_message.conversation,
         owner=owner,
-        from_address="hello@example.com",
-        to_address="customer@example.net",
-        subject="A customer follow-up",
+        context_message_id=inbound_message.id,
+        subject="Re: Privacy request",
         body_text="Hello from your project",
         idempotency_key=uuid.uuid4(),
     )
-    assert not sent.conversation.messages.exists()
     DomainTest.objects.create(
         domain=domain,
         address="test-fixture@example.com",
@@ -265,37 +281,12 @@ def test_queued_sent_conversation_is_immediate_and_test_mail_stays_out_of_inbox(
     )
 
 
-@pytest.mark.django_db
-def test_full_from_address_form_preserves_exact_send_and_idempotency(client, owner, domain):
-    client.force_login(owner)
-    payload = {
-        "from_address": "support@example.com",
-        "to_address": "customer@example.net",
-        "subject": "An exact email",
-        "body_text": "First line\nSecond line",
-        "idempotency_key": str(uuid.uuid4()),
-    }
-    first = client.post(reverse("compose"), payload)
-    second = client.post(reverse("compose"), payload)
-    assert first.status_code == second.status_code == 302
-    assert OutboundMessage.objects.count() == 1
-    outbound = OutboundMessage.objects.get()
-    assert outbound.from_address == payload["from_address"]
-    assert outbound.body_text == payload["body_text"]
-    assert outbound.revision.approval.content_hash == outbound.content_hash
-    conflict = client.post(reverse("compose"), {**payload, "body_text": "Changed"})
-    assert conflict.status_code == 409
-    invalid = client.post(
-        reverse("compose"), {**payload, "from_address": "support@foreign.example"}
-    )
-    assert "from_address" in invalid.context["form"].errors
-
-
 @pytest.mark.django_db(transaction=True)
 def test_retirement_migration_archives_and_restores_nonempty_history():
     executor = MigrationExecutor(connection)
     old_target = [("inbox", "0014_compose_email")]
     target = [("inbox", "0015_simplify_agent_first")]
+    latest = executor.loader.graph.leaf_nodes("inbox")
     executor.migrate(old_target)
     try:
         old = executor.loader.project_state(old_target).apps
@@ -427,4 +418,4 @@ def test_retirement_migration_archives_and_restores_nonempty_history():
         )
         assert restored.get_model("inbox", "DurableJob").objects.get(pk=job.id).status == "LEASED"
     finally:
-        MigrationExecutor(connection).migrate(target)
+        MigrationExecutor(connection).migrate(latest)

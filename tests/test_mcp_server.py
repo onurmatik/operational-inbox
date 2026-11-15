@@ -36,7 +36,6 @@ from inbox.models import (
     User,
 )
 from inbox.services.domains import classify_domain_routing
-from inbox.services.outbound import set_outbound_paused
 from oauth_server.models import OAuthApplication
 
 
@@ -141,7 +140,7 @@ def oauth_access_token(owner, *, scope: str) -> str:
 
 
 @pytest.mark.django_db(transaction=True)
-def test_mcp_send_only_setup_and_later_receiving_keep_sending_independent(
+def test_mcp_rejects_send_only_setup_and_can_enable_legacy_receiving(
     mcp_client, owner, monkeypatch
 ):
     def unexpected_mx(*args, **kwargs):
@@ -150,7 +149,7 @@ def test_mcp_send_only_setup_and_later_receiving_keep_sending_independent(
     monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", unexpected_mx)
     monkeypatch.setattr("inbox.services.domains.inspect_mx", unexpected_mx)
     raw = oauth_access_token(owner, scope="read manage_domains")
-    created = tool_call(
+    rejected = tool_call(
         mcp_client,
         raw,
         "start_domain_onboarding",
@@ -158,10 +157,19 @@ def test_mcp_send_only_setup_and_later_receiving_keep_sending_independent(
             "hostname": "agent-outreach.example",
             "goal": "send",
         },
-    )["structuredContent"]
-    domain = Domain.objects.get(pk=created["id"])
-    assert created["goal"] == "send" and not created["receiving_enabled"]
-    assert not domain.inbound_routes.exists()
+    )
+    assert rejected["isError"] is True
+    assert not Domain.objects.exists()
+    domain = Domain.objects.create(
+        owner=owner,
+        hostname="agent-outreach.example",
+        setup_mode="DIRECT_MX",
+        receiving_enabled=False,
+        sending_requested=True,
+        claim_expires_at=timezone.now() + timedelta(days=1),
+    )
+    listed = tool_call(mcp_client, raw, "list_domains", {})["structuredContent"]
+    assert listed["items"][0]["goal"] == "send"
     domain.outbound_ready = True
     domain.outbound_status = "READY"
     domain.status = "READY"
@@ -190,103 +198,47 @@ def test_mcp_send_only_setup_and_later_receiving_keep_sending_independent(
 
 
 @pytest.mark.django_db(transaction=True)
-@pytest.mark.parametrize("status", ["QUEUED", "FAILED", "UNKNOWN"])
-def test_send_email_requires_only_send_scope_and_is_idempotent(mcp_client, owner, domain, status):
-    raw = oauth_access_token(owner, scope="send")
-    payload = {
-        "domain_id": str(domain.id),
-        "from_address": "onur@example.com",
-        "to_address": "contact@example.net",
-        "subject": "New email from MCP",
-        "body_text": "Hello from the agent.",
-        "idempotency_key": str(uuid.uuid4()),
-    }
-    first = tool_call(mcp_client, raw, "send_email", payload)
-    assert first["isError"] is False
-    outbound = OutboundMessage.objects.get(id=first["structuredContent"]["outbound_id"])
-    assert outbound.status == OutboundMessage.Status.QUEUED
-    OutboundMessage.objects.filter(id=outbound.id).update(status=status)
-    set_outbound_paused(owner, paused=True)
-    repeated = tool_call(mcp_client, raw, "send_email", payload)
-    assert repeated["structuredContent"] == {**first["structuredContent"], "status": status}
-    assert outbound.revision.draft.context_message is None
-    assert not DraftApproval.objects.exists()
-    assert DurableJob.objects.count() == 1
-    payload["to_address"] = "changed@example.net"
-    assert tool_error_payload(tool_call(mcp_client, raw, "send_email", payload))["code"] == (
-        "idempotency_conflict"
+@pytest.mark.parametrize("goal", ["receive", "both"])
+def test_mcp_onboards_receiving_and_optional_replies(mcp_client, owner, monkeypatch, goal):
+    inspection = classify_domain_routing([], has_operational_inbox_claim=False)
+    monkeypatch.setattr("inbox.mcp_server.inspect_domain_routing", lambda hostname: inspection)
+    monkeypatch.setattr("inbox.services.domains.inspect_mx", lambda hostname: [])
+    raw = oauth_access_token(owner, scope="read manage_domains")
+    result = tool_call(
+        mcp_client,
+        raw,
+        "start_domain_onboarding",
+        {
+            "hostname": "receiving.example",
+            "goal": goal,
+            "setup_mode": "DIRECT_MX",
+        },
     )
+    assert result["isError"] is False
+    domain = owner.domains.get()
+    assert domain.receiving_enabled and domain.inbound_routes.exists()
+    assert domain.sending_requested == (goal == "both")
 
 
 @pytest.mark.django_db(transaction=True)
-def test_send_email_rejects_missing_send_scope_and_cross_tenant(mcp_client, owner, domain):
-    payload = {
-        "domain_id": str(domain.id),
-        "from_address": "onur@example.com",
-        "to_address": "contact@example.net",
-        "subject": "New email",
-        "body_text": "Hello.",
-        "idempotency_key": str(uuid.uuid4()),
-    }
-    readonly = oauth_access_token(owner, scope="read")
-    assert tool_call(mcp_client, readonly, "send_email", payload)["isError"] is True
-    outsider = User.objects.create_user(
-        email="outsider@example.net", email_verified_at=timezone.now()
+def test_removed_send_email_cannot_queue_a_message(mcp_client, owner, domain):
+    raw = oauth_access_token(owner, scope="read write manage_domains send")
+    result = tool_call(
+        mcp_client,
+        raw,
+        "send_email",
+        {
+            "domain_id": str(domain.id),
+            "from_address": "me@example.com",
+            "to_address": "recipient@example.net",
+            "subject": "Hello",
+            "body_text": "Test",
+            "idempotency_key": str(uuid.uuid4()),
+        },
     )
-    foreign = oauth_access_token(outsider, scope="send")
-    assert tool_call(mcp_client, foreign, "send_email", payload)["isError"] is True
+    assert result["isError"] is True
     assert not OutboundMessage.objects.exists()
-
-
-@pytest.mark.django_db(transaction=True)
-@pytest.mark.parametrize(
-    ("blocked", "expected_code"),
-    [
-        ("paused", "outbound_paused"),
-        ("not_ready", "outbound_not_ready"),
-        ("unverified", "outbound_not_ready"),
-        ("quota", "quota_exhausted"),
-        ("foreign_from", "validation_error"),
-        ("invalid_to", "validation_error"),
-        ("missing_subject", "validation_error"),
-    ],
-)
-def test_send_email_reports_atomic_validation_and_capacity_errors(
-    mcp_client, owner, domain, settings, blocked, expected_code
-):
-    raw = oauth_access_token(owner, scope="send")
-    payload = {
-        "domain_id": str(domain.id),
-        "from_address": "onur@example.com",
-        "to_address": "contact@example.net",
-        "subject": "New email",
-        "body_text": "Hello.",
-        "idempotency_key": str(uuid.uuid4()),
-    }
-    existing_count = 0
-    if blocked == "paused":
-        set_outbound_paused(owner, paused=True)
-    elif blocked in {"not_ready", "unverified"}:
-        field = "outbound_ready" if blocked == "not_ready" else "ownership_verified"
-        setattr(domain, field, False)
-        domain.save(update_fields=[field])
-    elif blocked == "quota":
-        settings.OUTBOUND_MONTHLY_ACCOUNT_LIMIT = 1
-        assert tool_call(mcp_client, raw, "send_email", payload)["isError"] is False
-        existing_count = 1
-        payload["idempotency_key"] = str(uuid.uuid4())
-    elif blocked == "foreign_from":
-        payload["from_address"] = "onur@other.example"
-    elif blocked == "invalid_to":
-        payload["to_address"] = "contact@example.net\r\nBcc: hidden@example.net"
-    else:
-        del payload["subject"]
-    error = tool_error_payload(tool_call(mcp_client, raw, "send_email", payload))
-    assert error["code"] == expected_code
-    assert OutboundMessage.objects.count() == DurableJob.objects.count() == existing_count
-    if blocked == "quota":
-        assert error["resource"] == "outbound_replies"
-        assert error["period"] == "calendar_month" and error["reset_at"] is not None
+    assert not DurableJob.objects.exists()
 
 
 @pytest.mark.django_db(transaction=True)
@@ -410,7 +362,6 @@ def test_mcp_initialize_and_tool_discovery_advertise_oauth(mcp_client, owner):
         "get_reply_draft",
         "revise_reply_draft",
         "send_reply",
-        "send_email",
         "resend_outbound",
     }
     for tool in tools:

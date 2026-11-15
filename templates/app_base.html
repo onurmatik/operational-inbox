@@ -24,6 +24,6 @@
 </div>
 <dialog id="agent-dialog" class="oi-dialog" aria-labelledby="agent-title">
   <div class="dialog-header"><h2 id="agent-title" class="font-heading text-xl font-semibold">Connect your agent</h2><button type="button" class="icon-button" data-close-dialog aria-label="Close"><span class="oi-icon">{% include "icons/x.svg" %}</span></button></div>
-  <div class="space-y-4 p-6"><p class="text-sm leading-6 text-muted">Use your agent to set up domains, handle incoming mail, and write to customers.</p>{% include "inbox/partials/agent_prompt.html" %}<a href="{% url 'api_tokens' %}" class="block text-sm font-semibold text-forest hover:underline">Manage access</a></div>
+  <div class="space-y-4 p-6"><p class="text-sm leading-6 text-muted">Use your agent to set up domains, handle incoming mail, and reply to customers.</p>{% include "inbox/partials/agent_prompt.html" %}<a href="{% url 'api_tokens' %}" class="block text-sm font-semibold text-forest hover:underline">Manage access</a></div>
 </dialog>
 {% endblock %}

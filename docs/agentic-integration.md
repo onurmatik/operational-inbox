@@ -40,7 +40,7 @@ active-domain slots, 5,000 user-requested emails per UTC calendar month, custom 
 
 MCP and API call counts are not commercially metered, and inbound receiving has no hard commercial
 plan-volume quota. Independent technical, provider, and abuse-prevention limits still apply.
-New emails and replies share one allowance. The compatibility key remains `outbound_replies`.
+Reply attempts use one allowance. The compatibility key remains `outbound_replies`.
 Drafting, triage, and Outbox safety remain available after the monthly email allowance is
 exhausted.
 
@@ -123,48 +123,18 @@ reopens resolved notifications for scheduled delivery; already-sent alerts are n
 Audit events `message.marked_not_spam` and `message.not_spam_undone` retain the actor, time,
 provider verdicts, and resulting review state.
 
-### Send a new email
+### Reply-only sending
 
-Use `send_email` with `domain_id`, `from_address`, `to_address`, `subject`, `body_text`, and a fresh
-UUID `idempotency_key`. It requires only `send` scope. No prior conversation, reply draft, `write`
-scope, or separate per-message approval is needed. The From address can use any local part on the
-selected owner-controlled, verified, outbound-ready domain. From and To must each be a single
-email address. The subject is limited to 998 characters and the plain-text body to 20,000.
+Every send requires an inbound message in the same domain and conversation. Use the reply-draft
+workflow and `send_reply`; the service derives recipient and sender from the inbound context.
+The website uses Save draft and Send reply. New-email composition is unavailable.
+Reply attempts retain provider Message-IDs and wire aliases so incoming replies join the same
+conversation, including during provider handoff. Only explicitly requested failed/unknown replies
+can be resent. `ACCEPTED` does not mean `DELIVERED`.
 
-The equivalent API is:
-
-```http
-POST /api/v1/domains/{domain_id}/outbound/compose
-Content-Type: application/json
-
-{
-  "from_address": "onur@menu.fit",
-  "to_address": "recipient@example.net",
-  "subject": "Hello",
-  "body_text": "A new one-to-one email.",
-  "idempotency_key": "6b257211-e69f-4f88-9e3c-2b1cba303b6f"
-}
-```
-
-A successful call returns `outbound_id`, `conversation_id`, and authoritative `status` with HTTP
-202. Usually this is `QUEUED`; it is not proof of delivery. The server atomically creates the
-conversation, immutable send snapshot, outbound attempt, and durable job. It creates no record for
-invalid input. Compose snapshots are excluded from reply-draft interfaces.
-
-Reuse the same key and exact content when recovering a missing response. Keys are unique per
-domain. A duplicate returns the original attempt and current status, including `FAILED` or
-`UNKNOWN`, without consuming another allowance or queuing another job. Different content with
-the same key returns `409 idempotency_conflict`. Use `resend_outbound` only when the user explicitly
-requests another failed/unknown attempt. Do not silently replace the key to retry a send.
-
-The first email has no reply headers. Its Message-ID and recipient are retained for threading
-incoming replies into the same conversation, including replies that arrive during provider handoff.
-SES-assigned IDs and observed wire Message-ID aliases are used because
-[SES replaces the submitted Message-ID header](https://docs.aws.amazon.com/ses/latest/APIReference/API_SendRawEmail.html).
-Pending or failed attempts are visible in Outbox; conversations appear in Inbox once they contain
-a message. The website provides Compose from Inbox and Outbox. It preserves entered content on
-send errors but does not save unsent drafts, autosave, or restore content after leaving the page.
-CC/BCC, HTML, attachments, templates, and marketing sends are outside this flow.
+New domain onboarding accepts `receive` (default) or `both` (receive and reply).
+Both require a receiving route. Existing sending-only domain reads may still report `goal: send`;
+use `enable_domain_receiving` to add a chosen route without recreating the domain.
 
 ## Plugin package
 
@@ -225,7 +195,6 @@ challenge in the MCP tool result's `_meta["mcp/www_authenticate"]` field.
 | `revise_reply_draft` | `write` | Create a new immutable revision and invalidate old approval. |
 | `get_reply_draft` | `read` | Read exact current content, revision ID, hash, and stale state. |
 | `send_reply` | `send` | Queue the exact current agent-authored revision. |
-| `send_email` | `send` | Atomically snapshot and queue a new plain-text email to one recipient. |
 | `resend_outbound` | `send` | Explicitly create another failed/unknown send attempt. |
 
 Every tool reuses the API's owner/domain lookup, entitlement checks, OAuth scope enforcement,
@@ -296,7 +265,7 @@ The owner UI offers explicit Save draft and Send reply. AI goals, generation and
 suggestions only, using thread content and per-request instructions. Apply changes the editor;
 it does not persist or send. Agents author replies through the draft tools themselves.
 
-Contract 2.0 removes `set_conversation_handling`, the HTTP handling endpoint and `handling`
-metadata directly, without a compatibility shim. Server/plugin 0.4.0 and standalone skill 1.3.0
-ship together; minimum supported standalone skill is 1.3.0. This approved removal intentionally
-skips the normal compatibility window. Older clients must update their tool discovery and skills.
+Contract 3.0 removes new-email composition and send-only onboarding. The earlier removal of
+built-in handling tools and metadata remains in effect. Server/plugin 0.5.0 and standalone skill
+1.4.0 ship together; minimum supported standalone skill is 1.4.0.
+Older clients must update their tool discovery and skills.

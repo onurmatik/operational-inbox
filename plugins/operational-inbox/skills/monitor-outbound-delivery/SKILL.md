@@ -42,5 +42,5 @@ became observable, so another attempt may create a duplicate. Call `resend_outbo
 user's instruction specifically covers a new attempt for the named failed or unknown outbound ID.
 Report original and new IDs separately.
 
-Do not use this skill for compose, Reply All, Forward, CC/BCC, attachments, HTML, scheduled mail,
+Operational Inbox is reply-only. Do not use this skill for new email, Reply All, Forward, CC/BCC, attachments, HTML, scheduled mail,
 templates, campaigns, bulk, marketing, or unsolicited email.

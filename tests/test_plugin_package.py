@@ -112,8 +112,8 @@ def test_repo_marketplace_and_mcp_registry_point_to_the_release() -> None:
 def test_public_submission_covers_the_current_tool_surface() -> None:
     submission = load_json(REPOSITORY_ROOT / "chatgpt-app-submission.json")
     assert set(submission["tools"]) == {tool["name"] for tool in MCP_TOOLS}
-    assert len(submission["test_cases"]) == 7
-    assert len(submission["negative_test_cases"]) == 3
+    assert len(submission["test_cases"]) == 6
+    assert len(submission["negative_test_cases"]) == 4
 
 
 def test_triage_inboxes_skill_preserves_agent_first_safety_boundary() -> None:

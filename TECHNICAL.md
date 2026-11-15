@@ -103,7 +103,7 @@ The model covers:
 - DNS instructions/results, inbound routes, and delivery tests;
 - conversations, free-form tags, messages, envelope/header recipients, RFC references, and attachments;
 - idempotent leased jobs;
-- reply drafts and compose snapshots, immutable revisions, exact approvals, and outbound messages;
+- reply drafts, immutable revisions, exact approvals, and outbound messages;
 - email notifications and ingress/delivery events, API tokens, and append-only audits.
 
 Conversations have no built-in Open/Waiting/Resolved or Start work state. Organization is limited
@@ -117,7 +117,7 @@ Free Core allows one active domain, 30 user-requested one-to-one emails per UTC 
 fixed default retention. Pro Scale allows 20 active domains,
 5,000 user-requested one-to-one emails per UTC calendar month, custom retention. Both plans expose the same API and MCP workflow for inbound feed/search,
 reversible organization, reply drafts, email submission, delivery events, and account-wide Outbox safety.
-New emails and replies share the existing `outbound_replies` allowance for compatibility.
+Reply attempts use the existing `outbound_replies` allowance.
 Inbound receiving and MCP tool calls have no commercial usage meter. Monthly email allowances reset
 at 00:00 UTC on the first day of the next month; short-window outbound and abuse-prevention limits
 continue to apply independently.
@@ -219,30 +219,31 @@ Migration `0015_simplify_agent_first` snapshots retired ReportSchedule, Report, 
 
 The web UI has two main destinations: Conversations and Domains. Conversations spans owned active domains, with an explicit optional domain filter; individual reads and actions do not use a session domain. Sent includes queued attempts before provider handoff creates a normalized Message. Setup-test mail stays out of the default conversation list. Settings groups account sending controls, access, retention, audit, and plan management.
 
-Domain goals are `receive`, `send`, and `both`. `receiving_enabled` and `sending_requested` track intent separately from `inbound_ready` and `outbound_ready`. Sending-only provisioning creates ownership instructions without inspecting or changing MX or allocating an inbound route. Valid ownership enables independent SES/DKIM provisioning; no inbound delivery test is needed for sending. `enable_domain_receiving` can later add a chosen receiving route without resetting sending. Sending-only domains are excluded from the receipt allowlist and ingestion route resolution.
+New domain goals are `receive` (default) and `both` (receive and reply). Both use the receiving
+setup flow. `receiving_enabled` and `sending_requested` track intent independently of readiness.
+Existing sending-only domains remain readable and can enable receiving through
+`enable_domain_receiving`; they are excluded from the receipt allowlist until receiving is enabled.
 
-## Agent-authored outbound mail
+## Reply-only outbound mail
 
-New one-to-one plain-text emails use `send_composed_email` through `/app/compose/`,
-`POST /api/v1/domains/{domain_id}/outbound/compose`, or MCP `send_email` with `send` scope.
-The service validates the owner's domain, arbitrary local From address, single To address,
-subject/body limits, readiness, pause, and allowance before creating records. An account row lock
-and a domain-scoped UUID uniqueness constraint serialize duplicate sends. The same key and payload
-return the original authoritative attempt; a different payload returns `idempotency_conflict`.
+All drafts require an inbound context in the same domain and conversation. New emails cannot be
+started through the website, API or MCP. Reply revisions contain subject and body; sender and
+recipient come from the inbound context. Owner sends retain domain-scoped UUID idempotency keys.
+Reply creation, sending, explicit resend and the SES worker validate inbound context.
 
-Conversation, immutable `ReplyDraft(kind=COMPOSE, context_message=NULL)` snapshot, envelope-bearing
-revision, outbound attempt, and durable job are created in one transaction. Unsent content is never
-persisted. Compose hashes bind From, To, Subject, and Body; legacy reply hashes remain unchanged.
-Reply interfaces only expose `kind=REPLY`. The SES worker omits reply headers for Compose, records
-Message-ID/To in the conversation timeline, and matches incoming references against outbound
-Message-IDs even before provider handoff completes. SES replaces the requested Message-ID header;
-the returned SES ID is recorded, and observed wire IDs become reference aliases. Inbound references
-also carry a namespaced hash of the SES ID, so replies received before the response or tagged Send
-event can be joined to the original conversation when that ID becomes known. Related messages,
-reply drafts, tags, and conversation timestamps follow that reconciliation. See the
-[SES SendRawEmail contract](https://docs.aws.amazon.com/ses/latest/APIReference/API_SendRawEmail.html).
-Message-less conversations are excluded from
-Inbox lists; their attempts remain inspectable in Outbox. Retention also scrubs revision addresses.
+Migration `0022_delete_compose_test_data` permanently deletes Compose test sends in every status, their
+snapshots, revisions, approvals, delivery events, timeline messages, notifications, jobs and
+associated audit records. Empty conversations are deleted; remaining inbound/reply data is kept
+and conversation timestamps are recalculated. No archived copies are made. Migration
+`0023_reply_only_schema` removes draft kinds and Compose revision addresses, makes inbound context
+non-nullable, and renames the shared send-key constraint. The separate transactions let PostgreSQL
+complete deferred foreign-key checks before altering tables. Reversing these migrations does not
+restore deleted data. Stop web, MCP and workers using the deployment contract before applying them.
+
+SES replaces the requested Message-ID header. Reply sends retain the returned SES ID and observed
+wire-ID aliases, allowing incoming replies to join the original conversation even when they arrive
+before provider handoff completes. Reconciliation retains messages, drafts, tags and timestamps.
+See the [SES SendRawEmail contract](https://docs.aws.amazon.com/ses/latest/APIReference/API_SendRawEmail.html).
 
 Editing a reply creates a new immutable revision. The native web flow can retain owner approval,
 while API and MCP integrations use the connection's delegated `send` scope. Every path queues only
@@ -380,7 +381,7 @@ mailbox, tag, folder, new-only, and security filters.
 API and personal-token access are available on both Free Core and Pro Scale. Domain onboarding
 through the API uses the same account capacity as the web application: one active domain on Free
 Core and up to 20 active domains on Pro Scale. Both plans can read the active-domain feed, search,
-organize, draft replies, submit new emails and replies, inspect delivery, and use account-wide Outbox pause/resume.
+organize, draft replies, submit replies, inspect delivery, and use account-wide Outbox pause/resume.
 Free Core permits 30 user-requested emails per UTC calendar month with fixed retention; Pro Scale
 permits 5,000 with custom retention. Monthly limits are enforced
 on outbound attempts rather than raw API or MCP call counts, and inbound receiving has no hard
@@ -654,7 +655,7 @@ the editor's exact current revision atomically using the existing idempotent del
 UI saves require the displayed revision; MCP revisions accept expected_revision_id, returning 409
 on conflicts. Conversation detail exposes reply_draft so an external agent can find a UI draft.
 If new inbound makes an existing draft stale, the UI preserves it and saves a new draft for the
-current inbound. No autosave or new-email Compose draft support is added.
+current inbound. No autosave is added.
 
 Migration 0021 archives retired run/state and domain policy records into scoped legacy audit
 snapshots, with content retention and no record bodies in ordinary audit API metadata. Usage

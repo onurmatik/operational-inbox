@@ -94,14 +94,12 @@ def test_domain_create_explains_the_routing_tradeoff(client, owner, organization
     assert b"data-mx-inspect-url" in response.content
     assert b"data-mx-check" in response.content
     assert b"Choose a different setup" not in response.content
-    assert (
-        b"Send-only setup leaves your existing mail provider and MX records in place"
-        in response.content
-    )
+    assert b"Receive &amp; reply" in response.content
+    assert b'value="send"' not in response.content
     assert b"Route this domain's MX records directly to Operational Inbox" in response.content
     assert b"Amazon SES" not in response.content
     assert b"Direct SES MX" not in response.content
-    assert response.content.count(b'class="oi-choice-card"') == 5
+    assert response.content.count(b'class="oi-choice-card"') == 4
 
     invalid_response = client.post(reverse("domain_create"), {"hostname": "portfolio.fit"})
     assert invalid_response.status_code == 200

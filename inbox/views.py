@@ -29,13 +29,12 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.cache import never_cache
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import csrf_exempt, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from sesame.utils import get_parameters
 from sesame.views import LoginView as SesameLoginView
 
 from inbox.forms import (
-    ComposeForm,
     DigestSettingsForm,
     DomainForm,
     DraftRevisionForm,
@@ -80,7 +79,6 @@ from inbox.services.billing import (
     price_summary,
     process_event,
 )
-from inbox.services.compose import send_composed_email
 from inbox.services.conversations import apply_conversation_action, mark_conversation_viewed
 from inbox.services.digests import next_digest_at
 from inbox.services.domain_entitlements import domain_capacity, select_free_primary_domain
@@ -980,7 +978,6 @@ def _conversation_workspace(
             item.preview_is_quarantined = False
         item.routing_addresses = sorted(routing_addresses.get(item.id, set()))
     back_url = f"{reverse('inbox')}?{params.urlencode()}"
-    initial_domain = domain or domains.filter(outbound_ready=True).first() or domains.first()
     return render(
         request,
         "inbox/inbox_list.html",
@@ -1009,14 +1006,6 @@ def _conversation_workspace(
             },
             "statuses": OutboundMessage.Status.choices,
             "has_active_filters": any((tag, security, recipient, delivery)),
-            "compose_form": ComposeForm(
-                auto_id="compose_%s",
-                domains=domains,
-                initial={
-                    "from_address": f"hello@{initial_domain.hostname}" if initial_domain else "",
-                    "idempotency_key": uuid.uuid4(),
-                },
-            ),
             "outbound_control": get_outbound_control(request.user),
         },
         status=status,
@@ -1024,6 +1013,7 @@ def _conversation_workspace(
 
 
 @verified_required
+@ensure_csrf_cookie
 def inbox_list(request: HttpRequest) -> HttpResponse:
     return _conversation_workspace(request)
 
@@ -1034,68 +1024,6 @@ def outbox(request: HttpRequest) -> HttpResponse:
     params["folder"] = "sent"
     params.pop("time", None)
     return redirect(f"{reverse('inbox')}?{params.urlencode()}")
-
-
-@verified_required
-@require_http_methods(["GET", "POST"])
-def compose(request: HttpRequest) -> HttpResponse:
-    domains = request.user.domains.exclude(status=Domain.Status.DISABLED).order_by("hostname")
-    if not domains.exists():
-        messages.info(request, "Connect a domain before composing an email.")
-        return redirect("domain_create")
-    requested_domain = request.GET.get("domain", "").strip()
-    if requested_domain:
-        try:
-            domain = get_owned_domain(request.user, uuid.UUID(requested_domain))
-        except ValueError as exc:
-            raise Http404 from exc
-    else:
-        domain = domains.filter(outbound_ready=True).first() or domains.first()
-    form = ComposeForm(
-        request.POST if request.method == "POST" else None,
-        domains=domains,
-        initial={"from_address": f"hello@{domain.hostname}", "idempotency_key": uuid.uuid4()},
-    )
-    response_status = 200
-    if request.method == "POST":
-        valid = form.is_valid()
-        domain = form.cleaned_data.get("domain") or domain
-        if valid:
-            try:
-                outbound = send_composed_email(
-                    domain=domain,
-                    owner=request.user,
-                    from_address=form.cleaned_data["from_address"],
-                    to_address=form.cleaned_data["to_address"],
-                    subject=form.cleaned_data["subject"],
-                    body_text=form.cleaned_data["body_text"],
-                    idempotency_key=form.cleaned_data["idempotency_key"],
-                    authorization_mode=OutboundMessage.AuthorizationMode.OWNER_APPROVAL,
-                )
-            except ValidationError as exc:
-                if hasattr(exc, "error_dict"):
-                    for name, errors in exc.error_dict.items():
-                        form.add_error(name if name in form.fields else None, errors)
-                else:
-                    form.add_error(None, exc)
-                    if any(error.code == "idempotency_conflict" for error in exc.error_list):
-                        response_status = 409
-            else:
-                messages.success(request, f"Email status: {outbound.get_status_display()}.")
-                params = {"folder": "sent", "conversation": str(outbound.conversation_id)}
-                return redirect(f"{reverse('inbox')}?{urlencode(params)}")
-    return render(
-        request,
-        "inbox/compose.html",
-        {
-            "active_nav": "inbox",
-            "form": form,
-            "domain": domain,
-            "compose_domains": domains,
-            "cancel_url": f"{reverse('outbox')}?{urlencode({'domain': str(domain.id)})}",
-        },
-        status=response_status,
-    )
 
 
 @verified_required
@@ -1308,7 +1236,7 @@ def draft_revise(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Reply drafts")
     draft = domain_get_or_404(
-        ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY).select_related("conversation"),
+        ReplyDraft.objects.select_related("conversation"),
         domain=domain,
         id=draft_id,
     )
@@ -1335,7 +1263,7 @@ def draft_approve(request: HttpRequest, draft_id: uuid.UUID) -> HttpResponse:
     if not for_user(request.user).outbound:
         return _upgrade_required(request, "Outbound sending")
     draft = domain_get_or_404(
-        ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY).select_related("conversation"),
+        ReplyDraft.objects.select_related("conversation"),
         domain=domain,
         id=draft_id,
     )
@@ -1486,7 +1414,7 @@ def domain_create_view(request: HttpRequest) -> HttpResponse:
     pending_domain = request.session.get(PENDING_DOMAIN_SESSION_KEY, "")
     form = DomainForm(
         request.POST or None,
-        initial={"hostname": pending_domain, "goal": Domain.Goal.BOTH},
+        initial={"hostname": pending_domain, "goal": Domain.Goal.RECEIVE},
     )
     entitlements = for_user(request.user)
     active_domain_count = request.user.domains.exclude(status=Domain.Status.DISABLED).count()

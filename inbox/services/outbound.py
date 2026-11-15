@@ -23,9 +23,7 @@ from inbox.models import (
     DurableJob,
     OutboundControl,
     OutboundMessage,
-    ReplyDraft,
     User,
-    compose_content_digest,
 )
 from inbox.services.entitlements import can_manage_domain, for_user
 from inbox.services.notifications import create_outbound_problem_notifications
@@ -267,20 +265,14 @@ def _authorization_error(outbound: OutboundMessage) -> str:
     draft = outbound.revision.draft
     if outbound.authorization_mode == OutboundMessage.AuthorizationMode.AGENT_POLICY:
         return "Built-in conversation handling has been removed."
+    try:
+        draft.validate_reply_context()
+    except ValidationError as exc:
+        return "; ".join(exc.messages)
+    if outbound.domain_id != draft.domain_id or outbound.conversation_id != draft.conversation_id:
+        return "Outbound reply and draft must belong to the same conversation."
     if draft.current_revision_id != outbound.revision_id or draft.is_stale:
         return "The exact draft revision is no longer current."
-    if draft.kind == ReplyDraft.Kind.COMPOSE and (
-        outbound.from_address != outbound.revision.from_address
-        or outbound.to_address != outbound.revision.to_address
-        or outbound.subject != outbound.revision.subject
-        or outbound.body_text != outbound.revision.body_text
-        or outbound.content_hash != outbound.revision.content_hash
-        or outbound.content_hash
-        != compose_content_digest(
-            outbound.from_address, outbound.to_address, outbound.subject, outbound.body_text
-        )
-    ):
-        return "The email no longer matches its exact send snapshot."
     if outbound.authorization_mode == OutboundMessage.AuthorizationMode.OWNER_APPROVAL:
         approval = DraftApproval.objects.filter(
             revision=outbound.revision,
@@ -312,7 +304,7 @@ def _raw_message(outbound: OutboundMessage) -> bytes:
     message["Subject"] = outbound.subject
     message["Message-ID"] = outbound.rfc_message_id
     context = outbound.revision.draft.context_message
-    if context is not None and context.rfc_message_id:
+    if context.rfc_message_id:
         message["In-Reply-To"] = context.rfc_message_id
         # Raw reference values are not persisted; preserve the immediate parent ID.
         message["References"] = context.rfc_message_id

@@ -22,7 +22,7 @@ changes when one is available and the user authorized those changes.
 
 ## Choose the goal
 
-Use the user's request to choose `receive`, `send`, or `both`. For send-only, start onboarding with `goal: "send"`; no `setup_mode` is needed. Publish the exact ownership and sending records from the plan. Preserve existing MX and do not configure forwarding or run an inbound test. After ownership is verified, sending DNS provisioning starts automatically; read the updated plan before applying DKIM records. Report `outbound_ready` separately from domain status.
+Choose `receive` (receiving only) or `both` (receive and reply). New send-only setup is unavailable. Both goals require a receiving route selected after inspecting DNS. Preserve existing MX unless the owner explicitly chooses direct receiving. Report `inbound_ready` and `outbound_ready` separately.
 
 For an existing sending-only domain, use `enable_domain_receiving` after the receiving route has been explicitly selected. Do not recreate the claim or reset sending.
 
@@ -45,7 +45,7 @@ report the selected `primary_domain_id` and authoritative `grace_ends_at` when p
 selection is completed in Operational Inbox domain settings; do not work around a read-only domain
 by retrying its mutations.
 
-Call `start_domain_onboarding` with the normalized hostname, selected `goal`, and receiving mode when applicable. Repeated identical
+Call `start_domain_onboarding` with the normalized hostname, selected `goal`, and selected receiving mode. Repeated identical
 calls are safe, but do not change modes by retrying. Then call `get_domain_setup_plan` with the
 returned domain ID.
 

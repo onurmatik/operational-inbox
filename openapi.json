@@ -54,83 +54,6 @@
         "title": "ClassificationInput",
         "type": "object"
       },
-      "ComposeInput": {
-        "properties": {
-          "body_text": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "title": "Body Text",
-            "type": "string"
-          },
-          "from_address": {
-            "maxLength": 320,
-            "minLength": 1,
-            "title": "From Address",
-            "type": "string"
-          },
-          "idempotency_key": {
-            "format": "uuid",
-            "title": "Idempotency Key",
-            "type": "string"
-          },
-          "subject": {
-            "maxLength": 998,
-            "minLength": 1,
-            "title": "Subject",
-            "type": "string"
-          },
-          "to_address": {
-            "maxLength": 320,
-            "minLength": 1,
-            "title": "To Address",
-            "type": "string"
-          }
-        },
-        "required": [
-          "subject",
-          "body_text",
-          "from_address",
-          "to_address",
-          "idempotency_key"
-        ],
-        "title": "ComposeInput",
-        "type": "object"
-      },
-      "ComposeSendOutput": {
-        "properties": {
-          "conversation_id": {
-            "format": "uuid",
-            "title": "Conversation Id",
-            "type": "string"
-          },
-          "outbound_id": {
-            "format": "uuid",
-            "title": "Outbound Id",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "QUEUED",
-              "SUBMITTING",
-              "ACCEPTED",
-              "DELIVERED",
-              "FAILED",
-              "UNKNOWN",
-              "BOUNCED",
-              "COMPLAINED"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "outbound_id",
-          "status",
-          "conversation_id"
-        ],
-        "title": "ComposeSendOutput",
-        "type": "object"
-      },
       "ConversationActionInput": {
         "properties": {
           "action": {
@@ -197,7 +120,6 @@
             "default": "receive",
             "enum": [
               "receive",
-              "send",
               "both"
             ],
             "title": "Goal",
@@ -1837,57 +1759,6 @@
         "summary": "Notifications Read",
         "tags": [
           "Notifications"
-        ]
-      }
-    },
-    "/api/v1/domains/{domain_id}/outbound/compose": {
-      "post": {
-        "operationId": "inbox_api_outbound_compose",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "domain_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Domain Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ComposeInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ComposeSendOutput"
-                }
-              }
-            },
-            "description": "Accepted"
-          }
-        },
-        "security": [
-          {
-            "SessionAuth": []
-          },
-          {
-            "ScopedBearer": []
-          }
-        ],
-        "summary": "Outbound Compose",
-        "tags": [
-          "Outbound"
         ]
       }
     },

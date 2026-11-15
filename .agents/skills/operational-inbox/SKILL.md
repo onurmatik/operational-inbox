@@ -1,6 +1,6 @@
 ---
 name: operational-inbox
-description: Connect and operate Operational Inbox through its authenticated MCP tools. Use for authorized email-domain setup, multi-domain inbox triage, reversible organization, new one-to-one emails, exact-revision replies, outbound delivery monitoring, or Operational Inbox connection checks.
+description: Connect and operate Operational Inbox through its authenticated MCP tools. Use for authorized email-domain setup, multi-domain inbox triage, reversible organization, exact-revision replies, outbound delivery monitoring, or Operational Inbox connection checks.
 ---
 
 # Operational Inbox
@@ -69,7 +69,7 @@ Inbox domain settings, not by retrying a read-only domain mutation.
 
 Keep these explanations neutral. Do not name another plan, recommend an upgrade, show pricing, or
 direct the user to checkout. Triage, drafts, delivery inspection, and Outbox pause/resume remain
-available when a monthly email allowance is exhausted. New emails and replies share the
+available when a monthly email allowance is exhausted. Reply attempts use the
 `outbound_replies` allowance; `can_send_email` reports account capacity, with domain readiness,
 pause, and safety limits checked on each send.
 
@@ -77,7 +77,7 @@ pause, and safety limits checked on each send.
 
 ### Connect or inspect a domain
 
-Choose the goal from the user’s request: `receive`, `send`, or `both`. For sending-only, call `start_domain_onboarding` with `goal: "send"` without a receiving route. Verify ownership and DKIM; never edit MX or require an inbound test. For receiving, start with `inspect_domain_dns`. Never replace existing MX records implicitly. Use `start_domain_onboarding`, return the generation-fenced plan from `get_domain_setup_plan`, and verify with `request_domain_dns_check`. Operational Inbox never writes customer DNS; use a separately authorized DNS-provider tool or return the exact plan for manual application.
+Choose `receive` (receiving only) or `both` (receive and reply) from the user's request. New send-only setup is unavailable. Start with `inspect_domain_dns` and choose a receiving route. Never replace existing MX records implicitly. Use `start_domain_onboarding`, return the generation-fenced plan from `get_domain_setup_plan`, and verify with `request_domain_dns_check`. Operational Inbox never writes customer DNS; use a separately authorized DNS-provider tool or return the exact plan for manual application.
 
 For an existing sending-only domain, use `enable_domain_receiving` with an explicitly selected route. Sending remains independent. Report `inbound_ready` and `outbound_ready` separately; `status: READY` does not imply both capabilities.
 
@@ -94,19 +94,7 @@ draft is stale. Preserve stale drafts and bind new drafts to the current convers
 is authorized by the request, call `send_reply` for the exact current revision and report its
 outbound status.
 
-### Send a new email
-
-When the user's request entails sending a new email, call `send_email` with `domain_id`,
-`from_address`, `to_address`, `subject`, `body_text`, and a fresh UUID `idempotency_key`.
-It needs `send` scope only, with no prior conversation or persisted unsent draft. Use any From
-local part on the selected verified, outbound-ready domain and exactly one To address. Send only
-plain text; CC/BCC, HTML, attachments, templates, and marketing are unsupported.
-
-Keep the same key and exact content when recovering a missing response. A duplicate returns the
-original `outbound_id`, `conversation_id`, and current status without sending again. Different
-content under the same key returns `idempotency_conflict`. A `FAILED` or `UNKNOWN` replay is not a
-resend; use `resend_outbound` only when the user explicitly requests another attempt. Report the
-authoritative status and never describe `QUEUED` or `ACCEPTED` as delivered.
+Operational Inbox is reply-only. Sending requires an existing inbound message; do not attempt to start a new email thread.
 
 ### Monitor outbound delivery
 

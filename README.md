@@ -3,12 +3,12 @@
 **Agent-first operational email for every project address.**
 
 Operational Inbox brings `support@`, `contact@`, `privacy@`, and other project addresses across
-multiple domains into one conversation history. It also sends individual customer emails from a verified domain. It is built for people to delegate email operations to
+multiple domains into one conversation history. It sends replies to received email from a verified domain. It is built for people to delegate email operations to
 their own agents without turning the inbox into a CRM or task-management system.
 
 Agents are the primary interface for setup, triage, replies, and delivery monitoring. The web
 application remains the owner’s control surface for oversight, consent, billing, and account
-settings. Conversations combines Inbox, Sent, and Archive across domains. Domain setup asks for receiving, sending, or both; sending-only setup keeps existing MX.
+settings. Conversations combines Inbox, Sent, and Archive across domains. Domain setup offers receiving only or receiving and replying.
 
 ## Connect your agent
 
@@ -35,7 +35,6 @@ the copied skill.
 - Organize conversations with tags, Star, Archive, Trash, and Restore.
 - Mark spam false positives as Not spam and Undo, with original verdicts and audit history.
 - Draft immutable reply revisions and send only the exact authorized revision.
-- Send a new one-to-one plain-text email from any address on a verified sending domain.
 - Monitor outbound delivery, including failures, bounces, and complaints.
 
 The standalone skill routes these jobs through focused setup, triage, reply, and delivery
@@ -62,20 +61,15 @@ active domain, search, tags and folders, immutable drafts, Outbox pause/resume a
 and API + MCP access. MCP tool calls are not commercially metered, and incoming mail has no hard
 plan-volume quota. Technical and abuse-prevention safety limits still apply.
 
-- **Free Core:** one active domain, 30 user-requested one-to-one outbound emails per UTC calendar month,
+- **Free Core:** one active domain, 30 user-requested replies per UTC calendar month,
   and fixed retention.
-- **Pro Scale:** up to 20 active domains, 5,000 user-requested one-to-one outbound emails per UTC calendar
+- **Pro Scale:** up to 20 active domains, 5,000 user-requested replies per UTC calendar
   month, custom retention.
 
-New emails and replies share this allowance, which resets at 00:00 UTC on the first day of each
+Reply attempts use this allowance, which resets at 00:00 UTC on the first day of each
 month. Reply drafting and Outbox safety remain available when it is exhausted.
 
-The site exposes **Compose** from Inbox and Outbox. It sends one plain-text email immediately
-into the delivery queue; it does not save unsent drafts. Agents use `send_email` with `domain_id`,
-`from_address`, `to_address`, `subject`, `body_text`, and a UUID `idempotency_key`. The HTTP equivalent
-is `POST /api/v1/domains/{domain_id}/outbound/compose`. Retain the same key after an uncertain API
-response to recover the existing attempt without sending again. Both interfaces return the
-outbound ID, conversation ID, and authoritative status.
+Operational Inbox is reply-only. Each outbound reply requires an existing inbound message.
 
 Open a conversation to read its thread, filter the inbox, and write a **Reply**. **Save draft**
 persists the exact text so you or your own connected agent can continue later. **Send reply**
@@ -119,5 +113,5 @@ sources. The website AI sees only the current thread, draft and your instruction
 
 The service supplies `OPENAI_API_KEY`; configure `REPLY_ASSIST_*` settings in `.env.example`.
 Assistance is requested only by an explicit UI action. Manual drafting and sending continue when
-AI is unavailable or its daily budget is exhausted. Server/plugin 0.4.0 uses MCP contract 2.0.0
-and standalone skill 1.3.0. Update older clients: handling tools and metadata have been removed.
+AI is unavailable or its daily budget is exhausted. Server/plugin 0.5.0 uses MCP contract 3.0.0
+and standalone skill 1.4.0. Update older clients: new-email tools and send-only onboarding have been removed.

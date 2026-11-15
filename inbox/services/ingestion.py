@@ -332,12 +332,9 @@ def _store_domain_message(
                 "updated_at",
             )
         )
-        ReplyDraft.objects.filter(
-            conversation=conversation, kind=ReplyDraft.Kind.REPLY, is_stale=False
-        ).update(is_stale=True)
+        ReplyDraft.objects.filter(conversation=conversation, is_stale=False).update(is_stale=True)
         DraftApproval.objects.filter(
             revision__draft__conversation=conversation,
-            revision__draft__kind=ReplyDraft.Kind.REPLY,
             invalidated_at__isnull=True,
         ).update(
             invalidated_at=timezone.now(),

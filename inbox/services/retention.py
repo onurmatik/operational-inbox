@@ -23,11 +23,9 @@ from inbox.models import (
     MessageRecipient,
     Notification,
     OutboundMessage,
-    ReplyDraft,
     ReplyDraftRevision,
     RetentionPolicy,
     SignupAttempt,
-    compose_content_digest,
     content_digest,
 )
 from inbox.services.entitlements import for_user
@@ -201,21 +199,7 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         DraftApproval.objects.filter(revision__in=old_revisions).update(content_hash=redacted_hash)
         # QuerySet.update is the explicit retention-only exception to immutable
         # revisions; all related hashes are redacted together.
-        old_revisions.update(
-            from_address="", to_address="", subject="", body_text="", content_hash=redacted_hash
-        )
-        compose_redacted_hash = compose_content_digest(
-            "redacted@invalid.local", "redacted@invalid.local", "", ""
-        )
-        old_compose_revisions = old_revisions.filter(draft__kind=ReplyDraft.Kind.COMPOSE)
-        old_compose_revisions.update(
-            from_address="redacted@invalid.local",
-            to_address="redacted@invalid.local",
-            content_hash=compose_redacted_hash,
-        )
-        DraftApproval.objects.filter(revision__in=old_compose_revisions).update(
-            content_hash=compose_redacted_hash
-        )
+        old_revisions.update(subject="", body_text="", content_hash=redacted_hash)
         old_outbound = OutboundMessage.objects.filter(
             domain=domain, created_at__lte=normalized_cutoff
         )
@@ -233,9 +217,6 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             subject="",
             body_text="",
             content_hash=redacted_hash,
-        )
-        old_outbound.filter(revision__draft__kind=ReplyDraft.Kind.COMPOSE).update(
-            content_hash=compose_redacted_hash
         )
         redact_legacy_content(domain=domain, cutoff=normalized_cutoff)
         Notification.objects.filter(domain=domain, created_at__lte=normalized_cutoff).update(

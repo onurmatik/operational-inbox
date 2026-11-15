@@ -3,7 +3,7 @@
 {% block content %}
   <div class="max-w-2xl">
     <h1 class="font-heading text-3xl font-semibold">Connect a domain</h1>
-    <p class="mt-2 text-sm text-muted">Give your projects email addresses and write to customers.</p>
+    <p class="mt-2 text-sm text-muted">Receive and reply to email for your projects.</p>
 
     {% with example_domain=form.hostname.value|default:"yourcompany.com" %}
       <form
@@ -19,7 +19,7 @@
           <div class="mb-5 border border-coral-strong/40 bg-coral-soft p-3 text-sm text-coral-strong">{{ form.non_field_errors }}</div>
         {% endif %}
 
-        <fieldset class="mb-6"><legend class="oi-label">What do you need?</legend><div class="grid gap-2 sm:grid-cols-3">{% for choice in form.goal %}<label class="oi-choice-card"><span class="oi-choice-control">{{ choice.tag }}</span><span class="text-sm font-semibold">{% if choice.data.value == 'receive' %}Receive email{% elif choice.data.value == 'send' %}Send email{% else %}Both{% endif %}</span></label>{% endfor %}</div><p class="mt-2 text-xs text-muted">Send-only setup leaves your existing mail provider and MX records in place.</p>{% for error in form.goal.errors %}<p class="text-xs text-coral-strong">{{ error }}</p>{% endfor %}</fieldset>
+        <fieldset class="mb-6"><legend class="oi-label">What do you need?</legend><div class="grid gap-2 sm:grid-cols-2">{% for choice in form.goal %}<label class="oi-choice-card"><span class="oi-choice-control">{{ choice.tag }}</span><span class="text-sm font-semibold">{{ choice.choice_label }}</span></label>{% endfor %}</div>{% for error in form.goal.errors %}<p class="text-xs text-coral-strong">{{ error }}</p>{% endfor %}</fieldset>
         <div>
           <label class="oi-label" for="{{ form.hostname.id_for_label }}">Domain</label>
           {{ form.hostname }}

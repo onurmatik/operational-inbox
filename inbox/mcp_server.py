@@ -9,7 +9,6 @@ from ninja import Status
 
 from inbox.api import (
     APIError,
-    ComposeInput,
     ConversationActionInput,
     ConversationTagInput,
     DomainInput,
@@ -39,7 +38,6 @@ from inbox.api import (
     drafts_send,
     messages_feed,
     messages_spam_review,
-    outbound_compose,
     outbound_control_get,
     outbound_control_set,
     outbound_list,
@@ -807,8 +805,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
         "name": "start_domain_onboarding",
         "title": "Start domain onboarding",
         "description": (
-            "Create or reuse a domain claim for receive, send, or both. "
-            "Send-only setup preserves MX and needs no inbound test. For receiving, use the "
+            "Create or reuse a domain claim to receive email or receive and reply. Use the "
             "setup mode recommended by inspect_domain_dns. Set routing_choice_confirmed only after "
             "the user explicitly chooses an ambiguous or non-recommended route. OAuth connections "
             "and personal API tokens can create domains for their owner."
@@ -817,7 +814,7 @@ MCP_TOOLS: list[dict[str, Any]] = [
             {
                 "goal": {
                     "type": "string",
-                    "enum": ["receive", "send", "both"],
+                    "enum": ["receive", "both"],
                     "default": "receive",
                 },
                 "hostname": {"type": "string", "minLength": 3, "maxLength": 253},
@@ -1249,43 +1246,6 @@ MCP_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "send_email",
-        "title": "Send a new email",
-        "description": (
-            "Queue one user-requested new plain-text email from an address on an authorized "
-            "sending-ready domain. No prior conversation, saved draft, or write scope is required. "
-            "Generate a UUID idempotency_key for each intended email and keep it unchanged when "
-            "recovering an uncertain tool response. Reusing the key returns the existing attempt; "
-            "it never resends a failed or unknown delivery. Report the outbound ID and "
-            "authoritative status; ACCEPTED does not mean DELIVERED."
-        ),
-        "inputSchema": _object_schema(
-            {
-                "domain_id": UUID_SCHEMA,
-                "from_address": EMAIL_SCHEMA,
-                "to_address": EMAIL_SCHEMA,
-                "subject": {"type": "string", "minLength": 1, "maxLength": 998},
-                "body_text": {"type": "string", "minLength": 1, "maxLength": 20000},
-                "idempotency_key": UUID_SCHEMA,
-            },
-            ["domain_id", "from_address", "to_address", "subject", "body_text", "idempotency_key"],
-        ),
-        "outputSchema": _object_schema(
-            {
-                "outbound_id": UUID_SCHEMA,
-                "conversation_id": UUID_SCHEMA,
-                "status": {"type": "string", "enum": OUTBOUND_STATUS_VALUES},
-            },
-            ["outbound_id", "conversation_id", "status"],
-        ),
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": True,
-            "openWorldHint": True,
-        },
-    },
-    {
         "name": "resend_outbound",
         "title": "Explicitly resend outbound message",
         "description": (
@@ -1332,7 +1292,6 @@ MCP_TOOL_SCOPES = {
     "get_reply_draft": AccessScope.READ,
     "revise_reply_draft": AccessScope.WRITE,
     "send_reply": AccessScope.SEND,
-    "send_email": AccessScope.SEND,
     "resend_outbound": AccessScope.SEND,
 }
 
@@ -1450,11 +1409,10 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
         if hostname is None:
             raise APIError("validation_error", "hostname is required.")
         goal = cast(
-            Literal["receive", "send", "both"],
-            _choice(arguments, "goal", set(Domain.Goal.values)) or Domain.Goal.RECEIVE,
+            Literal["receive", "both"],
+            _choice(arguments, "goal", {Domain.Goal.RECEIVE, Domain.Goal.BOTH})
+            or Domain.Goal.RECEIVE,
         )
-        if goal == Domain.Goal.SEND:
-            return _unwrap(domains_create(request, DomainInput(hostname=hostname, goal=goal)))
         setup_mode = cast(
             Literal["DIRECT_MX", "PROVIDER_FORWARD"],
             _choice(
@@ -1673,20 +1631,6 @@ def _dispatch_tool(request: HttpRequest, name: str, arguments: dict[str, Any]) -
                 SendInput(
                     revision_id=_uuid(arguments, "revision_id"),
                     content_hash=content_hash,
-                ),
-            )
-        )
-    if name == "send_email":
-        return _unwrap(
-            outbound_compose(
-                request,
-                _uuid(arguments, "domain_id"),
-                ComposeInput(
-                    from_address=_optional_string(arguments, "from_address") or "",
-                    to_address=_optional_string(arguments, "to_address") or "",
-                    subject=_optional_string(arguments, "subject") or "",
-                    body_text=_optional_string(arguments, "body_text") or "",
-                    idempotency_key=_uuid(arguments, "idempotency_key"),
                 ),
             )
         )

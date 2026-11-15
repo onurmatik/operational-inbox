@@ -24,7 +24,6 @@ def current_reply_draft(conversation: Conversation) -> ReplyDraft | None:
     return (
         conversation.reply_drafts.filter(
             domain=conversation.domain,
-            kind=ReplyDraft.Kind.REPLY,
             current_revision__isnull=False,
             current_revision__outbound_messages__isnull=True,
         )
@@ -58,11 +57,13 @@ def create_authored_draft(
         raise ValidationError("The original message is unavailable for drafting.")
     with transaction.atomic():
         get_outbound_control(owner, lock=True)
-        draft = ReplyDraft.objects.create(
+        draft = ReplyDraft(
             domain=message.domain,
             conversation=message.conversation,
             context_message=message,
         )
+        draft.full_clean()
+        draft.save()
         revision = ReplyDraftRevision(
             domain=message.domain,
             draft=draft,
@@ -90,8 +91,7 @@ def revise_draft(
 ) -> ReplyDraftRevision:
     get_outbound_control(owner, lock=True)
     locked = ReplyDraft.objects.select_for_update().select_related("domain").get(id=draft.id)
-    if locked.kind != ReplyDraft.Kind.REPLY:
-        raise ValidationError("Sent Compose snapshots cannot be edited as reply drafts.")
+    locked.validate_reply_context()
     if locked.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can edit a draft.")
     if not can_manage_domain(owner, locked.domain):
@@ -132,9 +132,8 @@ def _outbound_for_revision(
     revision: ReplyDraftRevision,
     authorization_mode: str,
 ) -> OutboundMessage:
+    draft.validate_reply_context()
     context = draft.context_message
-    if context is None or draft.kind != ReplyDraft.Kind.REPLY:
-        raise ValidationError("A reply requires its original inbound message.")
     recipient = context.reply_to_address or context.from_address
     routing_recipient = context.recipients.filter(is_routing_recipient=True).first()
     if routing_recipient is None:
@@ -180,8 +179,7 @@ def approve_exact_revision(
         .get(id=draft.id)
     )
     revision = locked.current_revision
-    if locked.kind != ReplyDraft.Kind.REPLY:
-        raise ValidationError("Use Compose to send a new email.")
+    locked.validate_reply_context()
     if revision is None or revision.id != revision_id:
         raise ValidationError({"revision": "The draft changed. Review the current revision."})
     if locked.is_stale:
@@ -239,8 +237,7 @@ def send_exact_revision(
         .get(id=draft.id)
     )
     revision = locked.current_revision
-    if locked.kind != ReplyDraft.Kind.REPLY:
-        raise ValidationError("Use Compose to send a new email.")
+    locked.validate_reply_context()
     if revision is None or revision.id != revision_id:
         raise ValidationError({"revision": "The draft changed. Read the current revision."})
     if locked.is_stale:
@@ -269,6 +266,7 @@ def resend_outbound(original: OutboundMessage, *, owner: User) -> OutboundMessag
     get_outbound_control(owner, lock=True)
     if original.domain.owner_id != owner.id:
         raise ValidationError("Only the domain owner can resend a message.")
+    original.revision.draft.validate_reply_context()
     if not can_manage_domain(owner, original.domain):
         raise ValidationError(
             "This domain is read-only while the account exceeds its active-domain capacity.",

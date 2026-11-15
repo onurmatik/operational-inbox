@@ -41,7 +41,6 @@ from inbox.services.attachments import (
     AttachmentLockedError,
     authorized_attachment_url,
 )
-from inbox.services.compose import send_composed_email
 from inbox.services.conversations import apply_conversation_action
 from inbox.services.domain_entitlements import domain_capacity
 from inbox.services.domains import (
@@ -136,7 +135,7 @@ class ErrorSchema(Schema):
 class DomainInput(Schema):
     hostname: str = Field(min_length=3, max_length=253)
     setup_mode: Literal["DIRECT_MX", "PROVIDER_FORWARD"] = "DIRECT_MX"
-    goal: Literal["receive", "send", "both"] = "receive"
+    goal: Literal["receive", "both"] = "receive"
 
 
 class RoutingTransitionInput(Schema):
@@ -176,12 +175,6 @@ class RevisionUpdateInput(RevisionInput):
 class SendInput(Schema):
     revision_id: uuid.UUID
     content_hash: str = Field(min_length=64, max_length=64)
-
-
-class ComposeInput(RevisionInput):
-    from_address: str = Field(min_length=1, max_length=320)
-    to_address: str = Field(min_length=1, max_length=320)
-    idempotency_key: uuid.UUID
 
 
 class OutboundControlInput(Schema):
@@ -232,10 +225,6 @@ class OutboundOutput(Schema):
 class OutboundReferenceOutput(Schema):
     outbound_id: uuid.UUID
     status: OutboundStatus
-
-
-class ComposeSendOutput(OutboundReferenceOutput):
-    conversation_id: uuid.UUID
 
 
 class OutboundListOutput(Schema):
@@ -1962,7 +1951,7 @@ def drafts_create_authored(
 def drafts_detail(request: HttpRequest, domain_id: uuid.UUID, draft_id: uuid.UUID):
     require_scope(request, AccessScope.READ)
     domain = api_domain(request, domain_id)
-    draft = scoped_object(ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY), domain, draft_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
     revision = draft.current_revision
     if revision is None:
         raise Http404
@@ -1995,7 +1984,7 @@ def drafts_revise(
     require_scope(request, AccessScope.WRITE)
     require_outbound_access(request, "Reply drafts")
     domain = api_writable_domain(request, domain_id)
-    draft = scoped_object(ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY), domain, draft_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         revision = revise_draft(
@@ -2033,7 +2022,7 @@ def drafts_send(
     require_scope(request, AccessScope.SEND)
     require_outbound_access(request)
     domain = api_writable_domain(request, domain_id)
-    draft = scoped_object(ReplyDraft.objects.filter(kind=ReplyDraft.Kind.REPLY), domain, draft_id)
+    draft = scoped_object(ReplyDraft, domain, draft_id)
     owner = domain.owner if isinstance(request.auth, APIToken) else request.user
     try:
         outbound = send_exact_revision(
@@ -2058,43 +2047,6 @@ def drafts_send(
         {"revision_id": str(payload.revision_id)},
     )
     return Status(202, {"outbound_id": outbound.id, "status": outbound.status})
-
-
-@api.post(
-    "/domains/{domain_id}/outbound/compose",
-    auth=authenticated,
-    response={202: ComposeSendOutput},
-    tags=["Outbound"],
-)
-def outbound_compose(request: HttpRequest, domain_id: uuid.UUID, payload: ComposeInput):
-    require_scope(request, AccessScope.SEND)
-    require_outbound_access(request)
-    domain = api_writable_domain(request, domain_id)
-    owner = _api_owner(request)
-    try:
-        outbound = send_composed_email(
-            domain=domain,
-            owner=owner,
-            from_address=payload.from_address,
-            to_address=payload.to_address,
-            subject=payload.subject,
-            body_text=payload.body_text,
-            idempotency_key=payload.idempotency_key,
-        )
-    except DjangoValidationError as exc:
-        if hasattr(exc, "error_dict"):
-            raise APIError(
-                "validation_error", "Correct the email fields.", fields=exc.message_dict
-            ) from exc
-        raise _outbound_limit_api_error(exc, fallback="compose_unavailable") from exc
-    return Status(
-        202,
-        {
-            "outbound_id": outbound.id,
-            "conversation_id": outbound.conversation_id,
-            "status": outbound.status,
-        },
-    )
 
 
 @api.get(
@@ -2177,7 +2129,7 @@ def outbound_control_set(request: HttpRequest, payload: OutboundControlInput):
 
 
 @api.get(
-    "/domains/{domain_id}/outbound/{outbound_id}",
+    "/domains/{domain_id}/outbound/{uuid:outbound_id}",
     auth=authenticated,
     response=OutboundOutput,
     tags=["Outbound"],
@@ -2192,7 +2144,7 @@ def outbound_status(request: HttpRequest, domain_id: uuid.UUID, outbound_id: uui
 
 
 @api.post(
-    "/domains/{domain_id}/outbound/{outbound_id}/resend",
+    "/domains/{domain_id}/outbound/{uuid:outbound_id}/resend",
     auth=authenticated,
     response={202: OutboundReferenceOutput},
     tags=["Outbound"],

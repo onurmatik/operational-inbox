@@ -69,6 +69,12 @@ while pending jobs and queued automatic replies are retired and run/state histor
 The verified pre-migration backup preserves the original schema. After migration, delivery
 reconciliation continues for provider-submitted or uncertain outcomes without retrying them.
 
+Migrations `0022` and `0023` also require this stopped-runtime release path. The first permanently
+deletes Compose test sends and their dependent records; the second removes Compose schema in a
+separate transaction for PostgreSQL. They keep inbound/reply records, including those in mixed
+conversations. Reversing the migrations does not restore deleted test data; do not reopen an older
+runtime against the reply-only schema.
+
 Proven migrationless releases retain a short in-place path: no database backup or full
 shutdown unless shared environment, dependencies, or units change. They record the previous
 revision and restore it on failure, verify its schema and live health, then resume cron. During
