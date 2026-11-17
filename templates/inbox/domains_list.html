@@ -33,7 +33,7 @@
           {% if capacity.over_capacity and domain.status != 'DISABLED' and capacity.primary_domain_id != domain.id %}
             <form method="post" action="{% url 'domain_keep_on_free' domain.id %}">{% csrf_token %}<button class="oi-button-secondary">Keep on Free Core</button></form>
           {% endif %}
-          <a href="{% url 'domain_detail' domain.id %}" class="inline-flex min-h-11 items-center text-sm font-semibold text-forest sm:min-h-0">{% if domain.status == 'PROVISIONING' %}Preparing setup{% elif domain.status == 'PENDING_TEST' %}Send test email{% elif not domain.ownership_verified or domain.outbound_status == 'PENDING_DNS' or domain.status == 'PENDING_DNS' %}Verify DNS{% elif domain.status == 'ERROR' or domain.outbound_status == 'ERROR' %}Review setup{% else %}Settings{% endif %}</a>
+          {% if domain.status == 'DISABLED' %}<a href="{% url 'mail_transfers' domain.id %}" class="inline-flex min-h-11 items-center text-sm font-semibold text-forest">Export emails</a>{% else %}<a href="{% url 'domain_detail' domain.id %}" class="inline-flex min-h-11 items-center text-sm font-semibold text-forest sm:min-h-0">{% if domain.status == 'PROVISIONING' %}Preparing setup{% elif domain.status == 'PENDING_TEST' %}Send test email{% elif not domain.ownership_verified or domain.outbound_status == 'PENDING_DNS' or domain.status == 'PENDING_DNS' %}Verify DNS{% elif domain.status == 'ERROR' or domain.outbound_status == 'ERROR' %}Review setup{% else %}Settings{% endif %}</a>{% endif %}
         </div>
       </div>
     {% empty %}

@@ -89,6 +89,15 @@ uv export --frozen --no-dev --no-hashes --no-emit-project --output-file requirem
 MCP listens only on loopback port `8012`; StageOps owns the Nginx `/mcp` proxy route.
 Backups are stored under `/var/backups/operationalinbox` for 30 days.
 
+### Domain mail transfers
+
+Before releasing migration `0024`, deploy the updated CDK bucket CORS rule. It permits browser
+POST uploads only from the two application origins; alternate environments can supply the
+explicit `mail_upload_origins` CDK context list. The bucket remains private. Uploads go directly
+to S3 and do not require larger Nginx request-body limits. Apply the additive migration through
+the normal schema-changing release flow above. `run_scheduler` processes transfer batches,
+repairs enqueue gaps, and cleans temporary files; no additional worker service is needed.
+
 ## Release failure and recovery
 
 Release state, protected configuration snapshots, and a private diagnostic log are kept under

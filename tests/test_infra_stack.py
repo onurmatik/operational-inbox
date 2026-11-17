@@ -144,3 +144,24 @@ def test_sns_subscriptions_preserve_the_sns_envelope() -> None:
         "AWS::SNS::Subscription",
         assertions.Match.not_(assertions.Match.object_like({"RawMessageDelivery": True})),
     )
+
+
+def test_mail_upload_cors_is_limited_to_app_origins_and_post() -> None:
+    template().has_resource_properties(
+        "AWS::S3::Bucket",
+        {
+            "CorsConfiguration": {
+                "CorsRules": [
+                    {
+                        "AllowedOrigins": [
+                            "https://operationalinbox.com",
+                            "https://www.operationalinbox.com",
+                        ],
+                        "AllowedMethods": ["POST"],
+                        "AllowedHeaders": ["Content-Type"],
+                        "MaxAge": 300,
+                    }
+                ]
+            }
+        },
+    )

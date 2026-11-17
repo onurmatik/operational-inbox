@@ -289,8 +289,11 @@ def request_outbound_provisioning(domain: Domain) -> tuple[Domain, DurableJob, b
 
 
 def schedule_work(now=None) -> int:
+    from inbox.services.mail_transfers import maintain_transfers
+
     now = now or timezone.now()
     count = schedule_digests(now)
+    count += maintain_transfers()
     count += reconcile_all_domain_capacities(now=now)
     expire_unverified_claims()
     recover_stale_submissions(now=now)
@@ -370,7 +373,11 @@ def schedule_work(now=None) -> int:
 
 
 def _handle(job: DurableJob) -> None:
-    if job.kind == "send_digest":
+    if job.kind == "mail_transfer":
+        from inbox.services.mail_transfers import process_transfer
+
+        process_transfer(job.payload["transfer_id"], generation=job.payload.get("generation"))
+    elif job.kind == "send_digest":
         send_digest(job.payload["delivery_id"])
     elif job.kind == "send_outbound":
         submit_outbound(OutboundMessage.objects.get(id=job.payload["outbound_id"]))
@@ -426,6 +433,16 @@ def _handle(job: DurableJob) -> None:
 
 
 def _surface_job_failure(job: DurableJob, *, terminal: bool) -> None:
+    if job.kind == "mail_transfer":
+        if terminal:
+            from inbox.services.mail_transfers import fail_transfer
+
+            fail_transfer(
+                job.payload["transfer_id"],
+                "processing_failed",
+                generation=job.payload.get("generation"),
+            )
+        return
     if job.kind not in {
         "provision_domain",
         "provision_outbound",

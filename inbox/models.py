@@ -657,6 +657,7 @@ class Message(DomainScopedModel):
     html_body = models.TextField(blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     received_at = models.DateTimeField(db_index=True)
+    imported_at = models.DateTimeField(null=True, blank=True)
     viewed_at = models.DateTimeField(null=True, blank=True, db_index=True)
     spam_verdict = models.CharField(max_length=10, choices=Verdict.choices, default=Verdict.UNKNOWN)
     virus_verdict = models.CharField(
@@ -817,6 +818,79 @@ class DurableJob(UUIDTimeStampedModel):
 
     class Meta:
         indexes = [models.Index(fields=("status", "due_at", "leased_until"))]
+
+
+class MailTransfer(DomainScopedModel):
+    class Kind(models.TextChoices):
+        IMPORT = "IMPORT", "Import"
+        EXPORT = "EXPORT", "Export"
+
+    class Status(models.TextChoices):
+        UPLOADING = "UPLOADING", "Uploading"
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Processing"
+        COMPLETE = "COMPLETE", "Complete"
+        FAILED = "FAILED", "Failed"
+        EXPIRED = "EXPIRED", "Expired"
+
+    requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    kind = models.CharField(max_length=6, choices=Kind.choices)
+    status = models.CharField(max_length=12, choices=Status.choices)
+    phase = models.CharField(max_length=16, default="index")
+    filename = models.CharField(max_length=255, blank=True)
+    upload_key = models.CharField(max_length=1024, blank=True)
+    source_key = models.CharField(max_length=1024, blank=True)
+    source_size = models.PositiveBigIntegerField(default=0)
+    checkpoint = models.JSONField(default=dict)
+    files = models.JSONField(default=list)
+    generation = models.PositiveIntegerField(default=0)
+    worker_token = models.UUIDField(null=True, blank=True)
+    leased_until = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+    completed_at = models.DateTimeField(null=True, blank=True)
+    cleaned_at = models.DateTimeField(null=True, blank=True)
+    error_code = models.CharField(max_length=64, blank=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("domain",),
+                condition=Q(status__in=["UPLOADING", "QUEUED", "RUNNING"]),
+                name="uniq_active_domain_transfer",
+            )
+        ]
+
+
+class MailTransferItem(UUIDTimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        IMPORTED = "IMPORTED", "Imported"
+        DUPLICATE = "DUPLICATE", "Duplicate"
+        FAILED = "FAILED", "Failed"
+        EXPORTED = "EXPORTED", "Exported"
+        SKIPPED = "SKIPPED", "Skipped"
+
+    transfer = models.ForeignKey(MailTransfer, on_delete=models.CASCADE, related_name="items")
+    position = models.PositiveBigIntegerField()
+    offset = models.PositiveBigIntegerField(default=0)
+    length = models.PositiveBigIntegerField(default=0)
+    message = models.ForeignKey(Message, on_delete=models.SET_NULL, null=True, blank=True)
+    message_at = models.DateTimeField(null=True, blank=True)
+    headers = models.JSONField(default=dict)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    error_code = models.CharField(max_length=64, blank=True)
+    object_key = models.CharField(max_length=1024, blank=True)
+    output_size = models.PositiveBigIntegerField(default=0)
+    omitted_attachments = models.PositiveIntegerField(default=0)
+    reconstructed = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("position",)
+        constraints = [
+            models.UniqueConstraint(fields=("transfer", "position"), name="uniq_transfer_position")
+        ]
+        indexes = [models.Index(fields=("transfer", "status", "position"))]
 
 
 class ReplyDraft(DomainScopedModel):

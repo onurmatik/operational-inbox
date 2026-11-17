@@ -112,6 +112,7 @@ def send_digest(delivery_id: str) -> None:
         Message.objects.filter(
             domain__in=owned_domains(preference.user),
             direction=Message.Direction.INBOUND,
+            imported_at__isnull=True,
             received_at__gte=delivery.period_start,
             received_at__lt=delivery.period_end,
         )

@@ -105,6 +105,19 @@ retries; after scheduler downtime, only the latest window is queued. Lookbacks s
 elapsed hours, while send times follow the selected timezone, including daylight-saving changes.
 
 
+## Import and export emails
+
+Open a domain's **Advanced settings → Import / export emails** to upload an MBOX file
+of up to 250 MB or export its received and sent mail. Transfers continue in the background
+after upload. Existing messages are not overwritten; duplicates and conflicts appear in the result.
+Original email dates are preserved, while imported content's retention starts at import.
+Imported attachments remain **Not scanned** and cannot be downloaded or exported.
+
+Exports include Archive and Trash and omit quarantined or expired content. When original MIME
+is unavailable, retained content is used and omissions are reported. Large exports are split
+into MBOX files of up to 250 MB; downloads remain available for 24 hours. Owners can also
+export disabled domains from the Domains list. This feature is web-only.
+
 ## Reply assistance
 
 There is no built-in conversation autopilot, policy engine or automatic follow-up. Your own agent

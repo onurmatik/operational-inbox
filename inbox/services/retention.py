@@ -7,6 +7,7 @@ import boto3
 from botocore.exceptions import ClientError
 from django.conf import settings
 from django.db.models import Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from inbox.models import (
@@ -107,11 +108,17 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
         audit_metadata_days = _effective_retention_days(domain, policy, "audit_metadata_days")
         delivery_metadata_days = _effective_retention_days(domain, policy, "delivery_metadata_days")
         attachment_cutoff = now - timedelta(days=attachment_days)
-        for attachment in Attachment.objects.filter(
-            domain=domain,
-            purged_at__isnull=True,
-            message__received_at__lte=attachment_cutoff,
-        ).iterator():
+        for attachment in (
+            Attachment.objects.annotate(
+                retained_from=Coalesce("message__imported_at", "message__received_at")
+            )
+            .filter(
+                domain=domain,
+                purged_at__isnull=True,
+                retained_from__lte=attachment_cutoff,
+            )
+            .iterator()
+        ):
             _delete_s3_key(s3, attachment.s3_key)
             attachment.s3_key = ""
             attachment.purged_at = now
@@ -137,10 +144,11 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             counts["attachments"] += 1
         raw_cutoff = now - timedelta(days=raw_message_days)
         for message in (
-            Message.objects.filter(
+            Message.objects.annotate(retained_from=Coalesce("imported_at", "received_at"))
+            .filter(
                 domain=domain,
                 raw_purged_at__isnull=True,
-                received_at__lte=raw_cutoff,
+                retained_from__lte=raw_cutoff,
             )
             .exclude(raw_s3_key="")
             .iterator()
@@ -152,10 +160,10 @@ def purge_retention(*, s3_client: Any | None = None, now=None) -> dict[str, int]
             counts["raw"] += 1
         normalized_cutoff = now - timedelta(days=normalized_content_days)
         old_messages = list(
-            Message.objects.filter(
+            Message.objects.annotate(retained_from=Coalesce("imported_at", "received_at")).filter(
                 domain=domain,
                 normalized_purged_at__isnull=True,
-                received_at__lte=normalized_cutoff,
+                retained_from__lte=normalized_cutoff,
             )
         )
         old_message_ids = [message.id for message in old_messages]

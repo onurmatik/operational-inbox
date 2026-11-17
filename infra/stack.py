@@ -66,6 +66,15 @@ class OperationalInboxEmailStack(Stack):
             object_ownership=s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             removal_policy=RemovalPolicy.RETAIN,
             auto_delete_objects=False,
+            cors=[
+                s3.CorsRule(
+                    allowed_origins=self.node.try_get_context("mail_upload_origins")
+                    or [f"https://{system_domain}", f"https://www.{system_domain}"],
+                    allowed_methods=[s3.HttpMethods.POST],
+                    allowed_headers=["Content-Type"],
+                    max_age=300,
+                )
+            ],
             lifecycle_rules=[
                 s3.LifecycleRule(
                     id="ExpireIngress",

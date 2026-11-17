@@ -1,8 +1,43 @@
 from django.urls import path
 
-from inbox import reply_views, views
+from inbox import mail_transfer_views, reply_views, views
 
 urlpatterns = [
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/",
+        mail_transfer_views.page,
+        name="mail_transfers",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/status/",
+        mail_transfer_views.status,
+        name="mail_transfer_status",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/import/",
+        mail_transfer_views.prepare_import,
+        name="mail_transfer_prepare",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/export/",
+        mail_transfer_views.start_export,
+        name="mail_transfer_export",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/<uuid:transfer_id>/complete/",
+        mail_transfer_views.complete,
+        name="mail_transfer_complete",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/<uuid:transfer_id>/cancel/",
+        mail_transfer_views.cancel,
+        name="mail_transfer_cancel",
+    ),
+    path(
+        "app/domains/<uuid:domain_id>/mail-transfers/<uuid:transfer_id>/download/<int:part>/",
+        mail_transfer_views.download,
+        name="mail_transfer_download",
+    ),
     path(
         "app/conversations/<uuid:conversation_id>/reply-assist/",
         reply_views.conversation_reply_assist,

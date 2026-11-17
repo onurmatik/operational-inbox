@@ -199,7 +199,7 @@ writes customer records. Provider-forward domains with sending disabled are not 
   the same reversible review service and transactional audit. Effective suspicious state keeps
   authentication failures; unsent spam-only alerts resolve and reopen on Undo. Notification
   delivery locks the message before the alert, so queued jobs cannot send a resolved alert.
-- A virus verdict other than `PASS` quarantines the message and its attachments. Spam or failed
+- For live SES mail, a virus verdict other than `PASS` quarantines the message and its attachments. Spam or failed
   authentication verdicts remain visible as suspicious mail instead of being deleted.
 - Only a clean, unexpired attachment can receive an authorized S3 URL. The URL expires after five
   minutes. Quarantined/unscanned objects stay locked and retention-expired objects return `410`.
@@ -367,6 +367,29 @@ identity ARNs.
 Production uses PostgreSQL 17 over SCRAM-protected loopback connections with health-checked,
 60-second persistent Django connections. Local development and tests retain the SQLite fallback
 with WAL, a 20-second busy timeout, and `IMMEDIATE` short transactions.
+
+## Domain mail transfers
+
+The web-only transfer page uses owner-scoped sessions and CSRF. Import requires a verified,
+writable domain; export remains available for disabled domains. Each domain permits one active
+transfer. A bounded presigned POST uploads at most 250 MB directly to private S3; finalization
+checks the declared size and copies the upload to an immutable worker source using its ETag.
+
+`MailTransfer` and `MailTransferItem` track resumable indexing, import, threading, export and
+assembly. Durable jobs use generation numbers and worker leases to reject stale work. The
+scheduler repairs enqueue gaps and removes temporary data. Export files expire after 24 hours;
+transfer records expire after 30 days, while audit events follow normal metadata retention.
+
+Imports preserve email dates, suppress live notifications and digests, and set `imported_at` as
+the retention origin. Sanitized message text is readable; imported attachments have `UNKNOWN`
+scan status and remain locked. Duplicate checks preserve existing messages and conversation
+organization. Message-ID conflicts are reported without replacing content.
+
+Exports snapshot retained messages, exclude domain tests and quarantine, and include only clean,
+unexpired attachments. Original MIME is reused only when its attachment hashes match the allowed
+attachment set; otherwise retained content is reconstructed and omissions are reported. Assembly
+splits output into MBOX parts of at most 250 MB. Download authorization produces a five-minute
+signed URL within the export's expiry window. No API or MCP transfer tools are exposed.
 
 ## API
 

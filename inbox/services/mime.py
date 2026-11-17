@@ -85,6 +85,7 @@ class ParsedMIME:
     html_body: str
     attachments: tuple[ParsedAttachment, ...]
     raw_sha256: str
+    bcc_addresses: tuple[str, ...] = ()
     automation_headers: dict = field(default_factory=dict)
 
 
@@ -143,6 +144,18 @@ def parse_mime(raw: bytes) -> ParsedMIME:
     except Exception as exc:
         raise ValidationError("The MIME message could not be parsed.") from exc
 
+    # Validate the entire tree, including attached messages that must not be
+    # traversed as readable body content below.
+    pending: list[tuple[Message, int]] = [(message, 0)]
+    total_parts = 0
+    while pending:
+        node, depth = pending.pop()
+        total_parts += 1
+        if total_parts > MAX_PARTS or depth > MAX_NESTING:
+            raise ValidationError("The MIME message has too many nested parts.")
+        if node.is_multipart():
+            pending.extend((child, depth + 1) for child in node.iter_parts())  # type: ignore[attr-defined]
+
     text_parts: list[str] = []
     html_parts: list[str] = []
     attachments: list[ParsedAttachment] = []
@@ -153,17 +166,17 @@ def parse_mime(raw: bytes) -> ParsedMIME:
         part_count += 1
         if part_count > MAX_PARTS or depth > MAX_NESTING:
             raise ValidationError("The MIME message has too many nested parts.")
-        if part.is_multipart():
-            children = list(part.iter_parts())  # type: ignore[attr-defined]
-            stack.extend((child, depth + 1) for child in reversed(children))
-            continue
-
         disposition = part.get_content_disposition()
         filename = part.get_filename()
         content_type = part.get_content_type().casefold()
-        if disposition == "attachment" or filename:
+        if (
+            disposition == "attachment"
+            or filename
+            or content_type == "message/rfc822"
+            or (not part.is_multipart() and content_type not in {"text/plain", "text/html"})
+        ):
             decoded = part.get_payload(decode=True)
-            content = decoded if isinstance(decoded, bytes) else b""
+            content = decoded if isinstance(decoded, bytes) else part.as_bytes()
             attachments.append(
                 ParsedAttachment(
                     filename=_safe_filename(filename, len(attachments) + 1),
@@ -172,6 +185,10 @@ def parse_mime(raw: bytes) -> ParsedMIME:
                     sha256=hashlib.sha256(content).hexdigest(),
                 )
             )
+            continue
+        if part.is_multipart():
+            children = list(part.iter_parts())  # type: ignore[attr-defined]
+            stack.extend((child, depth + 1) for child in reversed(children))
             continue
         if content_type == "text/plain":
             text_parts.append(_decode_text(part))
@@ -200,6 +217,7 @@ def parse_mime(raw: bytes) -> ParsedMIME:
         reply_to_address=next(iter(_addresses(message, "Reply-To")), "")[:320],
         to_addresses=_addresses(message, "To"),
         cc_addresses=_addresses(message, "Cc"),
+        bcc_addresses=_addresses(message, "Bcc"),
         rfc_message_id=(message_ids[0] if message_ids else "")[:998],
         in_reply_to=tuple(MESSAGE_ID_RE.findall(str(message.get("In-Reply-To", "")))),
         references=tuple(MESSAGE_ID_RE.findall(str(message.get("References", "")))),
